@@ -49,7 +49,9 @@ const STATE = {
     cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
     cxTrailTp: 'off', cxTrailPct: '0.5', cxEntryTrail: '0.5%',
     cxToken: '', cxChat: '', cxChatClose: '',
-    cxEntry2on: false, cxEntry2Dist: '2', cxEntry2Amt: '50', cxBEon: false,
+    cxEntry2on: false, cxEntry2Dist: '2', cxEntry2Amt: '50',
+    cxEntry3on: false, cxEntry3Dist: '4', cxEntry3Amt: '50',
+    cxBEon: false,
     trSon: false, trSstart: 75, trSgap: 3,
     trLon: false, trLstart: 25, trLgap: 3,
     liqVon: false, liqVmin: 50000000,
@@ -267,16 +269,20 @@ function buildMsg(sym, side) {
   const st = STATE.settings;
   const p = livePrices[sym], pair = sym.replace('USDT', '/USDT');
   const fp = n => { if (!n && n !== 0) return 'N/A'; if (n >= 100) return n.toFixed(2); if (n >= 1) return n.toFixed(3); if (n >= 0.1) return n.toFixed(4); return n.toFixed(6); };
-  let tp1 = null, tp2 = null, sll = null;
+  let tp1 = null, tp2 = null, sll = null, e2 = null, e3 = null;
   if (p) {
     const t1 = parseFloat(st.cxTP1) / 100, s = parseFloat(st.cxSL) / 100;
     tp1 = side === 'LONG' ? p * (1 + t1) : p * (1 - t1);
     sll = side === 'LONG' ? p * (1 - s) : p * (1 + s);
     if (st.cxTP2on) { const t2 = parseFloat(st.cxTP2) / 100; tp2 = side === 'LONG' ? p * (1 + t2) : p * (1 - t2); }
+    if (st.cxEntry2on) { const d2 = parseFloat(st.cxEntry2Dist || '2') / 100; e2 = side === 'LONG' ? p * (1 - d2) : p * (1 + d2); }
+    if (st.cxEntry2on && st.cxEntry3on) { const d3 = parseFloat(st.cxEntry3Dist || '4') / 100; e3 = side === 'LONG' ? p * (1 - d3) : p * (1 + d3); }
   }
   const L = [`#${pair}`, 'Exchanges: Binance Futures', `Signal Type: Regular (${side === 'LONG' ? 'Long' : 'Short'})`,
-    `Leverage: ${st.cxMargin} (${st.cxLev}X)`, `Amount: ${st.cxAmt}`, '', 'Entry Targets:', '1) Market', '',
-    'Take-Profit Targets:'];
+    `Leverage: ${st.cxMargin} (${st.cxLev}X)`, `Amount: ${st.cxAmt}`, '', 'Entry Targets:', '1) Market'];
+  if (e2) L.push(`2) ${fp(e2)}${st.cxEntry2Amt ? ` (${st.cxEntry2Amt}%)` : ''}`);
+  if (e3) L.push(`3) ${fp(e3)}${st.cxEntry3Amt ? ` (${st.cxEntry3Amt}%)` : ''}`);
+  L.push('', 'Take-Profit Targets:');
   if (st.cxTP2on) { L.push(`1) ${fp(tp1)} (${st.cxTP1Amt}%)`); L.push(`2) ${fp(tp2)} (${st.cxTP2Amt}%)`); }
   else L.push(`1) ${fp(tp1)}`);
   L.push('');
