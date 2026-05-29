@@ -530,35 +530,40 @@ async function syncCopy() {
   } catch (e) { addCopyLog('fail', `❌ ماستر: ${e.message}`); master.apiOk = false; return; }
   const prev = STATE.masterPositions || {};
   const followers = STATE.copyAccounts.filter(a => !a.isMaster && a.isEnabled);
-  // فتح صفقات جديدة
+
+  // فتح صفقات — سواء جديدة أو موجودة ما عند التابع
   for (const [sym, pos] of Object.entries(curr)) {
-    if (!prev[sym]) {
-      addCopyLog('info', `📡 ماستر فتح: ${sym} ${parseFloat(pos.positionAmt) > 0 ? 'LONG' : 'SHORT'}`);
-      for (const f of followers) { await openFollower(f, pos); await new Promise(r => setTimeout(r, 200)); }
-      const st = STATE.settings;
-      tgSend(`🪞 Copy Trading\n#${sym.replace('USDT', '/USDT')}\nماستر فتح: ${parseFloat(pos.positionAmt) > 0 ? 'Long' : 'Short'}\nحسابات: ${followers.length}`, st.cxChat);
+    const isNew = !prev[sym];
+    if (isNew) addCopyLog('info', `📡 ماستر فتح: ${sym} ${parseFloat(pos.positionAmt) > 0 ? 'LONG' : 'SHORT'}`);
+    for (const f of followers) {
+      const fPos = (f.livePositions || []).find(p => p.symbol === sym);
+      if (!fPos) {
+        await openFollower(f, pos);
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+    if (isNew) {
+      tgSend(`🪞 Copy\n#${sym.replace('USDT', '/USDT')}\nماستر فتح: ${parseFloat(pos.positionAmt) > 0 ? 'Long' : 'Short'}\nحسابات: ${followers.length}`, STATE.settings.cxChat);
     }
   }
-  // إغلاق صفقات
+
+  // إغلاق صفقات أغلقها الماستر
   for (const [sym] of Object.entries(prev)) {
     if (!curr[sym]) {
       addCopyLog('info', `📡 ماستر أغلق: ${sym}`);
       for (const f of followers) {
-        const fp = f.livePositions?.find(p => p.symbol === sym);
+        const fp = (f.livePositions || []).find(p => p.symbol === sym);
         if (fp) await closeFollower(f, sym, parseFloat(fp.positionAmt));
         await new Promise(r => setTimeout(r, 200));
       }
-      const st = STATE.settings;
-      tgSend(`🔒 Copy أُغلقت ${sym.replace('USDT', '/USDT')}\nحسابات: ${followers.length}`, st.cxChatClose || st.cxChat);
+      tgSend(`🔒 Copy أُغلقت ${sym.replace('USDT', '/USDT')}`, STATE.settings.cxChatClose || STATE.settings.cxChat);
     }
   }
-  // تحديث بيانات الحسابات التابعة
+
+  // تحديث بيانات التابعين
   for (const acc of followers) {
-    try {
-      acc.livePositions = await getPositions(acc);
-      acc.liveBalance = await getBalance(acc);
-      acc.apiOk = true;
-    } catch (e) { acc.apiOk = false; }
+    try { acc.livePositions = await getPositions(acc); acc.liveBalance = await getBalance(acc); acc.apiOk = true; }
+    catch (e) { acc.apiOk = false; }
   }
   STATE.masterPositions = curr;
   broadcast({ type: 'accounts', data: getSafeAccounts() });
@@ -731,6 +736,74 @@ async function handleClientMsg(msg) {
       const a = msg.data;
       STATE.openTrades = [{ id: Date.now(), symbol: a.symbol, side: a.side, entryPrice: livePrices[a.symbol] || 0, openTime: a.time, openTs: Date.now(), sl: STATE.settings.cxSL, tp1: STATE.settings.cxTP1, leverage: STATE.settings.cxLev, margin: STATE.settings.cxMargin, label: a.label }, ...STATE.openTrades];
       broadcast({ type: 'trades', data: STATE.openTrades });
+      break;
+    }
+
+    // ─── تنفيذ مباشر من الإشارة ───
+    case 'executeSignal': {
+      const { sym, side, accId } = msg.data;
+      const st = STATE.settings;
+      const accs = accId
+        ? STATE.copyAccounts.filter(a => a.id === accId)
+        : STATE.copyAccounts.filter(a => a.isEnabled !== false);
+      const results = [];
+      for (const acc of accs) {
+        if (!acc.apiKey || !acc.apiSecret) continue;
+        try {
+          const bal = await getBalance(acc);
+          const price = livePrices[sym] || 1;
+          const lev = Math.min(parseInt(st.cxLev) || 20, await getMaxLev(sym));
+          const amtStr = st.cxAmt || '5%';
+          const amtPct = parseFloat(amtStr) / 100;
+          const qty = parseFloat(((bal * amtPct * lev) / price).toFixed(3));
+          if (qty <= 0) throw new Error('الكمية صغيرة');
+          await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
+          await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
+            symbol: sym, side: side === 'LONG' ? 'BUY' : 'SELL',
+            type: 'MARKET', quantity: qty, positionSide: 'BOTH'
+          });
+          results.push({ acc: acc.name, ok: true, qty });
+          addCopyLog('success', `✅ تنفيذ ${sym} ${side} × ${qty} — ${acc.name}`);
+        } catch (e) {
+          results.push({ acc: acc.name, ok: false, error: e.message });
+          addCopyLog('fail', `❌ فشل تنفيذ ${sym} — ${acc.name}: ${e.message}`);
+        }
+      }
+      // أضف للصفقات المفتوحة
+      const ep = livePrices[sym] || 0;
+      STATE.openTrades = [{ id: Date.now(), symbol: sym, side, entryPrice: ep, openTime: nowStr(), openTs: Date.now(), sl: st.cxSL, tp1: st.cxTP1, leverage: st.cxLev, margin: st.cxMargin, label: `تنفيذ مباشر`, executed: true }, ...STATE.openTrades];
+      // إرسال تلغرام
+      await tgSend(buildMsg(sym, side), st.cxChat);
+      broadcast({ type: 'executeResult', data: results });
+      broadcast({ type: 'trades', data: STATE.openTrades });
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      break;
+    }
+
+    // ─── إغلاق جزئي ───
+    case 'closePartial': {
+      const { tradeId, pct } = msg.data; // pct = نسبة الإغلاق (50 = 50%)
+      const t = STATE.openTrades.find(x => x.id === tradeId);
+      if (!t) break;
+      const accs = STATE.copyAccounts.filter(a => a.isEnabled !== false);
+      for (const acc of accs) {
+        if (!acc.apiKey || !acc.apiSecret) continue;
+        try {
+          const pos = (await getPositions(acc)).find(p => p.symbol === t.symbol);
+          if (!pos) continue;
+          const totalAmt = Math.abs(parseFloat(pos.positionAmt));
+          const closeAmt = parseFloat((totalAmt * (pct / 100)).toFixed(3));
+          if (closeAmt <= 0) continue;
+          await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
+            symbol: t.symbol, side: t.side === 'LONG' ? 'SELL' : 'BUY',
+            type: 'MARKET', quantity: closeAmt, positionSide: 'BOTH', reduceOnly: true
+          });
+          addCopyLog('success', `🔒 إغلاق ${pct}% من ${t.symbol} — ${acc.name}`);
+        } catch (e) {
+          addCopyLog('fail', `❌ إغلاق جزئي ${acc.name}: ${e.message}`);
+        }
+      }
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
       break;
     }
     case 'closeTrade': {
