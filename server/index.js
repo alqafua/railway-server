@@ -471,7 +471,7 @@ function broadcastThrottled(msg) {
           pendingPrices = {};
         }
         throttleTimer = null;
-      }, 500);
+      }, 3000);
     }
     return;
   }
@@ -521,25 +521,43 @@ async function syncCopy() {
   if (!STATE.copyOn) return;
   const master = STATE.copyAccounts.find(a => a.isMaster);
   if (!master?.apiKey || !master?.apiSecret) return;
+
+  // جلب مواقف الماستر
   let curr;
   try {
     const p = await getPositions(master);
     curr = {}; p.forEach(x => curr[x.symbol] = x);
-    master.livePositions = p; master.liveBalance = await getBalance(master);
+    master.livePositions = p;
+    master.liveBalance = await getBalance(master);
     master.apiOk = true;
-  } catch (e) { addCopyLog('fail', `❌ ماستر: ${e.message}`); master.apiOk = false; return; }
-  const prev = STATE.masterPositions || {};
-  const followers = STATE.copyAccounts.filter(a => !a.isMaster && a.isEnabled);
+  } catch (e) {
+    addCopyLog('fail', `❌ ماستر: ${e.message}`);
+    master.apiOk = false;
+    return;
+  }
 
-  // فتح صفقات — سواء جديدة أو موجودة ما عند التابع
+  const prev = STATE.masterPositions || {};
+  const followers = STATE.copyAccounts.filter(a => !a.isMaster && a.isEnabled !== false);
+
+  // جلب مواقف التابعين أولاً
+  for (const f of followers) {
+    try {
+      f.livePositions = await getPositions(f);
+      f.liveBalance = await getBalance(f);
+      f.apiOk = true;
+    } catch (e) { f.apiOk = false; }
+  }
+
+  // فتح صفقات الماستر عند التابعين اللي ما عندهم
   for (const [sym, pos] of Object.entries(curr)) {
     const isNew = !prev[sym];
     if (isNew) addCopyLog('info', `📡 ماستر فتح: ${sym} ${parseFloat(pos.positionAmt) > 0 ? 'LONG' : 'SHORT'}`);
     for (const f of followers) {
+      if (!f.apiOk) continue;
       const fPos = (f.livePositions || []).find(p => p.symbol === sym);
       if (!fPos) {
         await openFollower(f, pos);
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 300));
       }
     }
     if (isNew) {
@@ -553,18 +571,15 @@ async function syncCopy() {
       addCopyLog('info', `📡 ماستر أغلق: ${sym}`);
       for (const f of followers) {
         const fp = (f.livePositions || []).find(p => p.symbol === sym);
-        if (fp) await closeFollower(f, sym, parseFloat(fp.positionAmt));
-        await new Promise(r => setTimeout(r, 200));
+        if (fp) {
+          await closeFollower(f, sym, parseFloat(fp.positionAmt));
+          await new Promise(r => setTimeout(r, 300));
+        }
       }
       tgSend(`🔒 Copy أُغلقت ${sym.replace('USDT', '/USDT')}`, STATE.settings.cxChatClose || STATE.settings.cxChat);
     }
   }
 
-  // تحديث بيانات التابعين
-  for (const acc of followers) {
-    try { acc.livePositions = await getPositions(acc); acc.liveBalance = await getBalance(acc); acc.apiOk = true; }
-    catch (e) { acc.apiOk = false; }
-  }
   STATE.masterPositions = curr;
   broadcast({ type: 'accounts', data: getSafeAccounts() });
 }
