@@ -342,7 +342,6 @@ function triggerAlert(sym, sig, val) {
   STATE.alerts = [item, ...STATE.alerts].slice(0, 200);
   sendSignal(sym, sig.side);
   broadcast({ type: 'alert', data: item });
-  broadcast({ type: 'state', data: getPublicState() });
 }
 
 async function scanSym(sym) {
@@ -391,7 +390,7 @@ async function scanAll() {
     if (i + BATCH < STATE.symbols.length) await new Promise(r => setTimeout(r, BDEL));
   }
   broadcast({ type: 'scanning', data: false });
-  broadcast({ type: 'state', data: getPublicState() });
+  broadcast({ type: 'symbolData', data: STATE.symbolData });
   scanRunning = false;
 }
 
@@ -488,30 +487,56 @@ function addCopyLog(type, text) {
   broadcast({ type: 'copyLog', data: STATE.copyLog[0] });
 }
 
+async function getPositionMode(acc) {
+  try {
+    const d = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v1/positionSide/dual');
+    return d.dualSidePosition ? 'hedge' : 'oneway';
+  } catch (e) { return 'oneway'; }
+}
+
 async function openFollower(acc, mPos) {
   try {
     const bal = await getBalance(acc);
     if (bal <= 0) throw new Error('رصيد غير كافٍ');
     const ratio = parseFloat(acc.sizeRatio) || 5;
     const sym = mPos.symbol, amt = parseFloat(mPos.positionAmt);
-    const side = amt > 0 ? 'BUY' : 'SELL';
+    const isLong = amt > 0;
+    const side = isLong ? 'BUY' : 'SELL';
     const price = livePrices[sym] || parseFloat(mPos.markPrice) || 1;
     const lev = Math.min(parseFloat(mPos.leverage) || 20, 125);
     const qty = parseFloat(((bal * (ratio / 100) * lev) / price).toFixed(3));
     if (qty <= 0) throw new Error('الكمية صغيرة جداً');
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
-    await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', { symbol: sym, side, type: 'MARKET', quantity: qty, positionSide: 'BOTH' });
+    // تحقق من نوع الـ position mode
+    const mode = await getPositionMode(acc);
+    const orderParams = { symbol: sym, side, type: 'MARKET', quantity: qty };
+    if (mode === 'hedge') {
+      orderParams.positionSide = isLong ? 'LONG' : 'SHORT';
+    } else {
+      orderParams.positionSide = 'BOTH';
+    }
+    await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
     if (!acc.stats) acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
     acc.stats.opens++;
-    addCopyLog('success', `✅ ${acc.name}: فُتحت ${sym} ${amt > 0 ? 'LONG' : 'SHORT'} × ${qty}`);
+    addCopyLog('success', `✅ ${acc.name}: فُتحت ${sym} ${isLong ? 'LONG' : 'SHORT'} × ${qty} (${mode})`);
     return true;
   } catch (e) { addCopyLog('fail', `❌ ${acc.name}/${mPos.symbol}: ${e.message}`); return false; }
 }
 
 async function closeFollower(acc, sym, posAmt) {
   try {
-    const side = posAmt > 0 ? 'SELL' : 'BUY', qty = Math.abs(posAmt).toFixed(3);
-    await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', { symbol: sym, side, type: 'MARKET', quantity: qty, positionSide: 'BOTH', reduceOnly: true });
+    const isLong = posAmt > 0;
+    const side = isLong ? 'SELL' : 'BUY';
+    const qty = Math.abs(posAmt).toFixed(3);
+    const mode = await getPositionMode(acc);
+    const orderParams = { symbol: sym, side, type: 'MARKET', quantity: qty };
+    if (mode === 'hedge') {
+      orderParams.positionSide = isLong ? 'LONG' : 'SHORT';
+    } else {
+      orderParams.positionSide = 'BOTH';
+      orderParams.reduceOnly = true;
+    }
+    await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
     addCopyLog('success', `🔒 ${acc.name}: أُغلقت ${sym}`);
     return true;
   } catch (e) { addCopyLog('fail', `❌ إغلاق ${acc.name}/${sym}: ${e.message}`); return false; }
