@@ -226,15 +226,18 @@ async function getMaxLev(sym) {
 
 // جلب دقة الكمية لكل عملة
 const qtyPrecisionCache = {};
+let exchangeInfoCache = null;
 async function getQtyPrecision(sym) {
   if (qtyPrecisionCache[sym] !== undefined) return qtyPrecisionCache[sym];
   try {
-    const d = await fetchBinance(`/fapi/v1/exchangeInfo`);
-    const info = d.symbols?.find(s => s.symbol === sym);
+    if (!exchangeInfoCache) {
+      exchangeInfoCache = await fetchBinance('/fapi/v1/exchangeInfo');
+    }
+    const info = exchangeInfoCache.symbols?.find(s => s.symbol === sym);
     const lotFilter = info?.filters?.find(f => f.filterType === 'LOT_SIZE');
     if (lotFilter?.stepSize) {
       const step = parseFloat(lotFilter.stepSize);
-      const precision = step >= 1 ? 0 : String(step).split('.')[1]?.length || 3;
+      const precision = step >= 1 ? 0 : (step.toString().split('.')[1] || '').replace(/0+$/, '').length;
       qtyPrecisionCache[sym] = precision;
       return precision;
     }
@@ -1099,6 +1102,16 @@ async function init() {
   console.log('🚀 RSI Scanner Pro v3 starting...');
   try {
     const d = await fetchBinance('/fapi/v1/exchangeInfo');
+    // تخزين exchangeInfo للاستخدام لاحقاً في getQtyPrecision
+    exchangeInfoCache = d;
+    // تحميل الـ precision لكل العملات مرة واحدة
+    d.symbols?.forEach(s => {
+      const lot = s.filters?.find(f => f.filterType === 'LOT_SIZE');
+      if (lot?.stepSize) {
+        const step = parseFloat(lot.stepSize);
+        qtyPrecisionCache[s.symbol] = step >= 1 ? 0 : (step.toString().split('.')[1] || '').replace(/0+$/, '').length;
+      }
+    });
     STATE.symbols = d.symbols
       .filter(s => s.quoteAsset === 'USDT' && s.contractType === 'PERPETUAL' && s.status === 'TRADING')
       .map(s => s.symbol).sort();
