@@ -44,7 +44,6 @@ const STATE = {
   settings: {
     mode: 'SMA', maPeriod: 14, interval: '1h',
     autoSend: false, enableDiv: true, blockOpen: true,
-    sigFilters: { ob: true, os: true, conf: true, trail: true },
     cxMargin: 'Cross', cxLev: '20', cxAmt: '5%',
     cxSLon: true, cxSL: '2',
     cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
@@ -60,7 +59,7 @@ const STATE = {
     revMode: 'candles', revCount: 1, rsiGap: 1,
     dataMode: 'ws', soundEnabled: true,
   },
-  dcaOrders: [], // أوامر التعزيز التلقائية
+  rsiPeaks: {},
   cooldowns: {},
   sentSigs: {},
   copyOn: false,
@@ -157,7 +156,6 @@ function checkDiv(cls, ind, type) {
 
 function detectSignal(pv, cu, cls, id, ed) {
   if (pv === null || cu === null) return null;
-  if (!id || !id.length) return null;
   const rm = STATE.settings.revMode, rv = parseInt(STATE.settings.revCount) || 1;
   if (rm === 'candles' && rv > 1 && id.length >= rv) {
     const n = id.slice(-rv);
@@ -172,14 +170,12 @@ function detectSignal(pv, cu, cls, id, ed) {
 
 function detectConf(pv, cu, cls, id, ed) {
   if (pv === null || cu === null) return null;
-  if (!id || !id.length) return null;
   if (pv <= 30 && cu > pv && cu <= 30) { if (ed && !checkDiv(cls, id, 'LONG')) return null; return { type: 'cl', label: '⚡ شراء أكيد', color: 'confirmed', emoji: '⚡🟢', side: 'LONG' }; }
   if (pv >= 70 && cu < pv && cu >= 70) { if (ed && !checkDiv(cls, id, 'SHORT')) return null; return { type: 'cs', label: '⚡ بيع أكيد', color: 'confirmed', emoji: '⚡🔴', side: 'SHORT' }; }
   return null;
 }
 
 function detectTrail(sym, cu, cls, id, ed) {
-  if (!id || !id.length) id = [];
   const st = STATE.settings;
   if (!STATE.rsiPeaks[sym]) STATE.rsiPeaks[sym] = { sp: null, sf: false, lp: null, lf: false };
   const pk = STATE.rsiPeaks[sym];
@@ -225,33 +221,6 @@ async function getMaxLev(sym) {
     if (!STATE.symbolMeta[sym]) STATE.symbolMeta[sym] = {};
     STATE.symbolMeta[sym].ml = l; return l;
   } catch (e) { return 125; }
-}
-
-// جلب دقة الكمية لكل عملة
-const qtyPrecisionCache = {};
-let exchangeInfoCache = null;
-async function getQtyPrecision(sym) {
-  if (qtyPrecisionCache[sym] !== undefined) return qtyPrecisionCache[sym];
-  try {
-    if (!exchangeInfoCache) {
-      exchangeInfoCache = await fetchBinance('/fapi/v1/exchangeInfo');
-    }
-    const info = exchangeInfoCache.symbols?.find(s => s.symbol === sym);
-    const lotFilter = info?.filters?.find(f => f.filterType === 'LOT_SIZE');
-    if (lotFilter?.stepSize) {
-      const step = parseFloat(lotFilter.stepSize);
-      const precision = step >= 1 ? 0 : (step.toString().split('.')[1] || '').replace(/0+$/, '').length;
-      qtyPrecisionCache[sym] = precision;
-      return precision;
-    }
-  } catch (e) {}
-  qtyPrecisionCache[sym] = 3;
-  return 3;
-}
-
-function roundQty(qty, precision) {
-  const factor = Math.pow(10, precision);
-  return Math.floor(qty * factor) / factor;
 }
 
 async function hmac256(secret, msg) {
@@ -359,23 +328,10 @@ function isLiquid(sym) {
 function triggerAlert(sym, sig, val) {
   const st = STATE.settings;
   const key = `${sym}_${sig.type}`, now = Date.now();
-  if (STATE.cooldowns[key]) return; // منع التكرار حتى يتغير السيناريو
+  if (STATE.cooldowns[key] && now - STATE.cooldowns[key] < 900000) return;
   if (st.blockOpen && STATE.openTrades.some(t => t.symbol === sym)) return;
   if (STATE.sentSigs[sym]) return;
   if (!isLiquid(sym)) return;
-
-  // ─── فلتر أنواع الإشارات ───
-  // sig.type: 'a70'=تجاوز70, 'b70'=نزل70, 'b30'=نزل30, 'a30'=صعد30, 'cl'=أكيدة شراء, 'cs'=أكيدة بيع, 'ts'=trail short, 'tl'=trail long
-  const sigFilters = st.sigFilters || { ob: true, os: true, conf: true, trail: true };
-  const isOB = ['a70', 'b70'].includes(sig.type); // تشبع بيع (OB)
-  const isOS = ['b30', 'a30'].includes(sig.type); // تشبع شراء (OS)
-  const isConf = ['cl', 'cs'].includes(sig.type); // أكيدة
-  const isTrail = ['ts', 'tl'].includes(sig.type); // Trailing
-  if (isOB && !sigFilters.ob) return;
-  if (isOS && !sigFilters.os) return;
-  if (isConf && !sigFilters.conf) return;
-  if (isTrail && !sigFilters.trail) return;
-
   STATE.cooldowns[key] = now;
   alertId++;
   const item = {
@@ -402,51 +358,11 @@ async function scanSym(sym) {
     const trail = detectTrail(sym, cu, cls, id, st.enableDiv);
     const zone = cu >= 70 ? 'ob' : cu <= 30 ? 'os' : 'neutral';
     const old = STATE.symbolData[sym] || {};
-    // لما RSI يخرج من المنطقة ويدخلها مرة ثانية — نمسح الـ cooldown
-    const oldZone = old.zone || 'neutral';
-    if (oldZone !== 'neutral' && zone === 'neutral') {
-      // خرج من المنطقة — امسح cooldowns لهذه العملة
-      Object.keys(STATE.cooldowns).forEach(k => { if (k.startsWith(sym + '_')) delete STATE.cooldowns[k]; });
-    }
     const fSig = trail || sig;
     STATE.symbolData[sym] = { rsi: cu, prevRsi: pv, signal: fSig, conf, zone, error: false, trailActive: !!trail };
     if (fSig && (!old.signal || old.signal.type !== fSig.type)) triggerAlert(sym, fSig, cu);
     if (conf && (!old.conf || old.conf.type !== conf.type)) triggerAlert(sym, conf, cu);
-
-    // ─── فحص أوامر التعزيز ───
-    const price = livePrices[sym];
-    if (price && STATE.dcaOrders.length) {
-      for (const order of STATE.dcaOrders.filter(o => o.sym === sym && !o.done)) {
-        const hit = order.side === 'LONG' ? price <= order.price : price >= order.price;
-        if (!hit) continue;
-        // تحقق إن في صفقة مفتوحة
-        const master = STATE.copyAccounts.find(a => a.isMaster);
-        const hasPos = master?.livePositions?.some(p => p.symbol === sym);
-        if (!hasPos) { order.done = true; addCopyLog('info', `⏭ DCA ${sym}: ما في صفقة مفتوحة`); continue; }
-        // نفذ التعزيز على الحسابات المحددة
-        const targets = STATE.copyAccounts.filter(a => order.accIds.includes(a.id) && a.isEnabled !== false);
-        for (const acc of targets) {
-          if (!acc.apiKey) continue;
-          try {
-            const bal = await getBalance(acc);
-            const prc2 = await getQtyPrecision(order.sym); const qty = roundQty((bal * (parseFloat(order.pct) / 100) * parseInt(order.lev || 20)) / price, prc2);
-            if (qty <= 0) continue;
-            const mode = await getPositionMode(acc);
-            const orderParams = { symbol: sym, side: order.side === 'LONG' ? 'BUY' : 'SELL', type: 'MARKET', quantity: qty };
-            if (mode === 'hedge') orderParams.positionSide = order.side;
-            else orderParams.positionSide = 'BOTH';
-            await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
-            addCopyLog('success', `✅ DCA ${sym} ${order.side} × ${qty} — ${acc.name}`);
-          } catch (e) { addCopyLog('fail', `❌ DCA ${acc.name}: ${e.message}`); }
-        }
-        order.done = true;
-        tgSend(`🔄 تعزيز تلقائي\n#${sym.replace('USDT','/USDT')}\n${order.side} عند $${price}\nحسابات: ${targets.length}`, STATE.settings.cxChat);
-        broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
-      }
-    }
   } catch (e) {
-    if (!STATE._errLogged) { STATE._errLogged = {}; }
-    if (!STATE._errLogged[sym]) { console.error(`scanSym error ${sym}:`, e.message); STATE._errLogged[sym] = true; }
     STATE.symbolData[sym] = { rsi: null, prevRsi: null, signal: null, conf: null, zone: 'neutral', error: true };
   }
 }
@@ -571,17 +487,19 @@ function addCopyLog(type, text) {
   broadcast({ type: 'copyLog', data: STATE.copyLog[0] });
 }
 
-const positionModeCache = {};
 async function getPositionMode(acc) {
-  if (positionModeCache[acc.id]) return positionModeCache[acc.id];
   try {
     const d = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v1/positionSide/dual');
-    const mode = d.dualSidePosition ? 'hedge' : 'oneway';
-    positionModeCache[acc.id] = mode;
-    return mode;
+    return d.dualSidePosition ? 'hedge' : 'oneway';
   } catch (e) { return 'oneway'; }
 }
 
+
+// precision تلقائي بناءً على السعر
+function smartQty(rawQty, price) {
+  const prec = price >= 1000 ? 3 : price >= 10 ? 2 : price >= 0.1 ? 1 : 0;
+  return Math.floor(rawQty * Math.pow(10, prec)) / Math.pow(10, prec);
+}
 async function openFollower(acc, mPos) {
   try {
     const bal = await getBalance(acc);
@@ -592,9 +510,7 @@ async function openFollower(acc, mPos) {
     const side = isLong ? 'BUY' : 'SELL';
     const price = livePrices[sym] || parseFloat(mPos.markPrice) || 1;
     const lev = Math.min(parseFloat(mPos.leverage) || 20, 125);
-    const rawQty = (bal * (ratio / 100) * lev) / price;
-    const precision = await getQtyPrecision(sym);
-    const qty = roundQty(rawQty, precision);
+    const qty = smartQty((bal * (ratio / 100) * lev) / price, price);
     if (qty <= 0) throw new Error('الكمية صغيرة جداً');
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
     // تحقق من نوع الـ position mode
@@ -617,7 +533,7 @@ async function closeFollower(acc, sym, posAmt) {
   try {
     const isLong = posAmt > 0;
     const side = isLong ? 'SELL' : 'BUY';
-    const prc4 = await getQtyPrecision(sym); const qty = roundQty(Math.abs(posAmt), prc4).toFixed(prc4);
+    const qty = Math.abs(posAmt).toFixed(3);
     const mode = await getPositionMode(acc);
     const orderParams = { symbol: sym, side, type: 'MARKET', quantity: qty };
     if (mode === 'hedge') {
@@ -627,30 +543,6 @@ async function closeFollower(acc, sym, posAmt) {
       orderParams.reduceOnly = true;
     }
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
-
-    // حفظ النتيجة في stats
-    if (!acc.stats) acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
-    acc.stats.closes++;
-
-    // حساب الربح/الخسارة
-    const entry = acc.livePositions?.find(p => p.symbol === sym);
-    if (entry) {
-      const pnl = parseFloat(entry.unRealizedProfit) || 0;
-      const entryPrice = parseFloat(entry.entryPrice) || 0;
-      const markPrice = parseFloat(entry.markPrice) || livePrices[sym] || entryPrice;
-      const pct = entryPrice ? ((markPrice - entryPrice) / entryPrice * 100 * (isLong ? 1 : -1)) : 0;
-      if (pct >= 0) { acc.stats.wins++; } else { acc.stats.losses++; }
-      acc.stats.tot = (acc.stats.tot || 0) + pct;
-
-      // حفظ في سجل الصفقات المغلقة للحساب
-      if (!acc.closedTrades) acc.closedTrades = [];
-      acc.closedTrades = [{
-        symbol: sym, side: isLong ? 'LONG' : 'SHORT',
-        entryPrice, exitPrice: markPrice, pnl, pct,
-        closeTs: Date.now(), closeTime: nowStr()
-      }, ...acc.closedTrades].slice(0, 200);
-    }
-
     addCopyLog('success', `🔒 ${acc.name}: أُغلقت ${sym}`);
     return true;
   } catch (e) { addCopyLog('fail', `❌ إغلاق ${acc.name}/${sym}: ${e.message}`); return false; }
@@ -762,8 +654,7 @@ function getSafeAccounts() {
     balanceAt: a.balanceAt,
     livePositions: a.livePositions || [],
     apiOk: a.apiOk,
-    stats: a.stats || { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 },
-    closedTrades: (a.closedTrades || []).slice(0, 50)
+    stats: a.stats || { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 }
   }));
 }
 
@@ -789,7 +680,6 @@ function getPublicState() {
     copyOn: STATE.copyOn,
     copyLog: STATE.copyLog.slice(0, 50),
     accounts: getSafeAccounts(),
-    dcaOrders: STATE.dcaOrders,
     lastUpdate: nowStr(),
   };
 }
@@ -888,51 +778,6 @@ async function handleClientMsg(msg) {
       }
       break;
     }
-
-    // ─── إرسال تقرير مشترك على تلغرام ───
-    case 'sendReport': {
-      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
-      if (!acc) break;
-      const st = acc.stats || {};
-      const closed = acc.closedTrades || [];
-      const pos = acc.livePositions || [];
-      const pnlOpen = pos.reduce((s, p) => s + parseFloat(p.unRealizedProfit || 0), 0);
-      const wr = st.closes ? (st.wins / st.closes * 100).toFixed(0) : 0;
-      const lines = [
-        `📊 تقرير: ${acc.name}`,
-        `━━━━━━━━━━━━━━━`,
-        `💵 الرصيد: $${parseFloat(acc.liveBalance || acc.balance || 0).toFixed(2)}`,
-        `📈 صفقات مفتوحة: ${pos.length}`,
-        `💹 PnL مفتوح: ${pnlOpen >= 0 ? '+' : ''}$${pnlOpen.toFixed(2)}`,
-        ``,
-        `📋 الصفقات المغلقة: ${st.closes || 0}`,
-        `✅ رابحة: ${st.wins || 0}`,
-        `❌ خاسرة: ${st.losses || 0}`,
-        `🎯 نسبة النجاح: ${wr}%`,
-        `📊 الأداء الكلي: ${(st.tot || 0) >= 0 ? '+' : ''}${(st.tot || 0).toFixed(2)}%`,
-      ];
-      if (closed.length > 0) {
-        lines.push('', '📜 آخر الصفقات:');
-        closed.slice(0, 5).forEach(t => {
-          lines.push(`${t.pct >= 0 ? '✅' : '❌'} ${t.symbol}: ${t.pct >= 0 ? '+' : ''}${t.pct?.toFixed(2)}% | $${t.pnl?.toFixed(2)}`);
-        });
-      }
-      await tgSend(lines.join('\n'), STATE.settings.cxChatClose || STATE.settings.cxChat);
-      broadcast({ type: 'reportSent', data: { id: acc.id } });
-      break;
-    }
-
-    // ─── إغلاق صفقة محددة لحساب معين ───
-    case 'closeOnePosition': {
-      const { accId, symbol, posAmt } = msg.data;
-      const acc = STATE.copyAccounts.find(a => a.id === accId);
-      if (acc?.apiKey) {
-        await closeFollower(acc, symbol, posAmt);
-        try { acc.livePositions = await getPositions(acc); acc.liveBalance = await getBalance(acc); } catch (e) {}
-        broadcast({ type: 'accounts', data: getSafeAccounts() });
-      }
-      break;
-    }
     case 'confirmTrade': {
       const a = msg.data;
       STATE.openTrades = [{ id: Date.now(), symbol: a.symbol, side: a.side, entryPrice: livePrices[a.symbol] || 0, openTime: a.time, openTs: Date.now(), sl: STATE.settings.cxSL, tp1: STATE.settings.cxTP1, leverage: STATE.settings.cxLev, margin: STATE.settings.cxMargin, label: a.label }, ...STATE.openTrades];
@@ -956,7 +801,7 @@ async function handleClientMsg(msg) {
           const lev = Math.min(parseInt(st.cxLev) || 20, await getMaxLev(sym));
           const amtStr = st.cxAmt || '5%';
           const amtPct = parseFloat(amtStr) / 100;
-          const precision1 = await getQtyPrecision(sym); const qty = roundQty((bal * amtPct * lev) / price, precision1);
+          const qty = smartQty((bal * amtPct * lev) / price, price);
           if (qty <= 0) throw new Error('الكمية صغيرة');
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
@@ -993,7 +838,7 @@ async function handleClientMsg(msg) {
           const pos = (await getPositions(acc)).find(p => p.symbol === t.symbol);
           if (!pos) continue;
           const totalAmt = Math.abs(parseFloat(pos.positionAmt));
-          const prc3 = await getQtyPrecision(t.symbol); const closeAmt = roundQty(totalAmt * (pct / 100), prc3);
+          const closeAmt = smartQty(totalAmt * (pct / 100), 1);
           if (closeAmt <= 0) continue;
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
             symbol: t.symbol, side: t.side === 'LONG' ? 'SELL' : 'BUY',
@@ -1029,32 +874,9 @@ async function handleClientMsg(msg) {
     case 'unlockSym':
       delete STATE.sentSigs[msg.data.sym];
       break;
-    case 'addDCA': {
-      const { sym, price, pct, side, accIds, lev } = msg.data;
-      const id = Date.now();
-      STATE.dcaOrders.push({ id, sym, price: parseFloat(price), pct: parseFloat(pct), side, accIds: accIds || [], lev: lev || 20, done: false, createdAt: nowStr() });
-      broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
-      addCopyLog('info', `📌 DCA جديد: ${sym} ${side} عند $${price} — ${pct}%`);
+    case 'sendSignalManual':
+      await tgSend(buildMsg(msg.data.sym, msg.data.side), STATE.settings.cxChat);
       break;
-    }
-    case 'removeDCA': {
-      STATE.dcaOrders = STATE.dcaOrders.filter(o => o.id !== msg.data.id);
-      broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
-      break;
-    }
-    case 'sendSignalManual': {
-      const { sym, side } = msg.data;
-      const st = STATE.settings;
-      let lv = parseInt(st.cxLev) || 20;
-      const mx = await getMaxLev(sym);
-      let note = '';
-      if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد الأقصى ${mx}X)`; }
-      const origLev = st.cxLev; st.cxLev = String(lv);
-      const text = buildMsg(sym, side) + note;
-      st.cxLev = origLev;
-      await tgSend(text, st.cxChat);
-      break;
-    }
   }
 }
 
@@ -1111,16 +933,6 @@ async function init() {
   console.log('🚀 RSI Scanner Pro v3 starting...');
   try {
     const d = await fetchBinance('/fapi/v1/exchangeInfo');
-    // تخزين exchangeInfo للاستخدام لاحقاً في getQtyPrecision
-    exchangeInfoCache = d;
-    // تحميل الـ precision لكل العملات مرة واحدة
-    d.symbols?.forEach(s => {
-      const lot = s.filters?.find(f => f.filterType === 'LOT_SIZE');
-      if (lot?.stepSize) {
-        const step = parseFloat(lot.stepSize);
-        qtyPrecisionCache[s.symbol] = step >= 1 ? 0 : (step.toString().split('.')[1] || '').replace(/0+$/, '').length;
-      }
-    });
     STATE.symbols = d.symbols
       .filter(s => s.quoteAsset === 'USDT' && s.contractType === 'PERPETUAL' && s.status === 'TRADING')
       .map(s => s.symbol).sort();
