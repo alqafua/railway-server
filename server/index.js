@@ -224,30 +224,6 @@ async function getMaxLev(sym) {
   } catch (e) { return 125; }
 }
 
-// جلب دقة الكمية لكل عملة
-const qtyPrecisionCache = {};
-async function getQtyPrecision(sym) {
-  if (qtyPrecisionCache[sym] !== undefined) return qtyPrecisionCache[sym];
-  try {
-    const d = await fetchBinance(`/fapi/v1/exchangeInfo`);
-    const info = d.symbols?.find(s => s.symbol === sym);
-    const lotFilter = info?.filters?.find(f => f.filterType === 'LOT_SIZE');
-    if (lotFilter?.stepSize) {
-      const step = parseFloat(lotFilter.stepSize);
-      const precision = step >= 1 ? 0 : String(step).split('.')[1]?.length || 3;
-      qtyPrecisionCache[sym] = precision;
-      return precision;
-    }
-  } catch (e) {}
-  qtyPrecisionCache[sym] = 3;
-  return 3;
-}
-
-function roundQty(qty, precision) {
-  const factor = Math.pow(10, precision);
-  return Math.floor(qty * factor) / factor;
-}
-
 async function hmac256(secret, msg) {
   const key = crypto.createHmac('sha256', secret);
   key.update(msg);
@@ -423,7 +399,7 @@ async function scanSym(sym) {
           if (!acc.apiKey) continue;
           try {
             const bal = await getBalance(acc);
-            const prc2 = await getQtyPrecision(order.sym); const qty = roundQty((bal * (parseFloat(order.pct) / 100) * parseInt(order.lev || 20)) / price, prc2);
+            const qty = parseFloat(((bal * (parseFloat(order.pct) / 100) * parseInt(order.lev || 20)) / price).toFixed(3));
             if (qty <= 0) continue;
             const mode = await getPositionMode(acc);
             const orderParams = { symbol: sym, side: order.side === 'LONG' ? 'BUY' : 'SELL', type: 'MARKET', quantity: qty };
@@ -580,9 +556,7 @@ async function openFollower(acc, mPos) {
     const side = isLong ? 'BUY' : 'SELL';
     const price = livePrices[sym] || parseFloat(mPos.markPrice) || 1;
     const lev = Math.min(parseFloat(mPos.leverage) || 20, 125);
-    const rawQty = (bal * (ratio / 100) * lev) / price;
-    const precision = await getQtyPrecision(sym);
-    const qty = roundQty(rawQty, precision);
+    const qty = parseFloat(((bal * (ratio / 100) * lev) / price).toFixed(3));
     if (qty <= 0) throw new Error('الكمية صغيرة جداً');
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
     // تحقق من نوع الـ position mode
@@ -605,7 +579,7 @@ async function closeFollower(acc, sym, posAmt) {
   try {
     const isLong = posAmt > 0;
     const side = isLong ? 'SELL' : 'BUY';
-    const prc4 = await getQtyPrecision(sym); const qty = roundQty(Math.abs(posAmt), prc4).toFixed(prc4);
+    const qty = Math.abs(posAmt).toFixed(3);
     const mode = await getPositionMode(acc);
     const orderParams = { symbol: sym, side, type: 'MARKET', quantity: qty };
     if (mode === 'hedge') {
@@ -944,7 +918,7 @@ async function handleClientMsg(msg) {
           const lev = Math.min(parseInt(st.cxLev) || 20, await getMaxLev(sym));
           const amtStr = st.cxAmt || '5%';
           const amtPct = parseFloat(amtStr) / 100;
-          const precision1 = await getQtyPrecision(sym); const qty = roundQty((bal * amtPct * lev) / price, precision1);
+          const qty = parseFloat(((bal * amtPct * lev) / price).toFixed(3));
           if (qty <= 0) throw new Error('الكمية صغيرة');
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
@@ -981,7 +955,7 @@ async function handleClientMsg(msg) {
           const pos = (await getPositions(acc)).find(p => p.symbol === t.symbol);
           if (!pos) continue;
           const totalAmt = Math.abs(parseFloat(pos.positionAmt));
-          const prc3 = await getQtyPrecision(t.symbol); const closeAmt = roundQty(totalAmt * (pct / 100), prc3);
+          const closeAmt = parseFloat((totalAmt * (pct / 100)).toFixed(3));
           if (closeAmt <= 0) continue;
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
             symbol: t.symbol, side: t.side === 'LONG' ? 'SELL' : 'BUY',
