@@ -157,6 +157,7 @@ function checkDiv(cls, ind, type) {
 
 function detectSignal(pv, cu, cls, id, ed) {
   if (pv === null || cu === null) return null;
+  if (!id || !id.length) return null;
   const rm = STATE.settings.revMode, rv = parseInt(STATE.settings.revCount) || 1;
   if (rm === 'candles' && rv > 1 && id.length >= rv) {
     const n = id.slice(-rv);
@@ -171,12 +172,14 @@ function detectSignal(pv, cu, cls, id, ed) {
 
 function detectConf(pv, cu, cls, id, ed) {
   if (pv === null || cu === null) return null;
+  if (!id || !id.length) return null;
   if (pv <= 30 && cu > pv && cu <= 30) { if (ed && !checkDiv(cls, id, 'LONG')) return null; return { type: 'cl', label: '⚡ شراء أكيد', color: 'confirmed', emoji: '⚡🟢', side: 'LONG' }; }
   if (pv >= 70 && cu < pv && cu >= 70) { if (ed && !checkDiv(cls, id, 'SHORT')) return null; return { type: 'cs', label: '⚡ بيع أكيد', color: 'confirmed', emoji: '⚡🔴', side: 'SHORT' }; }
   return null;
 }
 
 function detectTrail(sym, cu, cls, id, ed) {
+  if (!id || !id.length) id = [];
   const st = STATE.settings;
   if (!STATE.rsiPeaks[sym]) STATE.rsiPeaks[sym] = { sp: null, sf: false, lp: null, lf: false };
   const pk = STATE.rsiPeaks[sym];
