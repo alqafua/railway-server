@@ -44,7 +44,6 @@ const STATE = {
   settings: {
     mode: 'SMA', maPeriod: 14, interval: '1h',
     autoSend: false, enableDiv: true, blockOpen: true,
-    sigFilters: { ob: true, os: true, conf: true, trail: true },
     cxMargin: 'Cross', cxLev: '20', cxAmt: '5%',
     cxSLon: true, cxSL: '2',
     cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
@@ -333,19 +332,6 @@ function triggerAlert(sym, sig, val) {
   if (st.blockOpen && STATE.openTrades.some(t => t.symbol === sym)) return;
   if (STATE.sentSigs[sym]) return;
   if (!isLiquid(sym)) return;
-
-  // ─── فلتر أنواع الإشارات ───
-  // sig.type: 'a70'=تجاوز70, 'b70'=نزل70, 'b30'=نزل30, 'a30'=صعد30, 'cl'=أكيدة شراء, 'cs'=أكيدة بيع, 'ts'=trail short, 'tl'=trail long
-  const sigFilters = st.sigFilters || { ob: true, os: true, conf: true, trail: true };
-  const isOB = ['a70', 'b70'].includes(sig.type); // تشبع بيع (OB)
-  const isOS = ['b30', 'a30'].includes(sig.type); // تشبع شراء (OS)
-  const isConf = ['cl', 'cs'].includes(sig.type); // أكيدة
-  const isTrail = ['ts', 'tl'].includes(sig.type); // Trailing
-  if (isOB && !sigFilters.ob) return;
-  if (isOS && !sigFilters.os) return;
-  if (isConf && !sigFilters.conf) return;
-  if (isTrail && !sigFilters.trail) return;
-
   STATE.cooldowns[key] = now;
   alertId++;
   const item = {
