@@ -44,6 +44,7 @@ const STATE = {
   settings: {
     mode: 'SMA', maPeriod: 14, interval: '1h',
     autoSend: false, enableDiv: true, blockOpen: true,
+    sigFilters: { ob: true, os: true, conf: true, trail: true },
     cxMargin: 'Cross', cxLev: '20', cxAmt: '5%',
     cxSLon: true, cxSL: '2',
     cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
@@ -332,6 +333,19 @@ function triggerAlert(sym, sig, val) {
   if (st.blockOpen && STATE.openTrades.some(t => t.symbol === sym)) return;
   if (STATE.sentSigs[sym]) return;
   if (!isLiquid(sym)) return;
+
+  // ─── فلتر أنواع الإشارات ───
+  // sig.type: 'a70'=تجاوز70, 'b70'=نزل70, 'b30'=نزل30, 'a30'=صعد30, 'cl'=أكيدة شراء, 'cs'=أكيدة بيع, 'ts'=trail short, 'tl'=trail long
+  const sigFilters = st.sigFilters || { ob: true, os: true, conf: true, trail: true };
+  const isOB = ['a70', 'b70'].includes(sig.type); // تشبع بيع (OB)
+  const isOS = ['b30', 'a30'].includes(sig.type); // تشبع شراء (OS)
+  const isConf = ['cl', 'cs'].includes(sig.type); // أكيدة
+  const isTrail = ['ts', 'tl'].includes(sig.type); // Trailing
+  if (isOB && !sigFilters.ob) return;
+  if (isOS && !sigFilters.os) return;
+  if (isConf && !sigFilters.conf) return;
+  if (isTrail && !sigFilters.trail) return;
+
   STATE.cooldowns[key] = now;
   alertId++;
   const item = {
@@ -494,12 +508,6 @@ async function getPositionMode(acc) {
   } catch (e) { return 'oneway'; }
 }
 
-
-// precision تلقائي بناءً على السعر
-function smartQty(rawQty, price) {
-  const prec = price >= 1000 ? 3 : price >= 10 ? 2 : price >= 0.1 ? 1 : 0;
-  return Math.floor(rawQty * Math.pow(10, prec)) / Math.pow(10, prec);
-}
 async function openFollower(acc, mPos) {
   try {
     const bal = await getBalance(acc);
@@ -510,7 +518,7 @@ async function openFollower(acc, mPos) {
     const side = isLong ? 'BUY' : 'SELL';
     const price = livePrices[sym] || parseFloat(mPos.markPrice) || 1;
     const lev = Math.min(parseFloat(mPos.leverage) || 20, 125);
-    const qty = smartQty((bal * (ratio / 100) * lev) / price, price);
+    const qty = parseFloat(((bal * (ratio / 100) * lev) / price).toFixed(3));
     if (qty <= 0) throw new Error('الكمية صغيرة جداً');
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
     // تحقق من نوع الـ position mode
@@ -543,6 +551,30 @@ async function closeFollower(acc, sym, posAmt) {
       orderParams.reduceOnly = true;
     }
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
+
+    // حفظ النتيجة في stats
+    if (!acc.stats) acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
+    acc.stats.closes++;
+
+    // حساب الربح/الخسارة
+    const entry = acc.livePositions?.find(p => p.symbol === sym);
+    if (entry) {
+      const pnl = parseFloat(entry.unRealizedProfit) || 0;
+      const entryPrice = parseFloat(entry.entryPrice) || 0;
+      const markPrice = parseFloat(entry.markPrice) || livePrices[sym] || entryPrice;
+      const pct = entryPrice ? ((markPrice - entryPrice) / entryPrice * 100 * (isLong ? 1 : -1)) : 0;
+      if (pct >= 0) { acc.stats.wins++; } else { acc.stats.losses++; }
+      acc.stats.tot = (acc.stats.tot || 0) + pct;
+
+      // حفظ في سجل الصفقات المغلقة للحساب
+      if (!acc.closedTrades) acc.closedTrades = [];
+      acc.closedTrades = [{
+        symbol: sym, side: isLong ? 'LONG' : 'SHORT',
+        entryPrice, exitPrice: markPrice, pnl, pct,
+        closeTs: Date.now(), closeTime: nowStr()
+      }, ...acc.closedTrades].slice(0, 200);
+    }
+
     addCopyLog('success', `🔒 ${acc.name}: أُغلقت ${sym}`);
     return true;
   } catch (e) { addCopyLog('fail', `❌ إغلاق ${acc.name}/${sym}: ${e.message}`); return false; }
@@ -654,7 +686,8 @@ function getSafeAccounts() {
     balanceAt: a.balanceAt,
     livePositions: a.livePositions || [],
     apiOk: a.apiOk,
-    stats: a.stats || { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 }
+    stats: a.stats || { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 },
+    closedTrades: (a.closedTrades || []).slice(0, 50)
   }));
 }
 
@@ -778,6 +811,51 @@ async function handleClientMsg(msg) {
       }
       break;
     }
+
+    // ─── إرسال تقرير مشترك على تلغرام ───
+    case 'sendReport': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (!acc) break;
+      const st = acc.stats || {};
+      const closed = acc.closedTrades || [];
+      const pos = acc.livePositions || [];
+      const pnlOpen = pos.reduce((s, p) => s + parseFloat(p.unRealizedProfit || 0), 0);
+      const wr = st.closes ? (st.wins / st.closes * 100).toFixed(0) : 0;
+      const lines = [
+        `📊 تقرير: ${acc.name}`,
+        `━━━━━━━━━━━━━━━`,
+        `💵 الرصيد: $${parseFloat(acc.liveBalance || acc.balance || 0).toFixed(2)}`,
+        `📈 صفقات مفتوحة: ${pos.length}`,
+        `💹 PnL مفتوح: ${pnlOpen >= 0 ? '+' : ''}$${pnlOpen.toFixed(2)}`,
+        ``,
+        `📋 الصفقات المغلقة: ${st.closes || 0}`,
+        `✅ رابحة: ${st.wins || 0}`,
+        `❌ خاسرة: ${st.losses || 0}`,
+        `🎯 نسبة النجاح: ${wr}%`,
+        `📊 الأداء الكلي: ${(st.tot || 0) >= 0 ? '+' : ''}${(st.tot || 0).toFixed(2)}%`,
+      ];
+      if (closed.length > 0) {
+        lines.push('', '📜 آخر الصفقات:');
+        closed.slice(0, 5).forEach(t => {
+          lines.push(`${t.pct >= 0 ? '✅' : '❌'} ${t.symbol}: ${t.pct >= 0 ? '+' : ''}${t.pct?.toFixed(2)}% | $${t.pnl?.toFixed(2)}`);
+        });
+      }
+      await tgSend(lines.join('\n'), STATE.settings.cxChatClose || STATE.settings.cxChat);
+      broadcast({ type: 'reportSent', data: { id: acc.id } });
+      break;
+    }
+
+    // ─── إغلاق صفقة محددة لحساب معين ───
+    case 'closeOnePosition': {
+      const { accId, symbol, posAmt } = msg.data;
+      const acc = STATE.copyAccounts.find(a => a.id === accId);
+      if (acc?.apiKey) {
+        await closeFollower(acc, symbol, posAmt);
+        try { acc.livePositions = await getPositions(acc); acc.liveBalance = await getBalance(acc); } catch (e) {}
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
+      break;
+    }
     case 'confirmTrade': {
       const a = msg.data;
       STATE.openTrades = [{ id: Date.now(), symbol: a.symbol, side: a.side, entryPrice: livePrices[a.symbol] || 0, openTime: a.time, openTs: Date.now(), sl: STATE.settings.cxSL, tp1: STATE.settings.cxTP1, leverage: STATE.settings.cxLev, margin: STATE.settings.cxMargin, label: a.label }, ...STATE.openTrades];
@@ -801,7 +879,7 @@ async function handleClientMsg(msg) {
           const lev = Math.min(parseInt(st.cxLev) || 20, await getMaxLev(sym));
           const amtStr = st.cxAmt || '5%';
           const amtPct = parseFloat(amtStr) / 100;
-          const qty = smartQty((bal * amtPct * lev) / price, price);
+          const qty = parseFloat(((bal * amtPct * lev) / price).toFixed(3));
           if (qty <= 0) throw new Error('الكمية صغيرة');
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
@@ -838,7 +916,7 @@ async function handleClientMsg(msg) {
           const pos = (await getPositions(acc)).find(p => p.symbol === t.symbol);
           if (!pos) continue;
           const totalAmt = Math.abs(parseFloat(pos.positionAmt));
-          const closeAmt = smartQty(totalAmt * (pct / 100), 1);
+          const closeAmt = parseFloat((totalAmt * (pct / 100)).toFixed(3));
           if (closeAmt <= 0) continue;
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
             symbol: t.symbol, side: t.side === 'LONG' ? 'SELL' : 'BUY',
@@ -874,9 +952,19 @@ async function handleClientMsg(msg) {
     case 'unlockSym':
       delete STATE.sentSigs[msg.data.sym];
       break;
-    case 'sendSignalManual':
-      await tgSend(buildMsg(msg.data.sym, msg.data.side), STATE.settings.cxChat);
+    case 'sendSignalManual': {
+      const { sym, side } = msg.data;
+      const st = STATE.settings;
+      let lv = parseInt(st.cxLev) || 20;
+      const mx = await getMaxLev(sym);
+      let note = '';
+      if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد الأقصى ${mx}X)`; }
+      const origLev = st.cxLev; st.cxLev = String(lv);
+      const text = buildMsg(sym, side) + note;
+      st.cxLev = origLev;
+      await tgSend(text, st.cxChat);
       break;
+    }
   }
 }
 
