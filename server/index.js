@@ -442,6 +442,8 @@ async function scanSym(sym) {
       }
     }
   } catch (e) {
+    if (!STATE._errLogged) { STATE._errLogged = {}; }
+    if (!STATE._errLogged[sym]) { console.error(`scanSym error ${sym}:`, e.message); STATE._errLogged[sym] = true; }
     STATE.symbolData[sym] = { rsi: null, prevRsi: null, signal: null, conf: null, zone: 'neutral', error: true };
   }
 }
@@ -566,10 +568,14 @@ function addCopyLog(type, text) {
   broadcast({ type: 'copyLog', data: STATE.copyLog[0] });
 }
 
+const positionModeCache = {};
 async function getPositionMode(acc) {
+  if (positionModeCache[acc.id]) return positionModeCache[acc.id];
   try {
     const d = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v1/positionSide/dual');
-    return d.dualSidePosition ? 'hedge' : 'oneway';
+    const mode = d.dualSidePosition ? 'hedge' : 'oneway';
+    positionModeCache[acc.id] = mode;
+    return mode;
   } catch (e) { return 'oneway'; }
 }
 
