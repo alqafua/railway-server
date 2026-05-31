@@ -534,6 +534,7 @@ function startBinanceWS() {
             const old = STATE.symbolData[sym];
             const oldZone = old.zone || 'neutral';
             STATE.symbolData[sym].rsi = cu;
+            STATE.symbolData[sym].error = false; // مسح حالة الخطأ عند نجاح الحساب
             const newZone = cu >= 70 ? 'ob' : cu <= 30 ? 'os' : 'neutral';
             STATE.symbolData[sym].zone = newZone;
 
@@ -564,7 +565,7 @@ function startBinanceWS() {
       }
 
       if (STATE.symbolData[sym]) {
-        broadcastThrottled({ type: 'priceUpdate', data: { sym, rsi: STATE.symbolData[sym].rsi, zone: STATE.symbolData[sym].zone, price: close } });
+        broadcastThrottled({ type: 'priceUpdate', data: { sym, rsi: STATE.symbolData[sym].rsi, zone: STATE.symbolData[sym].zone, price: close, error: STATE.symbolData[sym].error } });
       }
     } catch (e) {}
   });
