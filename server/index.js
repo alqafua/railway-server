@@ -69,6 +69,7 @@ const STATE = {
   sentSigs: {},
   copyOn: false,
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
+  sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
 };
 
 // ══════════════════════════════════════════════
@@ -449,7 +450,10 @@ async function scanSym(sym, candles) {
             }
             await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', oParams);
             addCopyLog('success', `✅ DCA ${sym} ${order.side} × ${qty} [${oParams.type}] — ${acc.name}`);
-          } catch (e) { addCopyLog('fail', `❌ DCA ${acc.name}: ${e.message}`); }
+          } catch (e) {
+            addCopyLog('fail', `❌ DCA ${acc.name}: ${e.message}`);
+            reportError(`DCA ${sym}`, e.message);
+          }
         }
         order.done = true;
         db.saveDcaOrders(STATE.dcaOrders);
@@ -636,7 +640,11 @@ async function openFollower(acc, mPos) {
     acc.stats.opens++;
     addCopyLog('success', `✅ ${acc.name}: فُتحت ${sym} ${isLong ? 'LONG' : 'SHORT'} × ${qty}`);
     return true;
-  } catch (e) { addCopyLog('fail', `❌ ${acc.name}/${mPos.symbol}: ${e.message}`); return false; }
+  } catch (e) {
+    addCopyLog('fail', `❌ ${acc.name}/${mPos.symbol}: ${e.message}`);
+    reportError(`Copy فتح ${mPos.symbol}`, e.message);
+    return false;
+  }
 }
 
 async function closeFollower(acc, sym, posAmt) {
@@ -665,7 +673,11 @@ async function closeFollower(acc, sym, posAmt) {
     }
     addCopyLog('success', `🔒 ${acc.name}: أُغلقت ${sym}`);
     return true;
-  } catch (e) { addCopyLog('fail', `❌ إغلاق ${acc.name}/${sym}: ${e.message}`); return false; }
+  } catch (e) {
+    addCopyLog('fail', `❌ إغلاق ${acc.name}/${sym}: ${e.message}`);
+    reportError(`Copy إغلاق ${sym}`, e.message);
+    return false;
+  }
 }
 
 let rateLimitPause = 0;
@@ -797,7 +809,7 @@ async function startCopy() {
     STATE.masterPositions = {};
   }
 
-  copyTimer = setInterval(syncCopy, 10000);
+  copyTimer = setInterval(syncCopy, 5000);
   addCopyLog('info', '▶️ بدأ النسخ — فقط الصفقات الجديدة من الآن');
   broadcast({ type: 'copyOn', data: true });
 }
@@ -854,6 +866,18 @@ function broadcast(msg) {
   clients.forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(str); });
 }
 
+let sysErrorTimer = null;
+function reportError(loc, errMsg) {
+  STATE.sysStatus = { ok: false, lastError: errMsg, errorLoc: loc, errorTs: Date.now() };
+  broadcast({ type: 'sysStatus', data: STATE.sysStatus });
+  if (sysErrorTimer) clearTimeout(sysErrorTimer);
+  sysErrorTimer = setTimeout(() => {
+    STATE.sysStatus = { ok: true, lastError: null, errorLoc: null, errorTs: null };
+    broadcast({ type: 'sysStatus', data: STATE.sysStatus });
+    sysErrorTimer = null;
+  }, 60000);
+}
+
 function getPublicState() {
   return {
     symbols: STATE.symbols,
@@ -868,7 +892,8 @@ function getPublicState() {
     accounts: getSafeAccounts(),
     dcaOrders: STATE.dcaOrders,
     pendingOrders: STATE.pendingOrders,
-    sentSigs: STATE.sentSigs,   // إصلاح — أُضيف لمزامنة العملات المحجوبة
+    sentSigs: STATE.sentSigs,
+    sysStatus: STATE.sysStatus,
     lastUpdate: nowStr(),
   };
 }
@@ -934,6 +959,12 @@ async function handleClientMsg(msg) {
     }
     case 'toggleCopy': STATE.copyOn ? stopCopy() : startCopy(); break;
     case 'emergencyStop': await emergencyStop(); break;
+    case 'clearSysError': {
+      if (sysErrorTimer) { clearTimeout(sysErrorTimer); sysErrorTimer = null; }
+      STATE.sysStatus = { ok: true, lastError: null, errorLoc: null, errorTs: null };
+      broadcast({ type: 'sysStatus', data: STATE.sysStatus });
+      break;
+    }
 
     case 'addAccount': {
       const acc = msg.data;
@@ -1105,6 +1136,7 @@ async function handleClientMsg(msg) {
       } catch (e) {
         console.error('manualOrder error:', e);
         addCopyLog('fail', `❌ يدوي ${sym} — ${acc.name}: ${e.message}`);
+        reportError(`أمر يدوي ${sym}`, e.message);
         broadcast({ type: 'manualOrderResult', data: { success: false, error: e.message } });
       }
       break;
