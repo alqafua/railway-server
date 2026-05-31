@@ -229,11 +229,24 @@ async function getMaxLev(sym) {
 
 const lotSizeCache = {}; // sym -> stepSize (from exchangeInfo)
 
+// جلب stepSize ديناميكياً إذا ما كان في الكاش (للعملات التي لم تُحمَّل عند البدء)
+async function ensureLotSize(sym) {
+  if (lotSizeCache[sym]) return;
+  try {
+    const info = await fetchBinance(`/fapi/v1/exchangeInfo?symbol=${sym}`);
+    const lot = info.symbols?.[0]?.filters?.find(f => f.filterType === 'LOT_SIZE');
+    if (lot) lotSizeCache[sym] = parseFloat(lot.stepSize);
+  } catch (e) {}
+}
+
 function roundQty(qty, sym) {
   const step = lotSizeCache[sym] || 0.001;
   const precision = step >= 1 ? 0 : Math.max(0, -Math.floor(Math.log10(step)));
   return parseFloat((Math.floor(qty / step) * step).toFixed(precision));
 }
+
+// قفل لمنع التنفيذ المتزامن لنفس أمر DCA
+const dcaLocks = new Set();
 
 async function hmac256(secret, msg) {
   return crypto.createHmac('sha256', secret).update(msg).digest('hex');
@@ -396,11 +409,15 @@ async function scanSym(sym, candles) {
     const price = livePrices[sym];
     if (price && STATE.dcaOrders.length) {
       for (const order of STATE.dcaOrders.filter(o => o.sym === sym && !o.done)) {
-        const hit = order.side === 'LONG' ? price <= order.price : price >= order.price;
+        if (dcaLocks.has(order.id)) continue; // منع التنفيذ المتزامن
+        const hit = !order.price || order.side === 'LONG' ? price <= order.price || !order.price : price >= order.price;
         if (!hit) continue;
+        dcaLocks.add(order.id);
+        try {
         const master = STATE.copyAccounts.find(a => a.isMaster);
         const hasPos = master?.livePositions?.some(p => p.symbol === sym);
         if (!hasPos) { order.done = true; addCopyLog('info', `⏭ DCA ${sym}: ما في صفقة`); continue; }
+        await ensureLotSize(sym); // تأكد من وجود stepSize
         const targets = STATE.copyAccounts.filter(a => order.accIds.includes(a.id) && a.isEnabled !== false);
         for (const acc of targets) {
           if (!acc.apiKey) continue;
@@ -438,6 +455,7 @@ async function scanSym(sym, candles) {
         db.saveDcaOrders(STATE.dcaOrders);
         tgSend(`🔄 تعزيز\n#${sym.replace('USDT', '/USDT')}\n${order.side} عند $${price}\nنوع: ${order.orderType || 'MARKET'}\nحسابات: ${targets.length}`, STATE.settings.cxChat);
         broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
+        } finally { dcaLocks.delete(order.id); }
       }
     }
   } catch (e) {
@@ -1035,6 +1053,7 @@ async function handleClientMsg(msg) {
         const bal = await getBalance(acc);
         if (bal <= 0) throw new Error(`الرصيد صفر — تأكد من الـ API`);
         const price = livePrices[sym] || parseFloat(limitPrice) || 1;
+        await ensureLotSize(sym);
         const leverage = Math.min(parseInt(lev) || 20, await getMaxLev(sym));
         const amtPct = parseFloat(pct || 5) / 100;
         const rawQty = useAmt
