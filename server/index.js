@@ -8,18 +8,19 @@ const path = require('path');
 const fetch = require('node-fetch');
 const crypto = require('crypto');
 const cors = require('cors');
+const db = require('./db');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'rsi_scanner_secret_2024';
+const JWT_SECRET = process.env.JWT_SECRET || (() => { console.warn('⚠️ JWT_SECRET not set, using default (insecure)'); return 'rsi_scanner_secret_2024'; })();
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*';
 const BASE = 'https://fapi.binance.com';
 const WS_BASE = 'wss://fstream.binance.com/stream';
 
-// CORS — يسمح لـ Vercel يتصل بالسيرفر
+// CORS
 app.use(cors({
   origin: ALLOWED_ORIGINS === '*' ? '*' : ALLOWED_ORIGINS.split(','),
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -29,8 +30,28 @@ app.use(cors({
 app.options('*', cors());
 
 // ══════════════════════════════════════════════
-//  STATE (in-memory — كل شي في الذاكرة)
+//  STATE
 // ══════════════════════════════════════════════
+const DEFAULT_SETTINGS = {
+  mode: 'SMA', maPeriod: 14, interval: '1h',
+  autoSend: false, enableDiv: true, blockOpen: true,
+  sigFilters: { ob: true, os: true, conf: true, trail: true },
+  cxMargin: 'Cross', cxLev: '20', cxAmt: '5%',
+  cxSLon: true, cxSL: '2',
+  cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
+  cxTrailTp: 'off', cxTrailPct: '0.5', cxEntryTrail: '0.5%',
+  cxToken: '', cxChat: '', cxChatClose: '',
+  cxEntry2on: false, cxEntry2Dist: '2', cxEntry2Amt: '50',
+  cxEntry3on: false, cxEntry3Dist: '4', cxEntry3Amt: '50',
+  cxBEon: false,
+  trSon: false, trSstart: 75, trSgap: 3,
+  trLon: false, trLstart: 25, trLgap: 3,
+  liqVon: false, liqVmin: 50000000,
+  liqOon: false, liqOmin: 10000000,
+  revMode: 'candles', revCount: 1, rsiGap: 1,
+  dataMode: 'ws', soundEnabled: true,
+};
+
 const STATE = {
   symbols: [],
   symbolData: {},
@@ -41,47 +62,28 @@ const STATE = {
   copyAccounts: [],
   copyLog: [],
   masterPositions: {},
-  settings: {
-    mode: 'SMA', maPeriod: 14, interval: '1h',
-    autoSend: false, enableDiv: true, blockOpen: true,
-    sigFilters: { ob: true, os: true, conf: true, trail: true },
-    cxMargin: 'Cross', cxLev: '20', cxAmt: '5%',
-    cxSLon: true, cxSL: '2',
-    cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
-    cxTrailTp: 'off', cxTrailPct: '0.5', cxEntryTrail: '0.5%',
-    cxToken: '', cxChat: '', cxChatClose: '',
-    cxEntry2on: false, cxEntry2Dist: '2', cxEntry2Amt: '50',
-    cxEntry3on: false, cxEntry3Dist: '4', cxEntry3Amt: '50',
-    cxBEon: false,
-    trSon: false, trSstart: 75, trSgap: 3,
-    trLon: false, trLstart: 25, trLgap: 3,
-    liqVon: false, liqVmin: 50000000,
-    liqOon: false, liqOmin: 10000000,
-    revMode: 'candles', revCount: 1, rsiGap: 1,
-    dataMode: 'ws', soundEnabled: true,
-  },
-  dcaOrders: [], // أوامر التعزيز التلقائية
+  settings: { ...DEFAULT_SETTINGS },
+  dcaOrders: [],
   cooldowns: {},
   sentSigs: {},
   copyOn: false,
+  rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
 };
 
 // ══════════════════════════════════════════════
-//  AUTH
+//  AUTH + RATE LIMIT
 // ══════════════════════════════════════════════
-const USERS = [
-  { id: 1, username: 'Alqafua', passwordHash: bcrypt.hashSync('7007', 10) }
-];
+const ADMIN_USER = process.env.ADMIN_USER || 'Alqafua';
+const ADMIN_PASS_HASH = bcrypt.hashSync(process.env.ADMIN_PASS || '7007', 10);
+const USERS = [{ id: 1, username: ADMIN_USER, passwordHash: ADMIN_PASS_HASH }];
+
+const loginAttempts = new Map(); // IP -> { count, lockUntil }
 
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    next();
-  } catch (e) {
-    res.status(401).json({ error: 'Invalid token' });
-  }
+  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
+  catch (e) { res.status(401).json({ error: 'Invalid token' }); }
 }
 
 // ══════════════════════════════════════════════
@@ -208,26 +210,24 @@ const livePrices = {};
 const candleCache = {};
 let alertId = 0;
 
-async function fetchBinance(path) {
-  const res = await fetch(`${BASE}${path}`);
+async function fetchBinance(p) {
+  const res = await fetch(`${BASE}${p}`);
   if (!res.ok) throw new Error(`Binance ${res.status}`);
   return res.json();
 }
 
+const maxLevCache = {};
 async function getMaxLev(sym) {
-  if (STATE.symbolMeta[sym]?.ml) return STATE.symbolMeta[sym].ml;
+  if (maxLevCache[sym]) return maxLevCache[sym];
   try {
     const d = await fetchBinance(`/fapi/v1/leverageBracket?symbol=${sym}`);
     const l = d[0]?.brackets[0]?.initialLeverage || 125;
-    if (!STATE.symbolMeta[sym]) STATE.symbolMeta[sym] = {};
-    STATE.symbolMeta[sym].ml = l; return l;
+    maxLevCache[sym] = l; return l;
   } catch (e) { return 125; }
 }
 
 async function hmac256(secret, msg) {
-  const key = crypto.createHmac('sha256', secret);
-  key.update(msg);
-  return key.digest('hex');
+  return crypto.createHmac('sha256', secret).update(msg).digest('hex');
 }
 
 async function bFetch(apiKey, apiSecret, method, ep, params = {}) {
@@ -287,7 +287,7 @@ function buildMsg(sym, side) {
   if (st.cxTP2on) { L.push(`1) ${fp(tp1)} (${st.cxTP1Amt}%)`); L.push(`2) ${fp(tp2)} (${st.cxTP2Amt}%)`); }
   else L.push(`1) ${fp(tp1)}`);
   L.push('');
-  if (st.cxSLon) { L.push('Stop Targets:', `1) ${fp(sll)}`, ''); }
+  if (st.cxSLon) L.push('Stop Targets:', `1) ${fp(sll)}`, '');
   L.push('Trailing Configuration:', `Entry: Percentage (${st.cxEntryTrail})`);
   if (st.cxTrailTp === 'on') L.push(`Take-Profit: Percentage (${st.cxTrailPct}%)`);
   if (st.cxBEon) L.push('Stop: Breakeven - Trigger: Target (1)');
@@ -299,10 +299,12 @@ async function sendSignal(sym, side) {
   if (!st.autoSend || !st.cxToken || !st.cxChat) return;
   if (STATE.sentSigs[sym]) return;
   STATE.sentSigs[sym] = Date.now();
+
+  // إصلاح #5 — التحقق من الرافعة وتعديلها إلى 10 إذا تجاوزت الحد
   let lv = parseInt(st.cxLev) || 20;
   const mx = await getMaxLev(sym);
   let note = '';
-  if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X`; }
+  if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد ${mx}X)`; }
   const origLev = st.cxLev; st.cxLev = String(lv);
   const text = buildMsg(sym, side) + note;
   st.cxLev = origLev;
@@ -329,18 +331,17 @@ function isLiquid(sym) {
 function triggerAlert(sym, sig, val) {
   const st = STATE.settings;
   const key = `${sym}_${sig.type}`, now = Date.now();
-  if (STATE.cooldowns[key]) return; // منع التكرار حتى يتغير السيناريو
+  if (STATE.cooldowns[key]) return;
   if (st.blockOpen && STATE.openTrades.some(t => t.symbol === sym)) return;
   if (STATE.sentSigs[sym]) return;
   if (!isLiquid(sym)) return;
 
-  // ─── فلتر أنواع الإشارات ───
-  // sig.type: 'a70'=تجاوز70, 'b70'=نزل70, 'b30'=نزل30, 'a30'=صعد30, 'cl'=أكيدة شراء, 'cs'=أكيدة بيع, 'ts'=trail short, 'tl'=trail long
-  const sigFilters = st.sigFilters || { ob: true, os: true, conf: true, trail: true };
-  const isOB = ['a70', 'b70'].includes(sig.type); // تشبع بيع (OB)
-  const isOS = ['b30', 'a30'].includes(sig.type); // تشبع شراء (OS)
-  const isConf = ['cl', 'cs'].includes(sig.type); // أكيدة
-  const isTrail = ['ts', 'tl'].includes(sig.type); // Trailing
+  // إصلاح #2 — فلتر الإشارات يعمل بشكل صحيح مع الحفاظ على القيم الافتراضية
+  const sigFilters = { ob: true, os: true, conf: true, trail: true, ...st.sigFilters };
+  const isOB = ['a70', 'b70'].includes(sig.type);
+  const isOS = ['b30', 'a30'].includes(sig.type);
+  const isConf = ['cl', 'cs'].includes(sig.type);
+  const isTrail = ['ts', 'tl'].includes(sig.type);
   if (isOB && !sigFilters.ob) return;
   if (isOS && !sigFilters.os) return;
   if (isConf && !sigFilters.conf) return;
@@ -354,13 +355,14 @@ function triggerAlert(sym, sig, val) {
     time: nowStr(), mode: `${st.mode}(${st.mode === 'RSI' ? RSI_P : st.maPeriod})`, side: sig.side
   };
   STATE.alerts = [item, ...STATE.alerts].slice(0, 200);
+  db.saveAlert(item);
   sendSignal(sym, sig.side);
   broadcast({ type: 'alert', data: item });
 }
 
-async function scanSym(sym) {
+async function scanSym(sym, candles) {
   try {
-    const cls = candleCache[sym];
+    const cls = candles || candleCache[sym];
     if (!cls || cls.length < RSI_P + 2) return;
     livePrices[sym] = cls[cls.length - 1];
     const st = STATE.settings;
@@ -372,10 +374,8 @@ async function scanSym(sym) {
     const trail = detectTrail(sym, cu, cls, id, st.enableDiv);
     const zone = cu >= 70 ? 'ob' : cu <= 30 ? 'os' : 'neutral';
     const old = STATE.symbolData[sym] || {};
-    // لما RSI يخرج من المنطقة ويدخلها مرة ثانية — نمسح الـ cooldown
     const oldZone = old.zone || 'neutral';
     if (oldZone !== 'neutral' && zone === 'neutral') {
-      // خرج من المنطقة — امسح cooldowns لهذه العملة
       Object.keys(STATE.cooldowns).forEach(k => { if (k.startsWith(sym + '_')) delete STATE.cooldowns[k]; });
     }
     const fSig = trail || sig;
@@ -383,17 +383,15 @@ async function scanSym(sym) {
     if (fSig && (!old.signal || old.signal.type !== fSig.type)) triggerAlert(sym, fSig, cu);
     if (conf && (!old.conf || old.conf.type !== conf.type)) triggerAlert(sym, conf, cu);
 
-    // ─── فحص أوامر التعزيز ───
+    // فحص أوامر التعزيز
     const price = livePrices[sym];
     if (price && STATE.dcaOrders.length) {
       for (const order of STATE.dcaOrders.filter(o => o.sym === sym && !o.done)) {
         const hit = order.side === 'LONG' ? price <= order.price : price >= order.price;
         if (!hit) continue;
-        // تحقق إن في صفقة مفتوحة
         const master = STATE.copyAccounts.find(a => a.isMaster);
         const hasPos = master?.livePositions?.some(p => p.symbol === sym);
-        if (!hasPos) { order.done = true; addCopyLog('info', `⏭ DCA ${sym}: ما في صفقة مفتوحة`); continue; }
-        // نفذ التعزيز على الحسابات المحددة
+        if (!hasPos) { order.done = true; addCopyLog('info', `⏭ DCA ${sym}: ما في صفقة`); continue; }
         const targets = STATE.copyAccounts.filter(a => order.accIds.includes(a.id) && a.isEnabled !== false);
         for (const acc of targets) {
           if (!acc.apiKey) continue;
@@ -410,7 +408,8 @@ async function scanSym(sym) {
           } catch (e) { addCopyLog('fail', `❌ DCA ${acc.name}: ${e.message}`); }
         }
         order.done = true;
-        tgSend(`🔄 تعزيز تلقائي\n#${sym.replace('USDT','/USDT')}\n${order.side} عند $${price}\nحسابات: ${targets.length}`, STATE.settings.cxChat);
+        db.saveDcaOrders(STATE.dcaOrders);
+        tgSend(`🔄 تعزيز تلقائي\n#${sym.replace('USDT', '/USDT')}\n${order.side} عند $${price}\nحسابات: ${targets.length}`, STATE.settings.cxChat);
         broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
       }
     }
@@ -449,8 +448,7 @@ async function scanAll() {
 // ══════════════════════════════════════════════
 //  WEBSOCKET — Binance Live
 // ══════════════════════════════════════════════
-let binanceWs = null;
-let binanceReconn = null;
+let binanceWs = null, binanceReconn = null;
 
 function startBinanceWS() {
   if (!STATE.symbols.length) return;
@@ -458,7 +456,7 @@ function startBinanceWS() {
   const streams = STATE.symbols.map(s => `${s.toLowerCase()}@kline_${STATE.settings.interval}`).join('/');
   binanceWs = new WebSocket(`${WS_BASE}?streams=${streams}`);
   binanceWs.on('open', () => {
-    console.log('✅ Binance WebSocket connected');
+    console.log('✅ Binance WS connected');
     broadcast({ type: 'wsStatus', data: 'connected' });
   });
   binanceWs.on('message', (data) => {
@@ -468,35 +466,60 @@ function startBinanceWS() {
       const k = m.data.k, sym = k.s, close = parseFloat(k.c);
       livePrices[sym] = close;
       if (!candleCache[sym]) candleCache[sym] = [];
+
       if (k.x) {
+        // شمعة مغلقة — تحديث الكاش وفحص كامل
         candleCache[sym].push(close);
         if (candleCache[sym].length > 200) candleCache[sym] = candleCache[sym].slice(-200);
         scanSym(sym);
       } else {
+        // إصلاح #1 (تأخر الإشارات) — كشف الإشارات على الشمعة الحية بدون انتظار إغلاقها
         const a = candleCache[sym];
-        if (a.length > 0) {
+        if (a.length >= RSI_P + 2) {
           const st = STATE.settings;
-          const tmp = [...a.slice(0, -1), close];
-          if (tmp.length >= RSI_P + 2) {
-            const cu = computeInd(tmp, st.mode, st.maPeriod);
-            if (STATE.symbolData[sym]) {
-              STATE.symbolData[sym].rsi = cu;
-              STATE.symbolData[sym].zone = cu >= 70 ? 'ob' : cu <= 30 ? 'os' : 'neutral';
+          const tmp = [...a.slice(0, -1), close]; // استبدل آخر شمعة بالسعر الحي
+          const cu = computeInd(tmp, st.mode, st.maPeriod);
+          const pv = computeInd(a.slice(0, -1), st.mode, st.maPeriod);
+
+          if (cu !== null && STATE.symbolData[sym]) {
+            const old = STATE.symbolData[sym];
+            const oldZone = old.zone || 'neutral';
+            STATE.symbolData[sym].rsi = cu;
+            const newZone = cu >= 70 ? 'ob' : cu <= 30 ? 'os' : 'neutral';
+            STATE.symbolData[sym].zone = newZone;
+
+            // مسح cooldown عند الخروج من المنطقة
+            if (oldZone !== 'neutral' && newZone === 'neutral') {
+              Object.keys(STATE.cooldowns).forEach(ck => { if (ck.startsWith(sym + '_')) delete STATE.cooldowns[ck]; });
+            }
+
+            // كشف الإشارات على الشمعة الحية
+            if (pv !== null) {
+              const id = computeIndSeries(tmp, st.mode, st.maPeriod);
+              const sig = detectSignal(pv, cu, tmp, id, st.enableDiv);
+              const conf = detectConf(pv, cu, tmp, id, st.enableDiv);
+              const trail = detectTrail(sym, cu, tmp, id, st.enableDiv);
+              const fSig = trail || sig;
+              STATE.symbolData[sym].trailActive = !!trail;
+              if (fSig && (!old.signal || old.signal.type !== fSig.type)) {
+                STATE.symbolData[sym].signal = fSig;
+                triggerAlert(sym, fSig, cu);
+              }
+              if (conf && (!old.conf || old.conf.type !== conf.type)) {
+                STATE.symbolData[sym].conf = conf;
+                triggerAlert(sym, conf, cu);
+              }
             }
           }
         }
       }
-      // broadcast price update
+
       if (STATE.symbolData[sym]) {
         broadcastThrottled({ type: 'priceUpdate', data: { sym, rsi: STATE.symbolData[sym].rsi, zone: STATE.symbolData[sym].zone, price: close } });
       }
     } catch (e) {}
   });
-  binanceWs.on('close', () => {
-    console.log('⚠️ Binance WS closed, reconnecting...');
-    broadcast({ type: 'wsStatus', data: 'disconnected' });
-    scheduleReconn();
-  });
+  binanceWs.on('close', () => { broadcast({ type: 'wsStatus', data: 'disconnected' }); scheduleReconn(); });
   binanceWs.on('error', () => {});
 }
 
@@ -510,7 +533,6 @@ function scheduleReconn() {
   binanceReconn = setTimeout(() => { binanceReconn = null; startBinanceWS(); }, 3000);
 }
 
-// Throttle broadcast لتجنب إرسال كثير
 let throttleTimer = null, pendingPrices = {};
 function broadcastThrottled(msg) {
   if (msg.type === 'priceUpdate') {
@@ -559,18 +581,14 @@ async function openFollower(acc, mPos) {
     const qty = parseFloat(((bal * (ratio / 100) * lev) / price).toFixed(3));
     if (qty <= 0) throw new Error('الكمية صغيرة جداً');
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
-    // تحقق من نوع الـ position mode
     const mode = await getPositionMode(acc);
     const orderParams = { symbol: sym, side, type: 'MARKET', quantity: qty };
-    if (mode === 'hedge') {
-      orderParams.positionSide = isLong ? 'LONG' : 'SHORT';
-    } else {
-      orderParams.positionSide = 'BOTH';
-    }
+    if (mode === 'hedge') orderParams.positionSide = isLong ? 'LONG' : 'SHORT';
+    else orderParams.positionSide = 'BOTH';
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
     if (!acc.stats) acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
     acc.stats.opens++;
-    addCopyLog('success', `✅ ${acc.name}: فُتحت ${sym} ${isLong ? 'LONG' : 'SHORT'} × ${qty} (${mode})`);
+    addCopyLog('success', `✅ ${acc.name}: فُتحت ${sym} ${isLong ? 'LONG' : 'SHORT'} × ${qty}`);
     return true;
   } catch (e) { addCopyLog('fail', `❌ ${acc.name}/${mPos.symbol}: ${e.message}`); return false; }
 }
@@ -582,37 +600,22 @@ async function closeFollower(acc, sym, posAmt) {
     const qty = Math.abs(posAmt).toFixed(3);
     const mode = await getPositionMode(acc);
     const orderParams = { symbol: sym, side, type: 'MARKET', quantity: qty };
-    if (mode === 'hedge') {
-      orderParams.positionSide = isLong ? 'LONG' : 'SHORT';
-    } else {
-      orderParams.positionSide = 'BOTH';
-      orderParams.reduceOnly = true;
-    }
+    if (mode === 'hedge') orderParams.positionSide = isLong ? 'LONG' : 'SHORT';
+    else { orderParams.positionSide = 'BOTH'; orderParams.reduceOnly = true; }
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
-
-    // حفظ النتيجة في stats
     if (!acc.stats) acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
     acc.stats.closes++;
-
-    // حساب الربح/الخسارة
     const entry = acc.livePositions?.find(p => p.symbol === sym);
     if (entry) {
       const pnl = parseFloat(entry.unRealizedProfit) || 0;
       const entryPrice = parseFloat(entry.entryPrice) || 0;
       const markPrice = parseFloat(entry.markPrice) || livePrices[sym] || entryPrice;
       const pct = entryPrice ? ((markPrice - entryPrice) / entryPrice * 100 * (isLong ? 1 : -1)) : 0;
-      if (pct >= 0) { acc.stats.wins++; } else { acc.stats.losses++; }
+      if (pct >= 0) acc.stats.wins++; else acc.stats.losses++;
       acc.stats.tot = (acc.stats.tot || 0) + pct;
-
-      // حفظ في سجل الصفقات المغلقة للحساب
       if (!acc.closedTrades) acc.closedTrades = [];
-      acc.closedTrades = [{
-        symbol: sym, side: isLong ? 'LONG' : 'SHORT',
-        entryPrice, exitPrice: markPrice, pnl, pct,
-        closeTs: Date.now(), closeTime: nowStr()
-      }, ...acc.closedTrades].slice(0, 200);
+      acc.closedTrades = [{ symbol: sym, side: isLong ? 'LONG' : 'SHORT', entryPrice, exitPrice: markPrice, pnl, pct, closeTs: Date.now(), closeTime: nowStr() }, ...acc.closedTrades].slice(0, 200);
     }
-
     addCopyLog('success', `🔒 ${acc.name}: أُغلقت ${sym}`);
     return true;
   } catch (e) { addCopyLog('fail', `❌ إغلاق ${acc.name}/${sym}: ${e.message}`); return false; }
@@ -623,7 +626,6 @@ async function syncCopy() {
   const master = STATE.copyAccounts.find(a => a.isMaster);
   if (!master?.apiKey || !master?.apiSecret) return;
 
-  // جلب مواقف الماستر
   let curr;
   try {
     const p = await getPositions(master);
@@ -633,55 +635,78 @@ async function syncCopy() {
     master.apiOk = true;
   } catch (e) {
     addCopyLog('fail', `❌ ماستر: ${e.message}`);
-    master.apiOk = false;
-    return;
+    master.apiOk = false; return;
   }
 
   const prev = STATE.masterPositions || {};
   const followers = STATE.copyAccounts.filter(a => !a.isMaster && a.isEnabled !== false);
 
-  // جلب مواقف التابعين أولاً
   for (const f of followers) {
-    try {
-      f.livePositions = await getPositions(f);
-      f.liveBalance = await getBalance(f);
-      f.apiOk = true;
-    } catch (e) { f.apiOk = false; }
+    try { f.livePositions = await getPositions(f); f.liveBalance = await getBalance(f); f.apiOk = true; }
+    catch (e) { f.apiOk = false; }
   }
 
-  // فتح صفقات الماستر عند التابعين اللي ما عندهم
+  // فتح صفقات جديدة
   for (const [sym, pos] of Object.entries(curr)) {
     const isNew = !prev[sym];
-    if (isNew) addCopyLog('info', `📡 ماستر فتح: ${sym} ${parseFloat(pos.positionAmt) > 0 ? 'LONG' : 'SHORT'}`);
+    if (isNew) {
+      addCopyLog('info', `📡 ماستر فتح: ${sym} ${parseFloat(pos.positionAmt) > 0 ? 'LONG' : 'SHORT'}`);
+
+      // إصلاح #4 — مزامنة الصفقات المفتوحة فوراً
+      if (!STATE.openTrades.some(t => t.symbol === sym)) {
+        const newTrade = {
+          id: Date.now() + Math.random(),
+          symbol: sym,
+          side: parseFloat(pos.positionAmt) > 0 ? 'LONG' : 'SHORT',
+          entryPrice: parseFloat(pos.entryPrice) || livePrices[sym] || 0,
+          openTime: nowStr(), openTs: Date.now(),
+          sl: STATE.settings.cxSL, tp1: STATE.settings.cxTP1,
+          leverage: pos.leverage || STATE.settings.cxLev,
+          margin: STATE.settings.cxMargin,
+          label: '🪞 Copy', executed: true
+        };
+        STATE.openTrades = [newTrade, ...STATE.openTrades];
+        db.saveOpenTrades(STATE.openTrades);
+        broadcast({ type: 'trades', data: STATE.openTrades });
+      }
+    }
     for (const f of followers) {
       if (!f.apiOk) continue;
       const fPos = (f.livePositions || []).find(p => p.symbol === sym);
-      if (!fPos) {
-        await openFollower(f, pos);
-        await new Promise(r => setTimeout(r, 300));
-      }
+      if (!fPos) { await openFollower(f, pos); await new Promise(r => setTimeout(r, 300)); }
     }
-    if (isNew) {
-      tgSend(`🪞 Copy\n#${sym.replace('USDT', '/USDT')}\nماستر فتح: ${parseFloat(pos.positionAmt) > 0 ? 'Long' : 'Short'}\nحسابات: ${followers.length}`, STATE.settings.cxChat);
-    }
+    if (isNew) tgSend(`🪞 Copy\n#${sym.replace('USDT', '/USDT')}\nماستر فتح: ${parseFloat(pos.positionAmt) > 0 ? 'Long' : 'Short'}\nحسابات: ${followers.length}`, STATE.settings.cxChat);
   }
 
   // إغلاق صفقات أغلقها الماستر
   for (const [sym] of Object.entries(prev)) {
     if (!curr[sym]) {
       addCopyLog('info', `📡 ماستر أغلق: ${sym}`);
+
+      // إصلاح #4 — مزامنة إغلاق الصفقات فوراً
+      const t = STATE.openTrades.find(x => x.symbol === sym);
+      if (t) {
+        const ep = livePrices[sym] || t.entryPrice;
+        const pct = t.side === 'LONG' ? ((ep - t.entryPrice) / t.entryPrice) * 100 : ((t.entryPrice - ep) / t.entryPrice) * 100;
+        const closed = { ...t, exitPrice: ep, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' };
+        STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
+        STATE.openTrades = STATE.openTrades.filter(x => x.symbol !== sym);
+        db.saveClosedTrade(closed);
+        db.saveOpenTrades(STATE.openTrades);
+        broadcast({ type: 'trades', data: STATE.openTrades });
+        broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
+      }
+
       for (const f of followers) {
         const fp = (f.livePositions || []).find(p => p.symbol === sym);
-        if (fp) {
-          await closeFollower(f, sym, parseFloat(fp.positionAmt));
-          await new Promise(r => setTimeout(r, 300));
-        }
+        if (fp) { await closeFollower(f, sym, parseFloat(fp.positionAmt)); await new Promise(r => setTimeout(r, 300)); }
       }
       tgSend(`🔒 Copy أُغلقت ${sym.replace('USDT', '/USDT')}`, STATE.settings.cxChatClose || STATE.settings.cxChat);
     }
   }
 
   STATE.masterPositions = curr;
+  db.saveAccounts(STATE.copyAccounts);
   broadcast({ type: 'accounts', data: getSafeAccounts() });
 }
 
@@ -708,10 +733,17 @@ async function emergencyStop() {
     if (!acc.apiKey || !acc.apiSecret) continue;
     try {
       const pos = await getPositions(acc);
-      for (const p of pos) { await closeFollower(acc, p.symbol, parseFloat(p.positionAmt)); await new Promise(r => setTimeout(r, 150)); }
-    } catch (e) {}
+      for (const p of pos) {
+        await closeFollower(acc, p.symbol, parseFloat(p.positionAmt));
+        await new Promise(r => setTimeout(r, 150));
+      }
+    } catch (e) {
+      // إصلاح — تسجيل الأخطاء بدل ابتلاعها
+      addCopyLog('fail', `❌ إيقاف طارئ ${acc.name}: ${e.message}`);
+    }
   }
   addCopyLog('info', '✅ اكتمل الإيقاف');
+  db.saveAccounts(STATE.copyAccounts);
   broadcast({ type: 'accounts', data: getSafeAccounts() });
 }
 
@@ -752,19 +784,24 @@ function getPublicState() {
     copyLog: STATE.copyLog.slice(0, 50),
     accounts: getSafeAccounts(),
     dcaOrders: STATE.dcaOrders,
+    sentSigs: STATE.sentSigs,   // إصلاح — أُضيف لمزامنة العملات المحجوبة
     lastUpdate: nowStr(),
   };
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  // إصلاح أمني — التحقق من التوكن قبل قبول الاتصال
+  try {
+    const url = new URL(req.url, `http://localhost`);
+    const token = url.searchParams.get('token');
+    if (!token) { ws.close(4001, 'Unauthorized'); return; }
+    jwt.verify(token, JWT_SECRET);
+  } catch (e) { ws.close(4001, 'Invalid token'); return; }
+
   clients.add(ws);
-  // إرسال الحالة الكاملة فوراً
   ws.send(JSON.stringify({ type: 'init', data: getPublicState() }));
   ws.on('message', async (raw) => {
-    try {
-      const msg = JSON.parse(raw);
-      await handleClientMsg(msg);
-    } catch (e) {}
+    try { await handleClientMsg(JSON.parse(raw)); } catch (e) {}
   });
   ws.on('close', () => clients.delete(ws));
   ws.on('error', () => clients.delete(ws));
@@ -773,18 +810,19 @@ wss.on('connection', (ws) => {
 async function handleClientMsg(msg) {
   switch (msg.type) {
     case 'updateSettings':
+      // دمج عميق للـ sigFilters بدل الكتابة فوقه
+      if (msg.data.sigFilters) {
+        msg.data.sigFilters = { ...STATE.settings.sigFilters, ...msg.data.sigFilters };
+      }
       Object.assign(STATE.settings, msg.data);
+      db.saveSettings(STATE.settings);
       broadcast({ type: 'settings', data: STATE.settings });
       break;
-    case 'scanNow':
-      scanAll();
-      break;
-    case 'toggleCopy':
-      STATE.copyOn ? stopCopy() : startCopy();
-      break;
-    case 'emergencyStop':
-      await emergencyStop();
-      break;
+
+    case 'scanNow': scanAll(); break;
+    case 'toggleCopy': STATE.copyOn ? stopCopy() : startCopy(); break;
+    case 'emergencyStop': await emergencyStop(); break;
+
     case 'addAccount': {
       const acc = msg.data;
       try {
@@ -793,11 +831,13 @@ async function handleClientMsg(msg) {
         acc.balance = bal; acc.balanceAt = Date.now();
         acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
         acc.apiOk = true;
+        // إصلاح — الأول يصير Master تلقائياً، وتبقى واحدة فقط
         if (acc.isMaster || STATE.copyAccounts.length === 0) {
           STATE.copyAccounts.forEach(a => a.isMaster = false);
           acc.isMaster = true;
         }
         STATE.copyAccounts.push(acc);
+        db.saveAccounts(STATE.copyAccounts);
         addCopyLog('success', `➕ أُضيف: ${acc.name} — $${bal.toFixed(2)}`);
         broadcast({ type: 'accounts', data: getSafeAccounts() });
         broadcast({ type: 'addAccountResult', data: { success: true, balance: bal } });
@@ -806,30 +846,41 @@ async function handleClientMsg(msg) {
       }
       break;
     }
+
     case 'testAccount': {
-      const acc = msg.data;
       try {
-        const bal = await getBalance(acc);
+        const bal = await getBalance(msg.data);
         broadcast({ type: 'testAccountResult', data: { success: true, balance: bal } });
       } catch (e) {
         broadcast({ type: 'testAccountResult', data: { success: false, error: e.message } });
       }
       break;
     }
+
     case 'updateAccount': {
       const idx = STATE.copyAccounts.findIndex(a => a.id === msg.data.id);
-      if (idx >= 0) { Object.assign(STATE.copyAccounts[idx], msg.data); broadcast({ type: 'accounts', data: getSafeAccounts() }); }
+      if (idx >= 0) {
+        // إصلاح — منع تعدد الـ Master
+        if (msg.data.isMaster) STATE.copyAccounts.forEach(a => a.isMaster = false);
+        Object.assign(STATE.copyAccounts[idx], msg.data);
+        db.saveAccounts(STATE.copyAccounts);
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
       break;
     }
+
     case 'deleteAccount':
       STATE.copyAccounts = STATE.copyAccounts.filter(a => a.id !== msg.data.id);
+      db.saveAccounts(STATE.copyAccounts);
       broadcast({ type: 'accounts', data: getSafeAccounts() });
       break;
+
     case 'toggleAccount': {
       const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
-      if (acc) { acc.isEnabled = !acc.isEnabled; broadcast({ type: 'accounts', data: getSafeAccounts() }); }
+      if (acc) { acc.isEnabled = !acc.isEnabled; db.saveAccounts(STATE.copyAccounts); broadcast({ type: 'accounts', data: getSafeAccounts() }); }
       break;
     }
+
     case 'refreshAccount': {
       const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
       if (acc?.apiKey) {
@@ -839,6 +890,7 @@ async function handleClientMsg(msg) {
       }
       break;
     }
+
     case 'closeAllAccount': {
       const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
       if (acc?.apiKey) {
@@ -851,40 +903,28 @@ async function handleClientMsg(msg) {
       break;
     }
 
-    // ─── إرسال تقرير مشترك على تلغرام ───
     case 'sendReport': {
       const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
       if (!acc) break;
       const st = acc.stats || {};
-      const closed = acc.closedTrades || [];
       const pos = acc.livePositions || [];
       const pnlOpen = pos.reduce((s, p) => s + parseFloat(p.unRealizedProfit || 0), 0);
       const wr = st.closes ? (st.wins / st.closes * 100).toFixed(0) : 0;
       const lines = [
-        `📊 تقرير: ${acc.name}`,
-        `━━━━━━━━━━━━━━━`,
+        `📊 تقرير: ${acc.name}`, `━━━━━━━━━━━━━━━`,
         `💵 الرصيد: $${parseFloat(acc.liveBalance || acc.balance || 0).toFixed(2)}`,
         `📈 صفقات مفتوحة: ${pos.length}`,
-        `💹 PnL مفتوح: ${pnlOpen >= 0 ? '+' : ''}$${pnlOpen.toFixed(2)}`,
-        ``,
+        `💹 PnL مفتوح: ${pnlOpen >= 0 ? '+' : ''}$${pnlOpen.toFixed(2)}`, ``,
         `📋 الصفقات المغلقة: ${st.closes || 0}`,
-        `✅ رابحة: ${st.wins || 0}`,
-        `❌ خاسرة: ${st.losses || 0}`,
+        `✅ رابحة: ${st.wins || 0}`, `❌ خاسرة: ${st.losses || 0}`,
         `🎯 نسبة النجاح: ${wr}%`,
         `📊 الأداء الكلي: ${(st.tot || 0) >= 0 ? '+' : ''}${(st.tot || 0).toFixed(2)}%`,
       ];
-      if (closed.length > 0) {
-        lines.push('', '📜 آخر الصفقات:');
-        closed.slice(0, 5).forEach(t => {
-          lines.push(`${t.pct >= 0 ? '✅' : '❌'} ${t.symbol}: ${t.pct >= 0 ? '+' : ''}${t.pct?.toFixed(2)}% | $${t.pnl?.toFixed(2)}`);
-        });
-      }
       await tgSend(lines.join('\n'), STATE.settings.cxChatClose || STATE.settings.cxChat);
       broadcast({ type: 'reportSent', data: { id: acc.id } });
       break;
     }
 
-    // ─── إغلاق صفقة محددة لحساب معين ───
     case 'closeOnePosition': {
       const { accId, symbol, posAmt } = msg.data;
       const acc = STATE.copyAccounts.find(a => a.id === accId);
@@ -895,14 +935,50 @@ async function handleClientMsg(msg) {
       }
       break;
     }
+
+    // ── أمر يدوي على حساب محدد (إضافة جديدة) ──────────────
+    case 'manualOrder': {
+      const { accId, sym, side, pct, lev } = msg.data;
+      const acc = STATE.copyAccounts.find(a => a.id === accId);
+      if (!acc?.apiKey) { broadcast({ type: 'manualOrderResult', data: { success: false, error: 'الحساب غير موجود' } }); break; }
+      try {
+        const bal = await getBalance(acc);
+        const price = livePrices[sym] || 1;
+        // إصلاح #5 — التحقق من الرافعة
+        const leverage = Math.min(parseInt(lev) || 20, await getMaxLev(sym));
+        const amtPct = parseFloat(pct || 5) / 100;
+        const qty = parseFloat(((bal * amtPct * leverage) / price).toFixed(3));
+        if (qty <= 0) throw new Error('الكمية صغيرة جداً');
+        await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage });
+        const mode = await getPositionMode(acc);
+        const orderParams = { symbol: sym, side: side === 'LONG' ? 'BUY' : 'SELL', type: 'MARKET', quantity: qty };
+        if (mode === 'hedge') orderParams.positionSide = side;
+        else { orderParams.positionSide = 'BOTH'; }
+        await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
+        if (!acc.stats) acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
+        acc.stats.opens++;
+        addCopyLog('success', `✅ يدوي: ${sym} ${side} × ${qty} (${leverage}x) — ${acc.name}`);
+        acc.livePositions = await getPositions(acc);
+        acc.liveBalance = await getBalance(acc);
+        db.saveAccounts(STATE.copyAccounts);
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+        broadcast({ type: 'manualOrderResult', data: { success: true, sym, side, qty, lev: leverage, acc: acc.name } });
+      } catch (e) {
+        addCopyLog('fail', `❌ أمر يدوي فشل: ${e.message}`);
+        broadcast({ type: 'manualOrderResult', data: { success: false, error: e.message } });
+      }
+      break;
+    }
+
     case 'confirmTrade': {
       const a = msg.data;
-      STATE.openTrades = [{ id: Date.now(), symbol: a.symbol, side: a.side, entryPrice: livePrices[a.symbol] || 0, openTime: a.time, openTs: Date.now(), sl: STATE.settings.cxSL, tp1: STATE.settings.cxTP1, leverage: STATE.settings.cxLev, margin: STATE.settings.cxMargin, label: a.label }, ...STATE.openTrades];
+      const t = { id: Date.now(), symbol: a.symbol, side: a.side, entryPrice: livePrices[a.symbol] || 0, openTime: a.time, openTs: Date.now(), sl: STATE.settings.cxSL, tp1: STATE.settings.cxTP1, leverage: STATE.settings.cxLev, margin: STATE.settings.cxMargin, label: a.label };
+      STATE.openTrades = [t, ...STATE.openTrades];
+      db.saveOpenTrades(STATE.openTrades);
       broadcast({ type: 'trades', data: STATE.openTrades });
       break;
     }
 
-    // ─── تنفيذ مباشر من الإشارة ───
     case 'executeSignal': {
       const { sym, side, accId } = msg.data;
       const st = STATE.settings;
@@ -915,9 +991,9 @@ async function handleClientMsg(msg) {
         try {
           const bal = await getBalance(acc);
           const price = livePrices[sym] || 1;
+          // إصلاح #5 — رافعة مع حد أقصى
           const lev = Math.min(parseInt(st.cxLev) || 20, await getMaxLev(sym));
-          const amtStr = st.cxAmt || '5%';
-          const amtPct = parseFloat(amtStr) / 100;
+          const amtPct = parseFloat(st.cxAmt) / 100;
           const qty = parseFloat(((bal * amtPct * lev) / price).toFixed(3));
           if (qty <= 0) throw new Error('الكمية صغيرة');
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
@@ -932,10 +1008,10 @@ async function handleClientMsg(msg) {
           addCopyLog('fail', `❌ فشل تنفيذ ${sym} — ${acc.name}: ${e.message}`);
         }
       }
-      // أضف للصفقات المفتوحة
       const ep = livePrices[sym] || 0;
-      STATE.openTrades = [{ id: Date.now(), symbol: sym, side, entryPrice: ep, openTime: nowStr(), openTs: Date.now(), sl: st.cxSL, tp1: st.cxTP1, leverage: st.cxLev, margin: st.cxMargin, label: `تنفيذ مباشر`, executed: true }, ...STATE.openTrades];
-      // إرسال تلغرام
+      const t = { id: Date.now(), symbol: sym, side, entryPrice: ep, openTime: nowStr(), openTs: Date.now(), sl: st.cxSL, tp1: st.cxTP1, leverage: st.cxLev, margin: st.cxMargin, label: 'تنفيذ مباشر', executed: true };
+      STATE.openTrades = [t, ...STATE.openTrades];
+      db.saveOpenTrades(STATE.openTrades);
       await tgSend(buildMsg(sym, side), st.cxChat);
       broadcast({ type: 'executeResult', data: results });
       broadcast({ type: 'trades', data: STATE.openTrades });
@@ -943,40 +1019,39 @@ async function handleClientMsg(msg) {
       break;
     }
 
-    // ─── إغلاق جزئي ───
     case 'closePartial': {
-      const { tradeId, pct } = msg.data; // pct = نسبة الإغلاق (50 = 50%)
+      const { tradeId, pct } = msg.data;
       const t = STATE.openTrades.find(x => x.id === tradeId);
       if (!t) break;
-      const accs = STATE.copyAccounts.filter(a => a.isEnabled !== false);
-      for (const acc of accs) {
+      for (const acc of STATE.copyAccounts.filter(a => a.isEnabled !== false)) {
         if (!acc.apiKey || !acc.apiSecret) continue;
         try {
           const pos = (await getPositions(acc)).find(p => p.symbol === t.symbol);
           if (!pos) continue;
-          const totalAmt = Math.abs(parseFloat(pos.positionAmt));
-          const closeAmt = parseFloat((totalAmt * (pct / 100)).toFixed(3));
+          const closeAmt = parseFloat((Math.abs(parseFloat(pos.positionAmt)) * (pct / 100)).toFixed(3));
           if (closeAmt <= 0) continue;
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
             symbol: t.symbol, side: t.side === 'LONG' ? 'SELL' : 'BUY',
             type: 'MARKET', quantity: closeAmt, positionSide: 'BOTH', reduceOnly: true
           });
           addCopyLog('success', `🔒 إغلاق ${pct}% من ${t.symbol} — ${acc.name}`);
-        } catch (e) {
-          addCopyLog('fail', `❌ إغلاق جزئي ${acc.name}: ${e.message}`);
-        }
+        } catch (e) { addCopyLog('fail', `❌ إغلاق جزئي ${acc.name}: ${e.message}`); }
       }
       broadcast({ type: 'accounts', data: getSafeAccounts() });
       break;
     }
+
     case 'closeTrade': {
       const t = STATE.openTrades.find(x => x.id === msg.data.id);
       if (t) {
         const ep = livePrices[t.symbol] || t.entryPrice;
         const pct = t.side === 'LONG' ? ((ep - t.entryPrice) / t.entryPrice) * 100 : ((t.entryPrice - ep) / t.entryPrice) * 100;
-        STATE.closedTrades = [{ ...t, exitPrice: ep, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' }, ...STATE.closedTrades].slice(0, 500);
+        const closed = { ...t, exitPrice: ep, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' };
+        STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
         STATE.openTrades = STATE.openTrades.filter(x => x.id !== t.id);
         delete STATE.sentSigs[t.symbol];
+        db.saveClosedTrade(closed);
+        db.saveOpenTrades(STATE.openTrades);
         const dur = Math.round((Date.now() - t.openTs) / 60000);
         tgSend(`${pct >= 0 ? '✅' : '❌'} ${t.symbol.replace('USDT', '/USDT')}\n${t.side === 'LONG' ? '🟢' : '🔴'} ${t.side}\nالنتيجة: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%\nالمدة: ${dur}m`, STATE.settings.cxChatClose || STATE.settings.cxChat);
         broadcast({ type: 'trades', data: STATE.openTrades });
@@ -984,33 +1059,42 @@ async function handleClientMsg(msg) {
       }
       break;
     }
+
     case 'clearAlerts':
       STATE.alerts = [];
       broadcast({ type: 'alerts', data: [] });
       break;
+
     case 'unlockSym':
       delete STATE.sentSigs[msg.data.sym];
       break;
+
     case 'addDCA': {
       const { sym, price, pct, side, accIds, lev } = msg.data;
+      // إصلاح — تحقق من وجود حسابات
+      if (!accIds?.length) { broadcast({ type: 'dcaError', data: 'اختر حساباً واحداً على الأقل' }); break; }
       const id = Date.now();
-      STATE.dcaOrders.push({ id, sym, price: parseFloat(price), pct: parseFloat(pct), side, accIds: accIds || [], lev: lev || 20, done: false, createdAt: nowStr() });
+      STATE.dcaOrders.push({ id, sym, price: parseFloat(price), pct: parseFloat(pct), side, accIds, lev: lev || 20, done: false, createdAt: nowStr() });
+      db.saveDcaOrders(STATE.dcaOrders);
       broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
-      addCopyLog('info', `📌 DCA جديد: ${sym} ${side} عند $${price} — ${pct}%`);
+      addCopyLog('info', `📌 DCA: ${sym} ${side} عند $${price} — ${pct}%`);
       break;
     }
+
     case 'removeDCA': {
       STATE.dcaOrders = STATE.dcaOrders.filter(o => o.id !== msg.data.id);
+      db.saveDcaOrders(STATE.dcaOrders);
       broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
       break;
     }
+
     case 'sendSignalManual': {
       const { sym, side } = msg.data;
       const st = STATE.settings;
       let lv = parseInt(st.cxLev) || 20;
       const mx = await getMaxLev(sym);
       let note = '';
-      if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد الأقصى ${mx}X)`; }
+      if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد ${mx}X)`; }
       const origLev = st.cxLev; st.cxLev = String(lv);
       const text = buildMsg(sym, side) + note;
       st.cxLev = origLev;
@@ -1026,51 +1110,65 @@ async function handleClientMsg(msg) {
 app.get('/api/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
 app.post('/api/login', async (req, res) => {
+  // إصلاح أمني — Rate limiting بعد 5 محاولات فاشلة
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  if (!loginAttempts.has(ip)) loginAttempts.set(ip, { count: 0, lockUntil: 0 });
+  const att = loginAttempts.get(ip);
+  if (att.lockUntil > now) {
+    return res.status(429).json({ error: `حاول بعد ${Math.ceil((att.lockUntil - now) / 1000)} ثانية` });
+  }
+
   const { username, password } = req.body;
   const user = USERS.find(u => u.username === username);
   if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+    att.count++;
+    if (att.count >= 5) att.lockUntil = now + 300000; // 5 دقائق
     return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
   }
+
+  att.count = 0; att.lockUntil = 0;
   const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
   res.json({ token, username: user.username });
 });
 
-app.get('/api/state', authMiddleware, (req, res) => {
-  res.json(getPublicState());
-});
+app.get('/api/state', authMiddleware, (req, res) => res.json(getPublicState()));
+app.get('/api/accounts', authMiddleware, (req, res) => res.json(getSafeAccounts()));
 
-app.get('/api/accounts', authMiddleware, (req, res) => {
-  res.json(getSafeAccounts());
-});
-
-// Proxy لـ Binance (يحل مشكلة CORS)
 app.get('/api/binance/*', authMiddleware, async (req, res) => {
   try {
-    const path = req.path.replace('/api/binance', '');
+    const p = req.path.replace('/api/binance', '');
     const query = new URLSearchParams(req.query).toString();
-    const url = `${BASE}${path}${query ? '?' + query : ''}`;
-    const data = await fetchBinance(path + (query ? '?' + query : ''));
+    const data = await fetchBinance(p + (query ? '?' + query : ''));
     res.json(data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Serve frontend
 app.get('*', (req, res) => {
+  const fs = require('fs');
   const distIndex = path.join(__dirname, '../client/dist/index.html');
   const pubIndex = path.join(__dirname, '../client/public/index.html');
-  const fs = require('fs');
   if (fs.existsSync(distIndex)) return res.sendFile(distIndex);
   if (fs.existsSync(pubIndex)) return res.sendFile(pubIndex);
-  res.send('<h1>RSI Scanner Pro</h1><p>Please build the client or add index.html to client/public/</p>');
+  res.send('<h1>RSI Scanner Pro</h1>');
 });
 
 // ══════════════════════════════════════════════
 //  STARTUP
 // ══════════════════════════════════════════════
 async function init() {
-  console.log('🚀 RSI Scanner Pro v3 starting...');
+  console.log('🚀 RSI Scanner Pro v3.1 starting...');
+
+  // تحميل الحالة من قاعدة البيانات
+  STATE.settings = db.loadSettings(DEFAULT_SETTINGS);
+  STATE.copyAccounts = db.loadAccounts();
+  STATE.openTrades = db.loadOpenTrades();
+  STATE.closedTrades = db.loadClosedTrades();
+  STATE.dcaOrders = db.loadDcaOrders();
+  STATE.alerts = db.loadAlerts();
+  alertId = STATE.alerts.reduce((m, a) => Math.max(m, a.id || 0), 0);
+  console.log(`📦 DB loaded: ${STATE.copyAccounts.length} accounts, ${STATE.openTrades.length} trades, ${STATE.dcaOrders.length} DCA orders`);
+
   try {
     const d = await fetchBinance('/fapi/v1/exchangeInfo');
     STATE.symbols = d.symbols
@@ -1078,9 +1176,8 @@ async function init() {
       .map(s => s.symbol).sort();
     console.log(`✅ Loaded ${STATE.symbols.length} symbols`);
     STATE.symbols.forEach(s => {
-      STATE.symbolData[s] = { rsi: null, prevRsi: null, signal: null, conf: null, zone: 'neutral', error: false };
+      if (!STATE.symbolData[s]) STATE.symbolData[s] = { rsi: null, prevRsi: null, signal: null, conf: null, zone: 'neutral', error: false };
     });
-    // تحميل الأحجام
     try {
       const v = await fetchBinance('/fapi/v1/ticker/24hr');
       if (Array.isArray(v)) v.forEach(t => {
@@ -1088,21 +1185,22 @@ async function init() {
         STATE.symbolMeta[t.symbol].vol = parseFloat(t.quoteVolume) || 0;
       });
     } catch (e) {}
-    // بدء الفحص
     await scanAll();
     startBinanceWS();
-    // فحص دوري للـ REST fallback
     setInterval(async () => {
-      if (!binanceWs || binanceWs.readyState !== WebSocket.OPEN) {
-        await scanAll();
-      }
+      if (!binanceWs || binanceWs.readyState !== WebSocket.OPEN) await scanAll();
     }, 120000);
   } catch (e) {
     console.error('❌ Init failed:', e.message);
   }
+
+  // إصلاح #3 — heartbeat لمنع النوم (مع توصية باستخدام UptimeRobot لـ ping كل 5 دقائق)
+  setInterval(() => {
+    console.log(`💓 ${new Date().toISOString()} | Symbols:${STATE.symbols.length} | Clients:${clients.size} | Accounts:${STATE.copyAccounts.length}`);
+  }, 300000); // كل 5 دقائق
 }
 
 server.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ Server on port ${PORT}`);
   init();
 });
