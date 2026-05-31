@@ -352,7 +352,7 @@ function triggerAlert(sym, sig, val) {
   const item = {
     id: alertId, symbol: sym, type: sig.type, label: sig.label,
     color: sig.color, emoji: sig.emoji, rsi: val.toFixed(2),
-    time: nowStr(), mode: `${st.mode}(${st.mode === 'RSI' ? RSI_P : st.maPeriod})`, side: sig.side
+    time: nowStr(), mode: `${st.mode}(${st.mode === 'RSI' ? RSI_P : st.maPeriod}) ${st.interval}`, side: sig.side
   };
   STATE.alerts = [item, ...STATE.alerts].slice(0, 200);
   db.saveAlert(item);
@@ -400,16 +400,31 @@ async function scanSym(sym, candles) {
             const qty = parseFloat(((bal * (parseFloat(order.pct) / 100) * parseInt(order.lev || 20)) / price).toFixed(3));
             if (qty <= 0) continue;
             const mode = await getPositionMode(acc);
-            const orderParams = { symbol: sym, side: order.side === 'LONG' ? 'BUY' : 'SELL', type: 'MARKET', quantity: qty };
-            if (mode === 'hedge') orderParams.positionSide = order.side;
-            else orderParams.positionSide = 'BOTH';
-            await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
-            addCopyLog('success', `✅ DCA ${sym} ${order.side} × ${qty} — ${acc.name}`);
+            const isBuy = order.side === 'LONG';
+            const oParams = {
+              symbol: sym, side: isBuy ? 'BUY' : 'SELL', quantity: qty,
+              ...(mode === 'hedge' ? { positionSide: order.side } : { positionSide: 'BOTH' })
+            };
+            if (order.orderType === 'LIMIT' && order.price) {
+              if (order.trailingPct > 0) {
+                oParams.type = 'TRAILING_STOP_MARKET';
+                oParams.callbackRate = parseFloat(order.trailingPct);
+                oParams.activationPrice = parseFloat(order.price);
+              } else {
+                oParams.type = 'LIMIT';
+                oParams.price = parseFloat(order.price);
+                oParams.timeInForce = 'GTC';
+              }
+            } else {
+              oParams.type = 'MARKET';
+            }
+            await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', oParams);
+            addCopyLog('success', `✅ DCA ${sym} ${order.side} × ${qty} [${oParams.type}] — ${acc.name}`);
           } catch (e) { addCopyLog('fail', `❌ DCA ${acc.name}: ${e.message}`); }
         }
         order.done = true;
         db.saveDcaOrders(STATE.dcaOrders);
-        tgSend(`🔄 تعزيز تلقائي\n#${sym.replace('USDT', '/USDT')}\n${order.side} عند $${price}\nحسابات: ${targets.length}`, STATE.settings.cxChat);
+        tgSend(`🔄 تعزيز\n#${sym.replace('USDT', '/USDT')}\n${order.side} عند $${price}\nنوع: ${order.orderType || 'MARKET'}\nحسابات: ${targets.length}`, STATE.settings.cxChat);
         broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
       }
     }
@@ -621,8 +636,10 @@ async function closeFollower(acc, sym, posAmt) {
   } catch (e) { addCopyLog('fail', `❌ إغلاق ${acc.name}/${sym}: ${e.message}`); return false; }
 }
 
+let rateLimitPause = 0;
 async function syncCopy() {
   if (!STATE.copyOn) return;
+  if (Date.now() < rateLimitPause) return;
   const master = STATE.copyAccounts.find(a => a.isMaster);
   if (!master?.apiKey || !master?.apiSecret) return;
 
@@ -634,6 +651,11 @@ async function syncCopy() {
     master.liveBalance = await getBalance(master);
     master.apiOk = true;
   } catch (e) {
+    if (e.message.includes('banned') || e.message.includes('1003') || e.message.includes('Too Many')) {
+      rateLimitPause = Date.now() + 60000;
+      addCopyLog('fail', `⚠️ Binance حجب IP مؤقتاً — انتظر 60 ثانية`);
+      return;
+    }
     addCopyLog('fail', `❌ ماستر: ${e.message}`);
     master.apiOk = false; return;
   }
@@ -714,7 +736,7 @@ function startCopy() {
   if (copyTimer) clearInterval(copyTimer);
   STATE.copyOn = true;
   syncCopy();
-  copyTimer = setInterval(syncCopy, 1500);
+  copyTimer = setInterval(syncCopy, 5000);
   addCopyLog('info', '▶️ بدأ النسخ');
   broadcast({ type: 'copyOn', data: true });
 }
@@ -809,17 +831,45 @@ wss.on('connection', (ws, req) => {
 
 async function handleClientMsg(msg) {
   switch (msg.type) {
-    case 'updateSettings':
-      // دمج عميق للـ sigFilters بدل الكتابة فوقه
+    case 'updateSettings': {
+      const oldInterval = STATE.settings.interval;
       if (msg.data.sigFilters) {
         msg.data.sigFilters = { ...STATE.settings.sigFilters, ...msg.data.sigFilters };
       }
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
       broadcast({ type: 'settings', data: STATE.settings });
+      // إعادة تشغيل WS عند تغيير الفريم الزمني
+      if (msg.data.interval && msg.data.interval !== oldInterval) {
+        Object.keys(candleCache).forEach(k => delete candleCache[k]);
+        startBinanceWS();
+        broadcast({ type: 'scanning', data: true });
+        scanAll().then(() => broadcast({ type: 'scanning', data: false }));
+      }
       break;
+    }
 
     case 'scanNow': scanAll(); break;
+
+    case 'forceRescan':
+      Object.keys(candleCache).forEach(k => delete candleCache[k]);
+      startBinanceWS();
+      broadcast({ type: 'scanning', data: true });
+      scanAll().then(() => broadcast({ type: 'scanning', data: false }));
+      break;
+
+    case 'refreshAllAccounts': {
+      const refreshed = await Promise.all(STATE.copyAccounts.map(async acc => {
+        if (!acc.apiKey) return;
+        try {
+          [acc.liveBalance, acc.livePositions] = await Promise.all([getBalance(acc), getPositions(acc)]);
+          acc.balanceAt = Date.now(); acc.apiOk = true;
+        } catch (e) { acc.apiOk = false; }
+      }));
+      db.saveAccounts(STATE.copyAccounts);
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      break;
+    }
     case 'toggleCopy': STATE.copyOn ? stopCopy() : startCopy(); break;
     case 'emergencyStop': await emergencyStop(); break;
 
@@ -938,33 +988,51 @@ async function handleClientMsg(msg) {
 
     // ── أمر يدوي على حساب محدد (إضافة جديدة) ──────────────
     case 'manualOrder': {
-      const { accId, sym, side, pct, lev } = msg.data;
+      let { accId, sym, side, pct, lev, orderType, limitPrice, trailingPct } = msg.data;
+      // إصلاح: منع تكرار USDT
+      sym = sym.replace(/USDT$/i, '').toUpperCase() + 'USDT';
       const acc = STATE.copyAccounts.find(a => a.id === accId);
-      if (!acc?.apiKey) { broadcast({ type: 'manualOrderResult', data: { success: false, error: 'الحساب غير موجود' } }); break; }
+      if (!acc?.apiKey) { broadcast({ type: 'manualOrderResult', data: { success: false, error: 'الحساب غير موجود أو بدون API' } }); break; }
       try {
         const bal = await getBalance(acc);
-        const price = livePrices[sym] || 1;
-        // إصلاح #5 — التحقق من الرافعة
+        if (bal <= 0) throw new Error(`الرصيد صفر — تأكد من الـ API`);
+        const price = livePrices[sym] || parseFloat(limitPrice) || 1;
         const leverage = Math.min(parseInt(lev) || 20, await getMaxLev(sym));
         const amtPct = parseFloat(pct || 5) / 100;
         const qty = parseFloat(((bal * amtPct * leverage) / price).toFixed(3));
-        if (qty <= 0) throw new Error('الكمية صغيرة جداً');
+        if (qty <= 0) throw new Error(`الكمية صغيرة جداً (رصيد: $${bal.toFixed(2)})`);
         await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage });
         const mode = await getPositionMode(acc);
-        const orderParams = { symbol: sym, side: side === 'LONG' ? 'BUY' : 'SELL', type: 'MARKET', quantity: qty };
-        if (mode === 'hedge') orderParams.positionSide = side;
-        else { orderParams.positionSide = 'BOTH'; }
-        await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
+        const isBuy = side === 'LONG';
+        const orderParams = {
+          symbol: sym, side: isBuy ? 'BUY' : 'SELL', quantity: qty,
+          ...(mode === 'hedge' ? { positionSide: side } : { positionSide: 'BOTH' })
+        };
+        if (orderType === 'LIMIT' && limitPrice) {
+          orderParams.type = 'LIMIT';
+          orderParams.price = parseFloat(limitPrice);
+          orderParams.timeInForce = 'GTC';
+          if (trailingPct > 0) {
+            // trailing limit: نستخدم TRAILING_STOP_MARKET كأمر مرافق
+            orderParams.type = 'TRAILING_STOP_MARKET';
+            delete orderParams.price;
+            orderParams.callbackRate = parseFloat(trailingPct);
+            orderParams.activationPrice = parseFloat(limitPrice);
+          }
+        } else {
+          orderParams.type = 'MARKET';
+        }
+        const result = await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', orderParams);
         if (!acc.stats) acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
         acc.stats.opens++;
-        addCopyLog('success', `✅ يدوي: ${sym} ${side} × ${qty} (${leverage}x) — ${acc.name}`);
-        acc.livePositions = await getPositions(acc);
-        acc.liveBalance = await getBalance(acc);
+        addCopyLog('success', `✅ يدوي: ${sym} ${side} × ${qty} (${leverage}x) [${orderParams.type}] — ${acc.name}`);
+        [acc.livePositions, acc.liveBalance] = await Promise.all([getPositions(acc), getBalance(acc)]);
         db.saveAccounts(STATE.copyAccounts);
         broadcast({ type: 'accounts', data: getSafeAccounts() });
-        broadcast({ type: 'manualOrderResult', data: { success: true, sym, side, qty, lev: leverage, acc: acc.name } });
+        broadcast({ type: 'manualOrderResult', data: { success: true, sym, side, qty, lev: leverage, acc: acc.name, type: orderParams.type } });
       } catch (e) {
-        addCopyLog('fail', `❌ أمر يدوي فشل: ${e.message}`);
+        console.error('manualOrder error:', e);
+        addCopyLog('fail', `❌ يدوي ${sym} — ${acc.name}: ${e.message}`);
         broadcast({ type: 'manualOrderResult', data: { success: false, error: e.message } });
       }
       break;
@@ -1070,11 +1138,11 @@ async function handleClientMsg(msg) {
       break;
 
     case 'addDCA': {
-      const { sym, price, pct, side, accIds, lev } = msg.data;
-      // إصلاح — تحقق من وجود حسابات
+      let { sym, price, pct, side, accIds, lev, orderType, trailingPct } = msg.data;
+      sym = sym.replace(/USDT$/i, '').toUpperCase() + 'USDT';
       if (!accIds?.length) { broadcast({ type: 'dcaError', data: 'اختر حساباً واحداً على الأقل' }); break; }
       const id = Date.now();
-      STATE.dcaOrders.push({ id, sym, price: parseFloat(price), pct: parseFloat(pct), side, accIds, lev: lev || 20, done: false, createdAt: nowStr() });
+      STATE.dcaOrders.push({ id, sym, price: parseFloat(price), pct: parseFloat(pct), side, accIds, lev: lev || 20, orderType: orderType || 'MARKET', trailingPct: trailingPct || 0, done: false, createdAt: nowStr() });
       db.saveDcaOrders(STATE.dcaOrders);
       broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
       addCopyLog('info', `📌 DCA: ${sym} ${side} عند $${price} — ${pct}%`);
