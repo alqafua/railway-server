@@ -917,6 +917,44 @@ wss.on('connection', (ws, req) => {
   ws.on('error', () => clients.delete(ws));
 });
 
+function parseCornixSignal(text) {
+  try {
+    // العملة: #Q/USDT أو #QUSDT أو QUSDT
+    const symRaw = text.match(/#?([A-Z0-9]+)(?:\/USDT)?/)?.[1] || '';
+    if (!symRaw) return null;
+    const sym = symRaw.endsWith('USDT') ? symRaw : symRaw + 'USDT';
+
+    // الاتجاه
+    const isShort = /Short/i.test(text);
+    const isLong = /Long/i.test(text);
+    if (!isShort && !isLong) return null;
+    const side = isShort ? 'SHORT' : 'LONG';
+
+    // الرافعة
+    const levM = text.match(/\((\d+)X\)/i);
+    const leverage = levM ? parseInt(levM[1]) : 20;
+
+    // الهامش
+    const margin = /Isolated/i.test(text) ? 'Isolated' : 'Cross';
+
+    // الدخول — البحث عن "Entry Targets:" ثم "1) Market" أو "1) رقم"
+    const entrySection = text.split(/Entry Targets:/i)[1] || '';
+    const isMarket = /^\s*1\)\s*Market/im.test(entrySection);
+    let entryPrice = null;
+    if (!isMarket) {
+      const ep = entrySection.match(/1\)\s*([\d.]+)/);
+      if (ep) entryPrice = parseFloat(ep[1]);
+    }
+
+    // TP1 — أول هدف ربح
+    const tpSection = text.split(/Take-Profit Targets:/i)[1] || '';
+    const tp1m = tpSection.match(/1\)\s*([\d.]+)/);
+    const tp1 = tp1m ? parseFloat(tp1m[1]) : null;
+
+    return { sym, side, leverage, margin, isMarket, entryPrice, tp1 };
+  } catch (e) { return null; }
+}
+
 async function handleClientMsg(msg) {
   switch (msg.type) {
     case 'updateSettings': {
@@ -964,6 +1002,68 @@ async function handleClientMsg(msg) {
       if (sysErrorTimer) { clearTimeout(sysErrorTimer); sysErrorTimer = null; }
       STATE.sysStatus = { ok: true, lastError: null, errorLoc: null, errorTs: null };
       broadcast({ type: 'sysStatus', data: STATE.sysStatus });
+      break;
+    }
+
+    case 'cornixSignal': {
+      const { text, accIds } = msg.data;
+      const parsed = parseCornixSignal(text);
+      if (!parsed) { broadcast({ type: 'cornixResult', data: { error: 'تعذر قراءة الإشارة — تحقق من الصيغة' } }); break; }
+
+      const targets = accIds?.length
+        ? STATE.copyAccounts.filter(a => accIds.includes(a.id) && a.apiKey)
+        : STATE.copyAccounts.filter(a => a.isEnabled !== false && a.apiKey);
+
+      const results = [];
+      for (const acc of targets) {
+        try {
+          await ensureLotSize(parsed.sym);
+          // ضبط الرافعة
+          const lev = Math.min(parsed.leverage || 20, 125);
+          await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: parsed.sym, leverage: lev });
+          // حساب الكمية
+          const bal = await getBalance(acc);
+          const price = livePrices[parsed.sym] || parsed.entryPrice || 1;
+          const st = STATE.settings;
+          const amtPct = parseFloat(st.cxAmt) / 100 || 0.05;
+          const qty = roundQty((bal * amtPct * lev) / price, parsed.sym);
+          if (qty <= 0) throw new Error('الكمية صغيرة جداً');
+
+          const mode = await getPositionMode(acc);
+          const isBuy = parsed.side === 'LONG';
+          const oParams = { symbol: parsed.sym, side: isBuy ? 'BUY' : 'SELL', quantity: qty };
+          if (mode === 'hedge') oParams.positionSide = parsed.side;
+          else { oParams.positionSide = 'BOTH'; }
+
+          if (parsed.isMarket) {
+            oParams.type = 'MARKET';
+          } else {
+            oParams.type = 'LIMIT';
+            oParams.price = parsed.entryPrice;
+            oParams.timeInForce = 'GTC';
+          }
+          await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', oParams);
+
+          // وضع TP1 إذا متوفر
+          if (parsed.tp1) {
+            const tpParams = {
+              symbol: parsed.sym, quantity: qty,
+              side: isBuy ? 'SELL' : 'BUY', type: 'TAKE_PROFIT_MARKET',
+              stopPrice: parsed.tp1, closePosition: 'true', workingType: 'MARK_PRICE',
+            };
+            if (mode === 'hedge') tpParams.positionSide = parsed.side;
+            else tpParams.positionSide = 'BOTH';
+            try { await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', tpParams); } catch (e) {}
+          }
+
+          results.push({ name: acc.name, success: true, qty, type: oParams.type });
+          addCopyLog('success', `✅ Cornix ${parsed.sym} ${parsed.side} × ${qty} — ${acc.name}`);
+        } catch (e) {
+          results.push({ name: acc.name, success: false, error: e.message });
+          reportError(`Cornix ${parsed.sym}`, e.message);
+        }
+      }
+      broadcast({ type: 'cornixResult', data: { parsed, results } });
       break;
     }
 
