@@ -757,9 +757,23 @@ async function syncCopy() {
 function startCopy() {
   if (copyTimer) clearInterval(copyTimer);
   STATE.copyOn = true;
-  syncCopy();
+
+  // تهيئة الخط الأساسي — نحفظ الصفقات الحالية ولا ننسخها
+  const master = STATE.copyAccounts.find(a => a.isMaster);
+  if (master?.apiKey) {
+    getPositions(master).then(p => {
+      const baseline = {};
+      p.forEach(x => baseline[x.symbol] = x);
+      STATE.masterPositions = baseline;
+      master.livePositions = p;
+      addCopyLog('info', `📌 خط الأساس: ${Object.keys(baseline).length} صفقة موجودة — لن تُنسخ`);
+    }).catch(() => {});
+  } else {
+    STATE.masterPositions = {};
+  }
+
   copyTimer = setInterval(syncCopy, 5000);
-  addCopyLog('info', '▶️ بدأ النسخ');
+  addCopyLog('info', '▶️ بدأ النسخ — فقط الصفقات الجديدة');
   broadcast({ type: 'copyOn', data: true });
 }
 
