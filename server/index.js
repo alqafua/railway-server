@@ -623,6 +623,7 @@ async function openFollower(acc, mPos) {
     const side = isLong ? 'BUY' : 'SELL';
     const price = livePrices[sym] || parseFloat(mPos.markPrice) || 1;
     const lev = Math.min(parseFloat(mPos.leverage) || 20, 125);
+    await ensureLotSize(sym);
     const qty = roundQty((bal * (ratio / 100) * lev) / price, sym);
     if (qty <= 0) throw new Error('الكمية صغيرة جداً');
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
@@ -642,7 +643,8 @@ async function closeFollower(acc, sym, posAmt) {
   try {
     const isLong = posAmt > 0;
     const side = isLong ? 'SELL' : 'BUY';
-    const qty = Math.abs(posAmt).toFixed(3);
+    await ensureLotSize(sym);
+    const qty = roundQty(Math.abs(posAmt), sym);
     const mode = await getPositionMode(acc);
     const orderParams = { symbol: sym, side, type: 'MARKET', quantity: qty };
     if (mode === 'hedge') orderParams.positionSide = isLong ? 'LONG' : 'SHORT';
@@ -773,26 +775,30 @@ async function syncCopy() {
   broadcast({ type: 'accounts', data: getSafeAccounts() });
 }
 
-function startCopy() {
+async function startCopy() {
   if (copyTimer) clearInterval(copyTimer);
   STATE.copyOn = true;
 
-  // تهيئة الخط الأساسي — نحفظ الصفقات الحالية ولا ننسخها
+  // جلب خط الأساس أولاً قبل بدء الـ timer — بـ await لمنع race condition
   const master = STATE.copyAccounts.find(a => a.isMaster);
   if (master?.apiKey) {
-    getPositions(master).then(p => {
+    try {
+      const p = await getPositions(master);
       const baseline = {};
       p.forEach(x => baseline[x.symbol] = x);
       STATE.masterPositions = baseline;
       master.livePositions = p;
       addCopyLog('info', `📌 خط الأساس: ${Object.keys(baseline).length} صفقة موجودة — لن تُنسخ`);
-    }).catch(() => {});
+    } catch (e) {
+      STATE.masterPositions = {};
+      addCopyLog('fail', `⚠️ تعذر جلب خط الأساس: ${e.message}`);
+    }
   } else {
     STATE.masterPositions = {};
   }
 
   copyTimer = setInterval(syncCopy, 10000);
-  addCopyLog('info', '▶️ بدأ النسخ — فقط الصفقات الجديدة');
+  addCopyLog('info', '▶️ بدأ النسخ — فقط الصفقات الجديدة من الآن');
   broadcast({ type: 'copyOn', data: true });
 }
 
