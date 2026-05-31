@@ -663,9 +663,10 @@ async function syncCopy() {
     master.liveBalance = await getBalance(master);
     master.apiOk = true;
   } catch (e) {
-    if (e.message.includes('banned') || e.message.includes('1003') || e.message.includes('Too Many')) {
+    const em = e.message.toLowerCase();
+    if (em.includes('too many') || em.includes('1003') || em.includes('banned') || em.includes('rate limit')) {
       rateLimitPause = Date.now() + 60000;
-      addCopyLog('fail', `⚠️ Binance حجب IP مؤقتاً — انتظر 60 ثانية`);
+      addCopyLog('fail', `⚠️ Binance حجب IP — انتظر 60 ثانية`);
       return;
     }
     addCopyLog('fail', `❌ ماستر: ${e.message}`);
@@ -772,7 +773,7 @@ function startCopy() {
     STATE.masterPositions = {};
   }
 
-  copyTimer = setInterval(syncCopy, 5000);
+  copyTimer = setInterval(syncCopy, 10000);
   addCopyLog('info', '▶️ بدأ النسخ — فقط الصفقات الجديدة');
   broadcast({ type: 'copyOn', data: true });
 }
