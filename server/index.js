@@ -64,6 +64,7 @@ const STATE = {
   masterPositions: {},
   settings: { ...DEFAULT_SETTINGS },
   dcaOrders: [],
+  pendingOrders: [],     // أوامر Limit/Trailing محفوظة (يدوي + DCA)
   cooldowns: {},
   sentSigs: {},
   copyOn: false,
@@ -224,6 +225,14 @@ async function getMaxLev(sym) {
     const l = d[0]?.brackets[0]?.initialLeverage || 125;
     maxLevCache[sym] = l; return l;
   } catch (e) { return 125; }
+}
+
+const lotSizeCache = {}; // sym -> stepSize (from exchangeInfo)
+
+function roundQty(qty, sym) {
+  const step = lotSizeCache[sym] || 0.001;
+  const precision = step >= 1 ? 0 : Math.max(0, -Math.floor(Math.log10(step)));
+  return parseFloat((Math.floor(qty / step) * step).toFixed(precision));
 }
 
 async function hmac256(secret, msg) {
@@ -397,7 +406,10 @@ async function scanSym(sym, candles) {
           if (!acc.apiKey) continue;
           try {
             const bal = await getBalance(acc);
-            const qty = parseFloat(((bal * (parseFloat(order.pct) / 100) * parseInt(order.lev || 20)) / price).toFixed(3));
+            const rawQty = order.useAmt
+              ? (parseFloat(order.amt || order.pct) * parseInt(order.lev || 20)) / price
+              : (bal * (parseFloat(order.pct) / 100) * parseInt(order.lev || 20)) / price;
+            const qty = roundQty(rawQty, sym);
             if (qty <= 0) continue;
             const mode = await getPositionMode(acc);
             const isBuy = order.side === 'LONG';
@@ -593,7 +605,7 @@ async function openFollower(acc, mPos) {
     const side = isLong ? 'BUY' : 'SELL';
     const price = livePrices[sym] || parseFloat(mPos.markPrice) || 1;
     const lev = Math.min(parseFloat(mPos.leverage) || 20, 125);
-    const qty = parseFloat(((bal * (ratio / 100) * lev) / price).toFixed(3));
+    const qty = roundQty((bal * (ratio / 100) * lev) / price, sym);
     if (qty <= 0) throw new Error('الكمية صغيرة جداً');
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
     const mode = await getPositionMode(acc);
@@ -663,6 +675,16 @@ async function syncCopy() {
   const prev = STATE.masterPositions || {};
   const followers = STATE.copyAccounts.filter(a => !a.isMaster && a.isEnabled !== false);
 
+  // تحقق إذا تغيرت مراكز الماستر — إذا لا تغيير نتجنب طلبات API للمتابعين
+  const currKeys = Object.keys(curr).sort().join(',');
+  const prevKeys = Object.keys(prev).sort().join(',');
+  if (currKeys === prevKeys) {
+    STATE.masterPositions = curr;
+    broadcast({ type: 'accounts', data: getSafeAccounts() });
+    return;
+  }
+
+  // مراكز الماستر تغيرت — اجلب بيانات المتابعين الآن فقط
   for (const f of followers) {
     try { f.livePositions = await getPositions(f); f.liveBalance = await getBalance(f); f.apiOk = true; }
     catch (e) { f.apiOk = false; }
@@ -806,6 +828,7 @@ function getPublicState() {
     copyLog: STATE.copyLog.slice(0, 50),
     accounts: getSafeAccounts(),
     dcaOrders: STATE.dcaOrders,
+    pendingOrders: STATE.pendingOrders,
     sentSigs: STATE.sentSigs,   // إصلاح — أُضيف لمزامنة العملات المحجوبة
     lastUpdate: nowStr(),
   };
@@ -988,7 +1011,7 @@ async function handleClientMsg(msg) {
 
     // ── أمر يدوي على حساب محدد (إضافة جديدة) ──────────────
     case 'manualOrder': {
-      let { accId, sym, side, pct, lev, orderType, limitPrice, trailingPct } = msg.data;
+      let { accId, sym, side, amt, pct, useAmt, lev, orderType, limitPrice, trailingPct } = msg.data;
       // إصلاح: منع تكرار USDT
       sym = sym.replace(/USDT$/i, '').toUpperCase() + 'USDT';
       const acc = STATE.copyAccounts.find(a => a.id === accId);
@@ -999,7 +1022,10 @@ async function handleClientMsg(msg) {
         const price = livePrices[sym] || parseFloat(limitPrice) || 1;
         const leverage = Math.min(parseInt(lev) || 20, await getMaxLev(sym));
         const amtPct = parseFloat(pct || 5) / 100;
-        const qty = parseFloat(((bal * amtPct * leverage) / price).toFixed(3));
+        const rawQty = useAmt
+          ? (parseFloat(amt || 0) * leverage) / price
+          : (bal * amtPct * leverage) / price;
+        const qty = roundQty(rawQty, sym);
         if (qty <= 0) throw new Error(`الكمية صغيرة جداً (رصيد: $${bal.toFixed(2)})`);
         await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage });
         const mode = await getPositionMode(acc);
@@ -1026,6 +1052,12 @@ async function handleClientMsg(msg) {
         if (!acc.stats) acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
         acc.stats.opens++;
         addCopyLog('success', `✅ يدوي: ${sym} ${side} × ${qty} (${leverage}x) [${orderParams.type}] — ${acc.name}`);
+        // حفظ أوامر Limit/Trailing في القائمة
+        if (orderParams.type !== 'MARKET') {
+          const po = { id: result.orderId || Date.now(), sym, side, qty, type: orderParams.type, price: orderParams.price || orderParams.activationPrice, acc: acc.name, accId, lev: leverage, status: 'NEW', createdAt: nowStr(), source: 'manual' };
+          STATE.pendingOrders = [po, ...STATE.pendingOrders].slice(0, 200);
+          broadcast({ type: 'pendingOrders', data: STATE.pendingOrders });
+        }
         [acc.livePositions, acc.liveBalance] = await Promise.all([getPositions(acc), getBalance(acc)]);
         db.saveAccounts(STATE.copyAccounts);
         broadcast({ type: 'accounts', data: getSafeAccounts() });
@@ -1062,7 +1094,7 @@ async function handleClientMsg(msg) {
           // إصلاح #5 — رافعة مع حد أقصى
           const lev = Math.min(parseInt(st.cxLev) || 20, await getMaxLev(sym));
           const amtPct = parseFloat(st.cxAmt) / 100;
-          const qty = parseFloat(((bal * amtPct * lev) / price).toFixed(3));
+          const qty = roundQty((bal * amtPct * lev) / price, sym);
           if (qty <= 0) throw new Error('الكمية صغيرة');
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev });
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
@@ -1096,7 +1128,7 @@ async function handleClientMsg(msg) {
         try {
           const pos = (await getPositions(acc)).find(p => p.symbol === t.symbol);
           if (!pos) continue;
-          const closeAmt = parseFloat((Math.abs(parseFloat(pos.positionAmt)) * (pct / 100)).toFixed(3));
+          const closeAmt = roundQty(Math.abs(parseFloat(pos.positionAmt)) * (pct / 100), t.symbol);
           if (closeAmt <= 0) continue;
           await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
             symbol: t.symbol, side: t.side === 'LONG' ? 'SELL' : 'BUY',
@@ -1138,11 +1170,11 @@ async function handleClientMsg(msg) {
       break;
 
     case 'addDCA': {
-      let { sym, price, pct, side, accIds, lev, orderType, trailingPct } = msg.data;
+      let { sym, price, amt, pct, side, accIds, lev, orderType, trailingPct, useAmt } = msg.data;
       sym = sym.replace(/USDT$/i, '').toUpperCase() + 'USDT';
       if (!accIds?.length) { broadcast({ type: 'dcaError', data: 'اختر حساباً واحداً على الأقل' }); break; }
       const id = Date.now();
-      STATE.dcaOrders.push({ id, sym, price: parseFloat(price), pct: parseFloat(pct), side, accIds, lev: lev || 20, orderType: orderType || 'MARKET', trailingPct: trailingPct || 0, done: false, createdAt: nowStr() });
+      STATE.dcaOrders.push({ id, sym, price: parseFloat(price), amt: parseFloat(amt || 0), pct: parseFloat(pct || 5), useAmt: !!useAmt, side, accIds, lev: lev || 20, orderType: orderType || 'MARKET', trailingPct: trailingPct || 0, done: false, createdAt: nowStr() });
       db.saveDcaOrders(STATE.dcaOrders);
       broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
       addCopyLog('info', `📌 DCA: ${sym} ${side} عند $${price} — ${pct}%`);
@@ -1153,6 +1185,20 @@ async function handleClientMsg(msg) {
       STATE.dcaOrders = STATE.dcaOrders.filter(o => o.id !== msg.data.id);
       db.saveDcaOrders(STATE.dcaOrders);
       broadcast({ type: 'dcaOrders', data: STATE.dcaOrders });
+      break;
+    }
+
+    case 'cancelPendingOrder': {
+      const { orderId, accId: cancelAccId, sym: cancelSym } = msg.data;
+      const cancelAcc = STATE.copyAccounts.find(a => a.id === cancelAccId);
+      if (cancelAcc?.apiKey && orderId && cancelSym) {
+        try {
+          await bFetch(cancelAcc.apiKey, cancelAcc.apiSecret, 'DELETE', '/fapi/v1/order', { symbol: cancelSym, orderId });
+          addCopyLog('info', `🗑 أُلغي الأمر #${orderId} ${cancelSym} — ${cancelAcc.name}`);
+        } catch (e) { addCopyLog('fail', `❌ إلغاء: ${e.message}`); }
+      }
+      STATE.pendingOrders = STATE.pendingOrders.filter(o => o.id !== orderId);
+      broadcast({ type: 'pendingOrders', data: STATE.pendingOrders });
       break;
     }
 
@@ -1241,7 +1287,11 @@ async function init() {
     const d = await fetchBinance('/fapi/v1/exchangeInfo');
     STATE.symbols = d.symbols
       .filter(s => s.quoteAsset === 'USDT' && s.contractType === 'PERPETUAL' && s.status === 'TRADING')
-      .map(s => s.symbol).sort();
+      .map(s => {
+        const lot = s.filters.find(f => f.filterType === 'LOT_SIZE');
+        if (lot) lotSizeCache[s.symbol] = parseFloat(lot.stepSize);
+        return s.symbol;
+      }).sort();
     console.log(`✅ Loaded ${STATE.symbols.length} symbols`);
     STATE.symbols.forEach(s => {
       if (!STATE.symbolData[s]) STATE.symbolData[s] = { rsi: null, prevRsi: null, signal: null, conf: null, zone: 'neutral', error: false };
