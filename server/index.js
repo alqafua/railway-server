@@ -319,54 +319,19 @@ function buildMsg(sym, side) {
 
 async function sendSignal(sym, side) {
   const st = STATE.settings;
-  if (!st.autoSend) return;
+  if (!st.autoSend || !st.cxToken || !st.cxChat) return;
   if (STATE.sentSigs[sym]) return;
   STATE.sentSigs[sym] = Date.now();
 
-  // تحديد الرافعة مع حد أقصى
+  // إصلاح #5 — التحقق من الرافعة وتعديلها إلى 10 إذا تجاوزت الحد
   let lv = parseInt(st.cxLev) || 20;
   const mx = await getMaxLev(sym);
   let note = '';
   if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد ${mx}X)`; }
-
-  // إرسال تلغرام
-  if (st.cxToken && st.cxChat) {
-    const origLev = st.cxLev; st.cxLev = String(lv);
-    await tgSend(buildMsg(sym, side) + note, st.cxChat);
-    st.cxLev = origLev;
-  }
-
-  // تنفيذ تلقائي على كل الحسابات الممكّنة
-  const accs = STATE.copyAccounts.filter(a => a.isEnabled !== false && a.apiKey && a.apiSecret);
-  if (!accs.length) return;
-  for (const acc of accs) {
-    try {
-      const bal = await getBalance(acc);
-      const price = livePrices[sym] || 1;
-      const lev2 = Math.min(lv, await getMaxLev(sym));
-      const amtPct = parseFloat(st.cxAmt) / 100;
-      const qty = roundQty((bal * amtPct * lev2) / price, sym);
-      if (qty <= 0) throw new Error('الكمية صغيرة');
-      await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage: lev2 });
-      await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
-        symbol: sym, side: side === 'LONG' ? 'BUY' : 'SELL',
-        type: 'MARKET', quantity: qty, positionSide: 'BOTH'
-      });
-      addCopyLog('success', `✅ تنفيذ تلقائي ${sym} ${side} × ${qty} — ${acc.name}`);
-    } catch (e) {
-      addCopyLog('fail', `❌ فشل تنفيذ تلقائي ${sym} — ${acc.name}: ${e.message}`);
-    }
-  }
-  const ep = livePrices[sym] || 0;
-  const t = { id: Date.now(), symbol: sym, side, entryPrice: ep, openTime: nowStr(), openTs: Date.now(),
-    sl: st.cxSL, tp1: st.cxTP1, leverage: String(lv), margin: st.cxMargin, label: 'تلقائي', executed: true };
-  STATE.openTrades = [t, ...STATE.openTrades];
-  db.saveOpenTrades(STATE.openTrades);
-  await Promise.all(accs.map(async acc => {
-    try { [acc.livePositions, acc.liveBalance] = await Promise.all([getPositions(acc), getBalance(acc)]); } catch (e) {}
-  }));
-  broadcast({ type: 'trades', data: STATE.openTrades });
-  broadcast({ type: 'accounts', data: getSafeAccounts() });
+  const origLev = st.cxLev; st.cxLev = String(lv);
+  const text = buildMsg(sym, side) + note;
+  st.cxLev = origLev;
+  await tgSend(text, st.cxChat);
 }
 
 // ══════════════════════════════════════════════
