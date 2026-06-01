@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const WebSocket = require('ws');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -1418,10 +1419,21 @@ async function init() {
     console.error('❌ Init failed:', e.message);
   }
 
-  // إصلاح #3 — heartbeat لمنع النوم (مع توصية باستخدام UptimeRobot لـ ping كل 5 دقائق)
+  // heartbeat log
   setInterval(() => {
     console.log(`💓 ${new Date().toISOString()} | Symbols:${STATE.symbols.length} | Clients:${clients.size} | Accounts:${STATE.copyAccounts.length}`);
-  }, 300000); // كل 5 دقائق
+  }, 300000);
+
+  // self-ping كل 25 ثانية لمنع النوم
+  const selfHost = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL?.replace('https://', '');
+  if (selfHost) {
+    setInterval(() => {
+      https.get(`https://${selfHost}/api/ping`, res => {
+        res.resume();
+      }).on('error', () => {});
+    }, 25000);
+    console.log(`🔁 Self-ping active → https://${selfHost}/api/ping`);
+  }
 }
 
 server.listen(PORT, () => {
