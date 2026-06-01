@@ -1241,6 +1241,29 @@ async function handleClientMsg(msg) {
       break;
     }
 
+    case 'closeBySymbol': {
+      const { sym, side, pct = 100 } = msg.data;
+      for (const acc of STATE.copyAccounts.filter(a => a.isEnabled !== false)) {
+        if (!acc.apiKey || !acc.apiSecret) continue;
+        try {
+          const pos = (await getPositions(acc)).find(p => p.symbol === sym);
+          if (!pos) continue;
+          const closeAmt = roundQty(Math.abs(parseFloat(pos.positionAmt)) * (pct / 100), sym);
+          if (closeAmt <= 0) continue;
+          await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', {
+            symbol: sym, side: side === 'LONG' ? 'SELL' : 'BUY',
+            type: 'MARKET', quantity: closeAmt, positionSide: 'BOTH', reduceOnly: true
+          });
+          addCopyLog('success', `🔒 إغلاق ${pct}% من ${sym} — ${acc.name}`);
+        } catch (e) { addCopyLog('fail', `❌ إغلاق ${sym} — ${acc.name}: ${e.message}`); }
+      }
+      await Promise.all(STATE.copyAccounts.filter(a => a.apiKey && a.apiSecret).map(async acc => {
+        try { [acc.livePositions, acc.liveBalance] = await Promise.all([getPositions(acc), getBalance(acc)]); } catch (e) {}
+      }));
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      break;
+    }
+
     case 'clearAlerts':
       STATE.alerts = [];
       broadcast({ type: 'alerts', data: [] });
