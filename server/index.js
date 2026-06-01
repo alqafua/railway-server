@@ -355,7 +355,9 @@ function triggerAlert(sym, sig, val) {
   const st = STATE.settings;
   const key = `${sym}_${sig.type}`, now = Date.now();
   if (STATE.cooldowns[key]) return;
-  if (st.blockOpen && STATE.openTrades.some(t => t.symbol === sym)) return;
+  const master = STATE.copyAccounts.find(a => a.isMaster);
+  const hasLivePos = master?.livePositions?.some(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  if (st.blockOpen && (STATE.openTrades.some(t => t.symbol === sym) || hasLivePos)) return;
   if (STATE.sentSigs[sym]) return;
   if (!isLiquid(sym)) return;
 
