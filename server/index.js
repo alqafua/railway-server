@@ -37,12 +37,14 @@ const DEFAULT_SETTINGS = {
   mode: 'SMA', maPeriod: 14, interval: '1h',
   autoSend: false, enableDiv: true, blockOpen: true,
   sigFilters: { ob: true, os: true, conf: true, trail: true },
-  cxMargin: 'Cross', cxLev: '20', cxAmt: '5%',
-  cxSLon: true, cxSL: '2',
+  cxMargin: 'Cross', cxLev: '20', cxAmt: '1%',
+  cxSLon: false, cxSL: '2',
   cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
-  cxTrailTp: 'off', cxTrailPct: '0.5', cxEntryTrail: '0.5%',
-  cxToken: '', cxChat: '', cxChatClose: '',
-  cxEntry2on: false, cxEntry2Dist: '2', cxEntry2Amt: '50',
+  cxTrailTp: 'on', cxTrailPct: '0.5', cxEntryTrail: '0.5%',
+  cxToken: process.env.TG_TOKEN || '',
+  cxChat: process.env.TG_CHAT || '',
+  cxChatClose: process.env.TG_CHAT_CLOSE || '',
+  cxEntry2on: true, cxEntry2Dist: '0.2', cxEntry2Amt: '50',
   cxEntry3on: false, cxEntry3Dist: '4', cxEntry3Amt: '50',
   cxBEon: false,
   trSon: false, trSstart: 75, trSgap: 3,
@@ -1382,7 +1384,23 @@ async function init() {
 
   // تحميل الحالة من قاعدة البيانات
   STATE.settings = db.loadSettings(DEFAULT_SETTINGS);
+  // تحديث إعدادات التلغرام من env vars عند كل تشغيل
+  if (process.env.TG_TOKEN) STATE.settings.cxToken = process.env.TG_TOKEN;
+  if (process.env.TG_CHAT) STATE.settings.cxChat = process.env.TG_CHAT;
+  if (process.env.TG_CHAT_CLOSE) STATE.settings.cxChatClose = process.env.TG_CHAT_CLOSE;
+  db.saveSettings(STATE.settings);
+
   STATE.copyAccounts = db.loadAccounts();
+  // seed الحسابات من env vars إذا كانت القائمة فارغة
+  if (STATE.copyAccounts.length === 0) {
+    const seed = [];
+    if (process.env.MASTER_KEY && process.env.MASTER_SECRET)
+      seed.push({ id: 1, name: process.env.MASTER_NAME || 'هيثم', tag: 'personal', isMaster: true, isEnabled: true, apiKey: process.env.MASTER_KEY, apiSecret: process.env.MASTER_SECRET, sizeRatio: 5, balance: 0, balanceAt: null, stats: { opens:0,closes:0,wins:0,losses:0,tot:0 } });
+    if (process.env.FOLLOWER1_KEY && process.env.FOLLOWER1_SECRET)
+      seed.push({ id: 2, name: process.env.FOLLOWER1_NAME || 'محمد', tag: 'personal', isMaster: false, isEnabled: true, apiKey: process.env.FOLLOWER1_KEY, apiSecret: process.env.FOLLOWER1_SECRET, sizeRatio: parseFloat(process.env.FOLLOWER1_RATIO || '1'), balance: 0, balanceAt: null, stats: { opens:0,closes:0,wins:0,losses:0,tot:0 } });
+    if (seed.length) { db.saveAccounts(seed); STATE.copyAccounts = db.loadAccounts(); console.log(`🌱 Seeded ${seed.length} accounts from env vars`); }
+  }
+
   STATE.openTrades = db.loadOpenTrades();
   STATE.closedTrades = db.loadClosedTrades();
   STATE.dcaOrders = db.loadDcaOrders();
