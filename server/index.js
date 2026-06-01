@@ -1188,6 +1188,14 @@ async function handleClientMsg(msg) {
       await tgSend(buildMsg(sym, side), st.cxChat);
       broadcast({ type: 'executeResult', data: results });
       broadcast({ type: 'trades', data: STATE.openTrades });
+      // تحديث المراكز الحية من Binance مباشرة بعد التنفيذ
+      await Promise.all(accs.filter(a => a.apiKey && a.apiSecret).map(async acc => {
+        try {
+          const [pos, bal] = await Promise.all([getPositions(acc), getBalance(acc)]);
+          acc.livePositions = pos;
+          acc.liveBalance = bal;
+        } catch (e) {}
+      }));
       broadcast({ type: 'accounts', data: getSafeAccounts() });
       break;
     }
