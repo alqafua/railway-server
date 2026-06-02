@@ -766,25 +766,45 @@ async function syncCopy() {
     if (!curr[sym]) {
       addCopyLog('info', `📡 ماستر أغلق: ${sym}`);
 
-      // إصلاح #4 — مزامنة إغلاق الصفقات فوراً
+      const prevPos = prev[sym];
+      const isLongPos = parseFloat(prevPos.positionAmt) > 0;
+      const side = isLongPos ? 'LONG' : 'SHORT';
+      const entryPrice = parseFloat(prevPos.entryPrice) || 0;
+      const exitPrice = livePrices[sym] || entryPrice;
+      const lev = parseFloat(prevPos.leverage) || 1;
+      const rawPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+      const pct = parseFloat(((isLongPos ? rawPct : -rawPct) * lev).toFixed(2));
+
+      // ابحث في openTrades أو أنشئ سجل جديد
       const t = STATE.openTrades.find(x => x.symbol === sym);
-      if (t) {
-        const ep = livePrices[sym] || t.entryPrice;
-        const pct = t.side === 'LONG' ? ((ep - t.entryPrice) / t.entryPrice) * 100 : ((t.entryPrice - ep) / t.entryPrice) * 100;
-        const closed = { ...t, exitPrice: ep, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' };
-        STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
-        STATE.openTrades = STATE.openTrades.filter(x => x.symbol !== sym);
-        db.saveClosedTrade(closed);
-        db.saveOpenTrades(STATE.openTrades);
-        broadcast({ type: 'trades', data: STATE.openTrades });
-        broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
-      }
+      const closed = t
+        ? { ...t, exitPrice, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' }
+        : { id: Date.now() + Math.random(), symbol: sym, side, entryPrice, exitPrice,
+            pct, result: pct >= 0 ? 'win' : 'loss',
+            openTime: '', exitTime: nowStr(), openTs: 0, closeTs: Date.now(),
+            sl: '', tp1: '', leverage: String(prevPos.leverage || 20),
+            margin: prevPos.marginType || 'Cross', label: '🪞 Binance', executed: true };
+
+      STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
+      STATE.openTrades = STATE.openTrades.filter(x => x.symbol !== sym);
+      delete STATE.sentSigs[sym];
+      db.saveClosedTrade(closed);
+      db.saveOpenTrades(STATE.openTrades);
+
+      // تحديث إحصائيات الماستر
+      if (!master.stats) master.stats = { opens:0, closes:0, wins:0, losses:0, tot:0 };
+      master.stats.closes++;
+      if (pct >= 0) master.stats.wins++; else master.stats.losses++;
+      master.stats.tot = parseFloat(((master.stats.tot || 0) + pct).toFixed(2));
+
+      broadcast({ type: 'trades', data: STATE.openTrades });
+      broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
 
       for (const f of followers) {
         const fp = (f.livePositions || []).find(p => p.symbol === sym);
         if (fp) { await closeFollower(f, sym, parseFloat(fp.positionAmt)); await new Promise(r => setTimeout(r, 300)); }
       }
-      tgSend(`🔒 Copy أُغلقت ${sym.replace('USDT', '/USDT')}`, STATE.settings.cxChatClose || STATE.settings.cxChat);
+      tgSend(`🔒 Copy أُغلقت ${sym.replace('USDT', '/USDT')} ${pct >= 0 ? '✅' : '❌'} ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`, STATE.settings.cxChatClose || STATE.settings.cxChat);
     }
   }
 
