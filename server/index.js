@@ -61,6 +61,7 @@ const STATE = {
   symbolMeta: {},
   alerts: [],
   openTrades: [],
+  masterOrders: {},
   closedTrades: [],
   copyAccounts: [],
   copyLog: [],
@@ -686,6 +687,58 @@ async function closeFollower(acc, sym, posAmt) {
   }
 }
 
+async function syncOrders(master, followers) {
+  try {
+    const orders = await bFetch(master.apiKey, master.apiSecret, 'GET', '/fapi/v1/openOrders', {});
+    if (!Array.isArray(orders)) return;
+    const prevOrders = STATE.masterOrders || {};
+    const newOrderMap = {};
+    for (const o of orders) newOrderMap[o.orderId] = o;
+
+    for (const o of orders) {
+      if (prevOrders[o.orderId]) continue; // سبق نسخه
+      if (!['STOP_MARKET', 'TAKE_PROFIT_MARKET', 'STOP', 'TAKE_PROFIT'].includes(o.type)) continue;
+      const sym = o.symbol;
+      const masterPos = master.livePositions?.find(p => p.symbol === sym);
+      if (!masterPos) continue;
+      const masterAmt = Math.abs(parseFloat(masterPos.positionAmt));
+      if (masterAmt === 0) continue;
+      const orderFrac = Math.min(parseFloat(o.origQty) / masterAmt, 1);
+
+      for (const f of followers) {
+        if (!f.apiKey || !f.apiSecret || !f.apiOk) continue;
+        const fPos = f.livePositions?.find(p => p.symbol === sym);
+        if (!fPos) continue;
+        const fAmt = Math.abs(parseFloat(fPos.positionAmt));
+        if (fAmt === 0) continue;
+        const isLong = parseFloat(fPos.positionAmt) > 0;
+        const closeQty = roundQty(fAmt * orderFrac, sym);
+        if (closeQty <= 0) continue;
+        const params = {
+          symbol: sym,
+          side: isLong ? 'SELL' : 'BUY',
+          type: o.type,
+          quantity: closeQty,
+          positionSide: 'BOTH',
+          reduceOnly: true,
+          stopPrice: o.stopPrice,
+        };
+        if (['STOP', 'TAKE_PROFIT'].includes(o.type)) params.price = o.price || o.stopPrice;
+        try {
+          await bFetch(f.apiKey, f.apiSecret, 'POST', '/fapi/v1/order', params);
+          addCopyLog('success', `📋 ${f.name}: ${o.type} ${sym} @ ${o.stopPrice}`);
+        } catch (e) {
+          addCopyLog('fail', `❌ ${f.name}: فشل نسخ أمر ${o.type} ${sym}: ${e.message}`);
+        }
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+    STATE.masterOrders = newOrderMap;
+  } catch (e) {
+    console.error('syncOrders error:', e.message);
+  }
+}
+
 let rateLimitPause = 0;
 async function syncCopy() {
   if (!STATE.copyOn) return;
@@ -714,10 +767,10 @@ async function syncCopy() {
   const prev = STATE.masterPositions || {};
   const followers = STATE.copyAccounts.filter(a => !a.isMaster && a.isEnabled !== false);
 
-  // تحقق إذا تغيرت مراكز الماستر — إذا لا تغيير نتجنب طلبات API للمتابعين
-  const currKeys = Object.keys(curr).sort().join(',');
-  const prevKeys = Object.keys(prev).sort().join(',');
-  if (currKeys === prevKeys) {
+  // تحقق إذا تغيرت مراكز الماستر (رموز أو كميات)
+  const currSig = Object.keys(curr).sort().map(s => `${s}:${parseFloat(curr[s].positionAmt).toFixed(4)}`).join(',');
+  const prevSig = Object.keys(prev).sort().map(s => `${s}:${parseFloat(prev[s].positionAmt).toFixed(4)}`).join(',');
+  if (currSig === prevSig) {
     STATE.masterPositions = curr;
     broadcast({ type: 'accounts', data: getSafeAccounts() });
     return;
@@ -727,6 +780,27 @@ async function syncCopy() {
   for (const f of followers) {
     try { f.livePositions = await getPositions(f); f.liveBalance = await getBalance(f); f.apiOk = true; }
     catch (e) { f.apiOk = false; }
+  }
+
+  // إغلاق جزئي — كمية الماستر نقصت بدون إغلاق كامل
+  for (const [sym, pos] of Object.entries(curr)) {
+    if (!prev[sym]) continue;
+    const prevAmt = Math.abs(parseFloat(prev[sym].positionAmt));
+    const currAmt = Math.abs(parseFloat(pos.positionAmt));
+    if (prevAmt > 0 && currAmt < prevAmt * 0.98) {
+      const closeFrac = (prevAmt - currAmt) / prevAmt;
+      addCopyLog('info', `📉 ماستر أغلق ${(closeFrac * 100).toFixed(0)}% من ${sym}`);
+      for (const f of followers) {
+        const fPos = f.livePositions?.find(p => p.symbol === sym);
+        if (!fPos) continue;
+        const fAmt = parseFloat(fPos.positionAmt);
+        const closeQty = roundQty(Math.abs(fAmt) * closeFrac, sym);
+        if (closeQty <= 0) continue;
+        try { await closeFollower(f, sym, fAmt > 0 ? closeQty : -closeQty); }
+        catch (e) { addCopyLog('fail', `❌ إغلاق جزئي ${f.name}/${sym}: ${e.message}`); }
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
   }
 
   // فتح صفقات جديدة
@@ -811,6 +885,9 @@ async function syncCopy() {
   STATE.masterPositions = curr;
   db.saveAccounts(STATE.copyAccounts);
   broadcast({ type: 'accounts', data: getSafeAccounts() });
+
+  // نسخ أوامر SL/TP الجديدة من الماستر
+  await syncOrders(master, followers);
 }
 
 async function startCopy() {
