@@ -226,10 +226,16 @@ const maxLevCache = {};
 async function getMaxLev(sym) {
   if (maxLevCache[sym]) return maxLevCache[sym];
   try {
-    const d = await fetchBinance(`/fapi/v1/leverageBracket?symbol=${sym}`);
-    const l = d[0]?.brackets[0]?.initialLeverage || 125;
+    const master = STATE.copyAccounts?.find(a => a.isMaster);
+    let d;
+    if (master?.apiKey && master?.apiSecret) {
+      d = await bFetch(master.apiKey, master.apiSecret, 'GET', '/fapi/v1/leverageBracket', { symbol: sym });
+    } else {
+      d = await fetchBinance(`/fapi/v1/leverageBracket?symbol=${sym}`);
+    }
+    const l = (Array.isArray(d) ? d[0] : d)?.brackets?.[0]?.initialLeverage || 20;
     maxLevCache[sym] = l; return l;
-  } catch (e) { return 125; }
+  } catch (e) { return 20; }
 }
 
 const lotSizeCache = {}; // sym -> stepSize (from exchangeInfo)
