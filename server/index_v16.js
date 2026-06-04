@@ -53,8 +53,6 @@ const DEFAULT_SETTINGS = {
   liqOon: false, liqOmin: 10000000,
   revMode: 'candles', revCount: 1, rsiGap: 1,
   dataMode: 'ws', soundEnabled: true,
-  maxOpenTrades: 0,
-  sigQueueFilters: { ob: true, os: true, conf: true, trail: true },
 };
 
 const STATE = {
@@ -74,7 +72,6 @@ const STATE = {
   cooldowns: {},
   sentSigs: {},
   copyOn: false,
-  waitQueue: [],
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
   sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
 };
@@ -330,10 +327,10 @@ function buildMsg(sym, side) {
   return L.join('\n');
 }
 
-async function sendSignal(sym, side, overridePrice) {
+async function sendSignal(sym, side) {
   const st = STATE.settings;
   if (!st.autoSend || !st.cxToken || !st.cxChat) return;
-  if (!overridePrice && STATE.sentSigs[sym]) return;
+  if (STATE.sentSigs[sym]) return;
   STATE.sentSigs[sym] = Date.now();
 
   // إصلاح #5 — التحقق من الرافعة وتعديلها إلى 10 إذا تجاوزت الحد
@@ -342,11 +339,7 @@ async function sendSignal(sym, side, overridePrice) {
   let note = '';
   if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد ${mx}X)`; }
   const origLev = st.cxLev; st.cxLev = String(lv);
-  // حفظ السعر الحالي مؤقتاً إذا طُلب تجاوزه
-  const origPrice = overridePrice ? livePrices[sym] : null;
-  if (overridePrice) livePrices[sym] = overridePrice;
   const text = buildMsg(sym, side) + note;
-  if (origPrice !== null) livePrices[sym] = origPrice;
   st.cxLev = origLev;
   await tgSend(text, st.cxChat);
 }
@@ -366,14 +359,6 @@ function isLiquid(sym) {
   if (st.liqVon && (m.vol || 0) < parseFloat(st.liqVmin)) return false;
   if (st.liqOon && (m.oi || 0) < parseFloat(st.liqOmin)) return false;
   return true;
-}
-
-function countOpenPositions() {
-  const master = STATE.copyAccounts.find(a => a.isMaster);
-  const liveSyms = (master?.livePositions || [])
-    .filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0)
-    .map(p => p.symbol);
-  return new Set([...STATE.openTrades.map(t => t.symbol), ...liveSyms]).size;
 }
 
 function triggerAlert(sym, sig, val) {
@@ -406,50 +391,8 @@ function triggerAlert(sym, sig, val) {
   };
   STATE.alerts = [item, ...STATE.alerts].slice(0, 200);
   db.saveAlert(item);
-
-  // فحص حد الصفقات المفتوحة — إضافة لقائمة الانتظار إذا وصل الحد
-  const maxOT = parseInt(st.maxOpenTrades) || 0;
-  const sqFilters = { ob: true, os: true, conf: true, trail: true, ...(st.sigQueueFilters || {}) };
-  const typeKey = isOB ? 'ob' : isOS ? 'os' : isConf ? 'conf' : isTrail ? 'trail' : null;
-  if (maxOT > 0 && countOpenPositions() >= maxOT) {
-    if (typeKey && sqFilters[typeKey] && !STATE.waitQueue.some(q => q.symbol === sym)) {
-      STATE.waitQueue.push({
-        id: Date.now() + Math.random(), symbol: sym, side: sig.side,
-        signalType: typeKey, signalPrice: livePrices[sym] || 0,
-        addedTs: Date.now(), addedTime: nowStr(),
-        label: sig.label, emoji: sig.emoji, color: sig.color
-      });
-      broadcast({ type: 'waitQueue', data: queueWithReversals() });
-    }
-    broadcast({ type: 'alert', data: item });
-    return;
-  }
-
   sendSignal(sym, sig.side);
   broadcast({ type: 'alert', data: item });
-}
-
-function queueWithReversals() {
-  return STATE.waitQueue.map(q => {
-    const cur = livePrices[q.symbol] || q.signalPrice;
-    const rev = q.signalPrice > 0 ? Math.abs((cur - q.signalPrice) / q.signalPrice) * 100 : 0;
-    return { ...q, reversalPct: parseFloat(rev.toFixed(3)) };
-  }).sort((a, b) => b.reversalPct - a.reversalPct);
-}
-
-async function sendQueueItemNow(qItem, currentPrice) {
-  STATE.waitQueue = STATE.waitQueue.filter(q => q.id !== qItem.id);
-  broadcast({ type: 'waitQueue', data: queueWithReversals() });
-  STATE.sentSigs[qItem.symbol] = Date.now();
-  await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol]);
-}
-
-function autoSendFromQueue() {
-  if (!STATE.settings.autoSend) return;
-  if (!STATE.waitQueue.length) return;
-  const scored = queueWithReversals();
-  const top = scored[0];
-  if (top) sendQueueItemNow(top, livePrices[top.symbol]);
 }
 
 async function scanSym(sym, candles) {
@@ -933,16 +876,9 @@ async function syncCopy() {
       master.stats.closes++;
       if (pct >= 0) master.stats.wins++; else master.stats.losses++;
       master.stats.tot = parseFloat(((master.stats.tot || 0) + pct).toFixed(2));
-      // تسجيل الصفقة في سجل الماستر المغلقة (مع USD PnL تقديري)
-      if (!master.closedTrades) master.closedTrades = [];
-      const posAmt = Math.abs(parseFloat(prevPos.positionAmt));
-      const pnlUsd = posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1);
-      master.closedTrades = [{ symbol: sym, side, entryPrice, exitPrice, pnl: pnlUsd, pct, closeTs: Date.now(), closeTime: nowStr() }, ...master.closedTrades].slice(0, 200);
 
       broadcast({ type: 'trades', data: STATE.openTrades });
       broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
-      // أرسل تلقائياً من قائمة الانتظار عند إغلاق صفقة
-      setTimeout(autoSendFromQueue, 1000);
 
       for (const f of followers) {
         const fp = (f.livePositions || []).find(p => p.symbol === sym);
@@ -1065,7 +1001,6 @@ function getPublicState() {
     accounts: getSafeAccounts(),
     dcaOrders: STATE.dcaOrders,
     pendingOrders: STATE.pendingOrders,
-    waitQueue: queueWithReversals(),
     sentSigs: STATE.sentSigs,
     sysStatus: STATE.sysStatus,
     lastUpdate: nowStr(),
@@ -1142,8 +1077,6 @@ async function handleClientMsg(msg) {
 
     case 'addAccount': {
       const acc = msg.data;
-      const copyExisting = !!acc.copyExisting;
-      delete acc.copyExisting;
       try {
         const bal = await getBalance(acc);
         acc.id = Date.now();
@@ -1158,24 +1091,6 @@ async function handleClientMsg(msg) {
         STATE.copyAccounts.push(acc);
         db.saveAccounts(STATE.copyAccounts);
         addCopyLog('success', `➕ أُضيف: ${acc.name} — $${bal.toFixed(2)}`);
-        // نسخ الصفقات الحالية من الماستر إذا طُلب ذلك
-        if (copyExisting && !acc.isMaster) {
-          const master = STATE.copyAccounts.find(a => a.isMaster);
-          if (master?.apiKey) {
-            try {
-              const masterPos = await getPositions(master);
-              let copied = 0;
-              for (const pos of masterPos) {
-                const ok = await openFollower(acc, pos);
-                if (ok) copied++;
-                await new Promise(r => setTimeout(r, 400));
-              }
-              addCopyLog('success', `🪞 نُسخت ${copied} صفقة للحساب الجديد: ${acc.name}`);
-            } catch (e) {
-              addCopyLog('fail', `⚠️ فشل نسخ الصفقات: ${e.message}`);
-            }
-          }
-        }
         broadcast({ type: 'accounts', data: getSafeAccounts() });
         broadcast({ type: 'addAccountResult', data: { success: true, balance: bal } });
       } catch (e) {
@@ -1247,8 +1162,6 @@ async function handleClientMsg(msg) {
       const pos = acc.livePositions || [];
       const pnlOpen = pos.reduce((s, p) => s + parseFloat(p.unRealizedProfit || 0), 0);
       const wr = st.closes ? (st.wins / st.closes * 100).toFixed(0) : 0;
-      const closed = acc.closedTrades || [];
-      const totalPnlUsd = closed.reduce((s, t) => s + (t.pnl || 0), 0);
       const lines = [
         `📊 تقرير: ${acc.name}`, `━━━━━━━━━━━━━━━`,
         `💵 الرصيد: $${parseFloat(acc.liveBalance || acc.balance || 0).toFixed(2)}`,
@@ -1258,34 +1171,9 @@ async function handleClientMsg(msg) {
         `✅ رابحة: ${st.wins || 0}`, `❌ خاسرة: ${st.losses || 0}`,
         `🎯 نسبة النجاح: ${wr}%`,
         `📊 الأداء الكلي: ${(st.tot || 0) >= 0 ? '+' : ''}${(st.tot || 0).toFixed(2)}%`,
-        `💰 إجمالي PnL: ${totalPnlUsd >= 0 ? '+' : ''}$${totalPnlUsd.toFixed(2)}`,
       ];
-      if (closed.length) {
-        lines.push('', '📜 آخر الصفقات:');
-        closed.slice(0, 10).forEach(t => {
-          lines.push(`${t.pnl >= 0 ? '✅' : '❌'} ${t.symbol.replace('USDT','')} ${t.side} → ${t.pnl >= 0 ? '+' : ''}$${(t.pnl || 0).toFixed(2)} (${t.pct >= 0 ? '+' : ''}${(t.pct || 0).toFixed(2)}%)`);
-        });
-      }
       await tgSend(lines.join('\n'), STATE.settings.cxChatClose || STATE.settings.cxChat);
       broadcast({ type: 'reportSent', data: { id: acc.id } });
-      break;
-    }
-
-    case 'sendQueueItem': {
-      const q = STATE.waitQueue.find(x => x.id === msg.data.id);
-      if (q) await sendQueueItemNow(q, livePrices[q.symbol]);
-      break;
-    }
-
-    case 'removeQueueItem': {
-      STATE.waitQueue = STATE.waitQueue.filter(x => x.id !== msg.data.id);
-      broadcast({ type: 'waitQueue', data: queueWithReversals() });
-      break;
-    }
-
-    case 'clearQueue': {
-      STATE.waitQueue = [];
-      broadcast({ type: 'waitQueue', data: queueWithReversals() });
       break;
     }
 
@@ -1457,7 +1345,6 @@ async function handleClientMsg(msg) {
         tgSend(`${pct >= 0 ? '✅' : '❌'} ${t.symbol.replace('USDT', '/USDT')}\n${t.side === 'LONG' ? '🟢' : '🔴'} ${t.side}\nالنتيجة: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%\nالمدة: ${dur}m`, STATE.settings.cxChatClose || STATE.settings.cxChat);
         broadcast({ type: 'trades', data: STATE.openTrades });
         broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
-        setTimeout(autoSendFromQueue, 1000);
       }
       break;
     }
@@ -1686,12 +1573,6 @@ async function init() {
   setInterval(() => {
     console.log(`💓 ${new Date().toISOString()} | Symbols:${STATE.symbols.length} | Clients:${clients.size} | Accounts:${STATE.copyAccounts.length}`);
   }, 300000);
-
-  // تحديث نسب الانعكاس في قائمة الانتظار كل 10 ثوانٍ
-  setInterval(() => {
-    if (STATE.waitQueue.length && clients.size)
-      broadcast({ type: 'waitQueue', data: queueWithReversals() });
-  }, 10000);
 
   // self-ping كل 25 ثانية لمنع النوم
   const selfHost = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL?.replace('https://', '');
