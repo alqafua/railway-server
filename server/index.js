@@ -440,6 +440,8 @@ function queueWithReversals() {
 async function sendQueueItemNow(qItem, currentPrice) {
   STATE.waitQueue = STATE.waitQueue.filter(q => q.id !== qItem.id);
   broadcast({ type: 'waitQueue', data: queueWithReversals() });
+  const queueSendEnabled = STATE.settings.sigFilters?.queue !== false;
+  if (!queueSendEnabled) return;
   STATE.sentSigs[qItem.symbol] = Date.now();
   await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol]);
 }
