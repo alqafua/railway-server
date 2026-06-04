@@ -419,7 +419,7 @@ function triggerAlert(sym, sig, val) {
         addedTs: Date.now(), addedTime: nowStr(),
         label: sig.label, emoji: sig.emoji, color: sig.color
       });
-      broadcast({ type: 'waitQueue', data: STATE.waitQueue });
+      broadcast({ type: 'waitQueue', data: queueWithReversals() });
     }
     broadcast({ type: 'alert', data: item });
     return;
@@ -429,9 +429,17 @@ function triggerAlert(sym, sig, val) {
   broadcast({ type: 'alert', data: item });
 }
 
+function queueWithReversals() {
+  return STATE.waitQueue.map(q => {
+    const cur = livePrices[q.symbol] || q.signalPrice;
+    const rev = q.signalPrice > 0 ? Math.abs((cur - q.signalPrice) / q.signalPrice) * 100 : 0;
+    return { ...q, reversalPct: parseFloat(rev.toFixed(3)) };
+  }).sort((a, b) => b.reversalPct - a.reversalPct);
+}
+
 async function sendQueueItemNow(qItem, currentPrice) {
   STATE.waitQueue = STATE.waitQueue.filter(q => q.id !== qItem.id);
-  broadcast({ type: 'waitQueue', data: STATE.waitQueue });
+  broadcast({ type: 'waitQueue', data: queueWithReversals() });
   STATE.sentSigs[qItem.symbol] = Date.now();
   await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol]);
 }
@@ -439,12 +447,7 @@ async function sendQueueItemNow(qItem, currentPrice) {
 function autoSendFromQueue() {
   if (!STATE.settings.autoSend) return;
   if (!STATE.waitQueue.length) return;
-  // احسب نسبة الانعكاس لكل بند في القائمة وافتح الأعلى
-  const scored = STATE.waitQueue.map(q => {
-    const cur = livePrices[q.symbol] || q.signalPrice;
-    const rev = q.signalPrice > 0 ? Math.abs((cur - q.signalPrice) / q.signalPrice) * 100 : 0;
-    return { ...q, reversalPct: rev };
-  }).sort((a, b) => b.reversalPct - a.reversalPct);
+  const scored = queueWithReversals();
   const top = scored[0];
   if (top) sendQueueItemNow(top, livePrices[top.symbol]);
 }
@@ -1062,7 +1065,7 @@ function getPublicState() {
     accounts: getSafeAccounts(),
     dcaOrders: STATE.dcaOrders,
     pendingOrders: STATE.pendingOrders,
-    waitQueue: STATE.waitQueue,
+    waitQueue: queueWithReversals(),
     sentSigs: STATE.sentSigs,
     sysStatus: STATE.sysStatus,
     lastUpdate: nowStr(),
@@ -1276,13 +1279,13 @@ async function handleClientMsg(msg) {
 
     case 'removeQueueItem': {
       STATE.waitQueue = STATE.waitQueue.filter(x => x.id !== msg.data.id);
-      broadcast({ type: 'waitQueue', data: STATE.waitQueue });
+      broadcast({ type: 'waitQueue', data: queueWithReversals() });
       break;
     }
 
     case 'clearQueue': {
       STATE.waitQueue = [];
-      broadcast({ type: 'waitQueue', data: STATE.waitQueue });
+      broadcast({ type: 'waitQueue', data: queueWithReversals() });
       break;
     }
 
@@ -1683,6 +1686,12 @@ async function init() {
   setInterval(() => {
     console.log(`💓 ${new Date().toISOString()} | Symbols:${STATE.symbols.length} | Clients:${clients.size} | Accounts:${STATE.copyAccounts.length}`);
   }, 300000);
+
+  // تحديث نسب الانعكاس في قائمة الانتظار كل 10 ثوانٍ
+  setInterval(() => {
+    if (STATE.waitQueue.length && clients.size)
+      broadcast({ type: 'waitQueue', data: queueWithReversals() });
+  }, 10000);
 
   // self-ping كل 25 ثانية لمنع النوم
   const selfHost = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL?.replace('https://', '');
