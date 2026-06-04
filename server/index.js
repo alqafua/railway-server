@@ -1372,6 +1372,35 @@ async function handleClientMsg(msg) {
       break;
     }
 
+    case 'exportData': {
+      const payload = {
+        settings: STATE.settings,
+        accounts: STATE.copyAccounts.map(a => ({ ...a, livePositions: undefined, liveBalance: undefined, apiOk: undefined, closedTrades: undefined })),
+        openTrades: STATE.openTrades,
+        closedTrades: STATE.closedTrades,
+        exportedAt: new Date().toISOString(),
+      };
+      ws.send(JSON.stringify({ type: 'exportData', data: payload }));
+      break;
+    }
+
+    case 'importData': {
+      const d = msg.data;
+      if (d.settings) { STATE.settings = { ...DEFAULT_SETTINGS, ...d.settings }; db.saveSettings(STATE.settings); }
+      if (Array.isArray(d.accounts) && d.accounts.length) { db.saveAccounts(d.accounts); STATE.copyAccounts = db.loadAccounts(); }
+      if (Array.isArray(d.openTrades)) { STATE.openTrades = d.openTrades; db.saveOpenTrades(STATE.openTrades); }
+      if (Array.isArray(d.closedTrades)) {
+        STATE.closedTrades = d.closedTrades;
+        d.closedTrades.forEach(t => db.saveClosedTrade(t));
+      }
+      broadcast({ type: 'settings', data: STATE.settings });
+      broadcast({ type: 'trades', data: STATE.openTrades });
+      broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      ws.send(JSON.stringify({ type: 'importDone' }));
+      break;
+    }
+
     case 'clearAlerts':
       STATE.alerts = [];
       broadcast({ type: 'alerts', data: [] });
