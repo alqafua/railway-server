@@ -330,22 +330,27 @@ function buildMsg(sym, side) {
   return L.join('\n');
 }
 
-async function sendSignal(sym, side, overridePrice) {
+async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabel = '') {
   const st = STATE.settings;
-  if (!st.autoSend || !st.cxToken || !st.cxChat) return;
+  if (fromQueue) {
+    // القائمة الذكية: تعتمد على sigFilters.queue فقط، مش autoSend
+    if (st.sigFilters?.queue === false) return;
+    if (!st.cxToken || !st.cxChat) return;
+  } else {
+    if (!st.autoSend || !st.cxToken || !st.cxChat) return;
+  }
   if (!overridePrice && STATE.sentSigs[sym]) return;
   STATE.sentSigs[sym] = Date.now();
 
-  // إصلاح #5 — التحقق من الرافعة وتعديلها إلى 10 إذا تجاوزت الحد
   let lv = parseInt(st.cxLev) || 20;
   const mx = await getMaxLev(sym);
   let note = '';
   if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد ${mx}X)`; }
   const origLev = st.cxLev; st.cxLev = String(lv);
-  // حفظ السعر الحالي مؤقتاً إذا طُلب تجاوزه
   const origPrice = overridePrice ? livePrices[sym] : null;
   if (overridePrice) livePrices[sym] = overridePrice;
-  const text = buildMsg(sym, side) + note;
+  const prefix = fromQueue && queueLabel ? `⏳ قائمة الانتظار | ${queueLabel}\n` : '';
+  const text = prefix + buildMsg(sym, side) + note;
   if (origPrice !== null) livePrices[sym] = origPrice;
   st.cxLev = origLev;
   await tgSend(text, st.cxChat);
@@ -443,15 +448,15 @@ function queueWithReversals() {
 async function sendQueueItemNow(qItem, currentPrice) {
   STATE.waitQueue = STATE.waitQueue.filter(q => q.id !== qItem.id);
   broadcast({ type: 'waitQueue', data: queueWithReversals() });
-  const queueSendEnabled = STATE.settings.sigFilters?.queue !== false;
-  if (!queueSendEnabled) return;
-  STATE.sentSigs[qItem.symbol] = Date.now();
-  await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol]);
+  const label = qItem.emoji ? `${qItem.emoji} ${qItem.label}` : qItem.label || qItem.signalType || '';
+  await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol], true, label);
 }
 
 function autoSendFromQueue() {
-  if (!STATE.settings.autoSend) return;
   if (!STATE.waitQueue.length) return;
+  if (STATE.settings.sigFilters?.queue === false) return;
+  const maxOT = parseInt(STATE.settings.maxOpenTrades) || 0;
+  if (maxOT > 0 && countOpenPositions() >= maxOT) return; // الحد لازال ممتلئ
   const scored = queueWithReversals();
   const top = scored[0];
   if (top) sendQueueItemNow(top, livePrices[top.symbol]);
@@ -1713,6 +1718,27 @@ async function init() {
     if (STATE.waitQueue.length && clients.size)
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
   }, 10000);
+
+  // تحديث مراكز الماستر كل 30 ثانية حتى لو النسخ متوقف
+  // يكتشف إغلاق صفقة → يرسل من القائمة تلقائياً
+  let prevMasterCount = -1;
+  setInterval(async () => {
+    if (STATE.copyOn) return; // syncCopy يتولى هذا عند تشغيل النسخ
+    const master = STATE.copyAccounts.find(a => a.isMaster);
+    if (!master?.apiKey || !master?.apiSecret) return;
+    try {
+      master.livePositions = await getPositions(master);
+      master.liveBalance = await getBalance(master);
+      master.apiOk = true;
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      const openCount = master.livePositions.filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0).length;
+      if (prevMasterCount > 0 && openCount < prevMasterCount) {
+        // أُغلقت صفقة — حرّر خانة → أرسل من القائمة
+        setTimeout(autoSendFromQueue, 1000);
+      }
+      prevMasterCount = openCount;
+    } catch {}
+  }, 30000);
 
   // self-ping كل 25 ثانية لمنع النوم
   const selfHost = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL?.replace('https://', '');
