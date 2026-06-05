@@ -1097,6 +1097,9 @@ async function handleClientMsg(msg) {
       if (msg.data.sigFilters) {
         msg.data.sigFilters = { ...STATE.settings.sigFilters, ...msg.data.sigFilters };
       }
+      if (msg.data.sigQueueFilters) {
+        msg.data.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...msg.data.sigQueueFilters };
+      }
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
       broadcast({ type: 'settings', data: STATE.settings });
