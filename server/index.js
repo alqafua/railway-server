@@ -1606,6 +1606,19 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/state', authMiddleware, (req, res) => res.json(getPublicState()));
 app.get('/api/accounts', authMiddleware, (req, res) => res.json(getSafeAccounts()));
 
+app.get('/api/export', authMiddleware, (req, res) => {
+  const payload = {
+    settings: STATE.settings,
+    accounts: STATE.copyAccounts.map(a => ({ ...a, livePositions: undefined, liveBalance: undefined, apiOk: undefined, closedTrades: undefined })),
+    openTrades: STATE.openTrades,
+    closedTrades: STATE.closedTrades,
+    exportedAt: new Date().toISOString(),
+  };
+  res.setHeader('Content-Disposition', 'attachment; filename*=UTF-8\'\'%D9%86%D8%B3%D8%AE%D9%87%20%D8%A7%D8%AD%D8%AA%D9%8A%D8%A7%D8%B7%D9%8A%D9%87.json');
+  res.setHeader('Content-Type', 'application/json');
+  res.json(payload);
+});
+
 app.get('/api/binance/*', authMiddleware, async (req, res) => {
   try {
     const p = req.path.replace('/api/binance', '');
