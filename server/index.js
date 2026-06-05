@@ -375,6 +375,10 @@ function isLiquid(sym) {
 
 function countOpenPositions() {
   const master = STATE.copyAccounts.find(a => a.isMaster);
+  // إذا الماستر موجود بـ API بس المراكز لم تُجلب بعد → افترض أن الحد ممتلئ (أكثر أماناً)
+  if (master?.apiKey && !master?.apiOk) {
+    return parseInt(STATE.settings.maxOpenTrades) || 999;
+  }
   const liveSyms = (master?.livePositions || [])
     .filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0)
     .map(p => p.symbol);
