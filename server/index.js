@@ -386,16 +386,15 @@ function triggerAlert(sym, sig, val) {
   if (STATE.sentSigs[sym]) return;
   if (!isLiquid(sym)) return;
 
-  // إصلاح #2 — فلتر الإشارات يعمل بشكل صحيح مع الحفاظ على القيم الافتراضية
-  const sigFilters = { ob: true, os: true, conf: true, trail: true, ...st.sigFilters };
   const isOB = ['a70', 'b70'].includes(sig.type);
   const isOS = ['b30', 'a30'].includes(sig.type);
   const isConf = ['cl', 'cs'].includes(sig.type);
   const isTrail = ['ts', 'tl'].includes(sig.type);
-  if (isOB && !sigFilters.ob) return;
-  if (isOS && !sigFilters.os) return;
-  if (isConf && !sigFilters.conf) return;
-  if (isTrail && !sigFilters.trail) return;
+  const typeKey = isOB ? 'ob' : isOS ? 'os' : isConf ? 'conf' : isTrail ? 'trail' : null;
+
+  // sigQueueFilters يتحكم بما يظهر في السجل والقائمة
+  const sqFilters = { ob: true, os: true, conf: true, trail: true, ...(st.sigQueueFilters || {}) };
+  if (typeKey && !sqFilters[typeKey]) return;
 
   STATE.cooldowns[key] = now;
   alertId++;
@@ -406,13 +405,12 @@ function triggerAlert(sym, sig, val) {
   };
   STATE.alerts = [item, ...STATE.alerts].slice(0, 200);
   db.saveAlert(item);
+  broadcast({ type: 'alert', data: item });
 
-  // فحص حد الصفقات المفتوحة — إضافة لقائمة الانتظار إذا وصل الحد
+  // فحص حد الصفقات — إضافة للقائمة إذا وصل الحد
   const maxOT = parseInt(st.maxOpenTrades) || 0;
-  const sqFilters = { ob: true, os: true, conf: true, trail: true, ...(st.sigQueueFilters || {}) };
-  const typeKey = isOB ? 'ob' : isOS ? 'os' : isConf ? 'conf' : isTrail ? 'trail' : null;
   if (maxOT > 0 && countOpenPositions() >= maxOT) {
-    if (typeKey && sqFilters[typeKey] && !STATE.waitQueue.some(q => q.symbol === sym)) {
+    if (typeKey && !STATE.waitQueue.some(q => q.symbol === sym)) {
       STATE.waitQueue.push({
         id: Date.now() + Math.random(), symbol: sym, side: sig.side,
         signalType: typeKey, signalPrice: livePrices[sym] || 0,
@@ -421,12 +419,17 @@ function triggerAlert(sym, sig, val) {
       });
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
     }
-    broadcast({ type: 'alert', data: item });
     return;
   }
 
+  // sigFilters يتحكم فقط بالإرسال المباشر للتلغرام (بدون قائمة)
+  const sigFilters = { ob: true, os: true, conf: true, trail: true, ...st.sigFilters };
+  if (isOB && !sigFilters.ob) return;
+  if (isOS && !sigFilters.os) return;
+  if (isConf && !sigFilters.conf) return;
+  if (isTrail && !sigFilters.trail) return;
+
   sendSignal(sym, sig.side);
-  broadcast({ type: 'alert', data: item });
 }
 
 function queueWithReversals() {
@@ -1099,6 +1102,9 @@ async function handleClientMsg(msg) {
       if (msg.data.sigFilters) {
         msg.data.sigFilters = { ...STATE.settings.sigFilters, ...msg.data.sigFilters };
       }
+      if (msg.data.sigQueueFilters) {
+        msg.data.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...msg.data.sigQueueFilters };
+      }
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
       broadcast({ type: 'settings', data: STATE.settings });
@@ -1604,6 +1610,19 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/state', authMiddleware, (req, res) => res.json(getPublicState()));
 app.get('/api/accounts', authMiddleware, (req, res) => res.json(getSafeAccounts()));
+
+app.get('/api/export', authMiddleware, (req, res) => {
+  const payload = {
+    settings: STATE.settings,
+    accounts: STATE.copyAccounts.map(a => ({ ...a, livePositions: undefined, liveBalance: undefined, apiOk: undefined, closedTrades: undefined })),
+    openTrades: STATE.openTrades,
+    closedTrades: STATE.closedTrades,
+    exportedAt: new Date().toISOString(),
+  };
+  res.setHeader('Content-Disposition', 'attachment; filename*=UTF-8\'\'%D9%86%D8%B3%D8%AE%D9%87%20%D8%A7%D8%AD%D8%AA%D9%8A%D8%A7%D8%B7%D9%8A%D9%87.json');
+  res.setHeader('Content-Type', 'application/json');
+  res.json(payload);
+});
 
 app.get('/api/binance/*', authMiddleware, async (req, res) => {
   try {
