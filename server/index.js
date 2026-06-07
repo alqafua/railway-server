@@ -492,9 +492,7 @@ function calcEMA(data, period) {
 async function updateEMA200() {
   try {
     const tf = STATE.settings.ema200TF || '4h';
-    const res = await fetch(`${BASE}/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=210`);
-    if (!res.ok) return;
-    const klines = await res.json();
+    const klines = await fetchBinance(`/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=210`);
     if (!Array.isArray(klines) || klines.length < 201) return;
     const closes = klines.map(k => parseFloat(k[4]));
     const ema200 = calcEMA(closes, 200);
