@@ -55,6 +55,13 @@ const DEFAULT_SETTINGS = {
   dataMode: 'ws', soundEnabled: true,
   maxOpenTrades: 0,
   sigQueueFilters: { ob: true, os: true, conf: true, trail: true },
+  ema200TF: '4h',
+  ema200FilterOn: false,
+  stTF: '4h',
+  stPeriod: 10,
+  stMult: 3,
+  stFilterOn: false,
+  dirFilter: 'all',
 };
 
 const STATE = {
@@ -75,6 +82,8 @@ const STATE = {
   sentSigs: {},
   copyOn: false,
   waitQueue: [],
+  ema200: { value: null, direction: null, btcPrice: null, updatedAt: null },
+  superTrend: { value: null, direction: null, btcPrice: null, updatedAt: null },
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
   sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
 };
@@ -401,6 +410,12 @@ function triggerAlert(sym, sig, val) {
   const isTrail = ['ts', 'tl'].includes(sig.type);
   const typeKey = isOB ? 'ob' : isOS ? 'os' : isConf ? 'conf' : isTrail ? 'trail' : null;
 
+  // فلتر الاتجاه اليدوي — يوقف كل شي (سجل + قائمة + تلغرام)
+  if (st.dirFilter && st.dirFilter !== 'all' && sig.side) {
+    const required = st.dirFilter === 'long' ? 'LONG' : 'SHORT';
+    if (sig.side !== required) return;
+  }
+
   // sigQueueFilters يتحكم بما يظهر في السجل والقائمة
   const sqFilters = { ob: true, os: true, conf: true, trail: true, ...(st.sigQueueFilters || {}) };
   if (typeKey && !sqFilters[typeKey]) return;
@@ -415,6 +430,24 @@ function triggerAlert(sym, sig, val) {
   STATE.alerts = [item, ...STATE.alerts].slice(0, 200);
   db.saveAlert(item);
   broadcast({ type: 'alert', data: item });
+
+  // فلتر EMA 200 و SuperTrend — يؤثر على القائمة والإرسال لكن ليس السجل (AND logic عند تفعيل الاثنين)
+  {
+    const emaOn = st.ema200FilterOn && STATE.ema200?.direction;
+    const stOn = st.stFilterOn && STATE.superTrend?.direction;
+    if (emaOn || stOn) {
+      let pass = true;
+      if (emaOn) {
+        const up = STATE.ema200.direction === 'up';
+        pass = pass && (sig.side === 'LONG' ? up : !up);
+      }
+      if (stOn) {
+        const up = STATE.superTrend.direction === 'up';
+        pass = pass && (sig.side === 'LONG' ? up : !up);
+      }
+      if (!pass) return;
+    }
+  }
 
   // فحص حد الصفقات — إضافة للقائمة إذا وصل الحد
   const maxOT = parseInt(st.maxOpenTrades) || 0;
@@ -464,6 +497,85 @@ function autoSendFromQueue() {
   const scored = queueWithReversals();
   const top = scored[0];
   if (top) sendQueueItemNow(top, livePrices[top.symbol]);
+}
+
+function calcEMA(data, period) {
+  const k = 2 / (period + 1);
+  let ema = data[0];
+  for (let i = 1; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
+  return ema;
+}
+
+async function updateEMA200() {
+  try {
+    const tf = STATE.settings.ema200TF || '4h';
+    const klines = await fetchBinance(`/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=210`);
+    if (!Array.isArray(klines) || klines.length < 201) return;
+    const closes = klines.map(k => parseFloat(k[4]));
+    const ema200 = calcEMA(closes, 200);
+    const currentPrice = closes[closes.length - 1];
+    STATE.ema200 = {
+      value: parseFloat(ema200.toFixed(2)),
+      direction: currentPrice > ema200 ? 'up' : 'down',
+      btcPrice: parseFloat(currentPrice.toFixed(2)),
+      updatedAt: new Date().toISOString()
+    };
+    broadcast({ type: 'ema200', data: STATE.ema200 });
+  } catch (e) {}
+}
+
+function calcSuperTrend(klines, period, mult) {
+  const n = klines.length;
+  if (n < period + 2) return null;
+  const H = klines.map(k => parseFloat(k[2]));
+  const L = klines.map(k => parseFloat(k[3]));
+  const C = klines.map(k => parseFloat(k[4]));
+  const atrArr = new Array(n).fill(0);
+  let sumTR = 0;
+  for (let i = 1; i <= period; i++) {
+    sumTR += Math.max(H[i] - L[i], Math.abs(H[i] - C[i - 1]), Math.abs(L[i] - C[i - 1]));
+  }
+  atrArr[period] = sumTR / period;
+  for (let i = period + 1; i < n; i++) {
+    const tr = Math.max(H[i] - L[i], Math.abs(H[i] - C[i - 1]), Math.abs(L[i] - C[i - 1]));
+    atrArr[i] = (atrArr[i - 1] * (period - 1) + tr) / period;
+  }
+  let prevUB = 0, prevLB = 0, prevDir = 1, finalDir = 1, finalST = 0;
+  for (let i = period; i < n; i++) {
+    const hl2 = (H[i] + L[i]) / 2;
+    const basicUB = hl2 + mult * atrArr[i];
+    const basicLB = hl2 - mult * atrArr[i];
+    const ub = i === period ? basicUB : (basicUB < prevUB || C[i - 1] > prevUB ? basicUB : prevUB);
+    const lb = i === period ? basicLB : (basicLB > prevLB || C[i - 1] < prevLB ? basicLB : prevLB);
+    let dir;
+    if (i === period) dir = C[i] > lb ? 1 : -1;
+    else if (prevDir === -1 && C[i] > prevUB) dir = 1;
+    else if (prevDir === 1 && C[i] < prevLB) dir = -1;
+    else dir = prevDir;
+    finalDir = dir; finalST = dir === 1 ? lb : ub;
+    prevUB = ub; prevLB = lb; prevDir = dir;
+  }
+  return { direction: finalDir === 1 ? 'up' : 'down', value: parseFloat(finalST.toFixed(2)) };
+}
+
+async function updateSuperTrend() {
+  try {
+    const tf = STATE.settings.stTF || '4h';
+    const period = parseInt(STATE.settings.stPeriod) || 10;
+    const mult = parseFloat(STATE.settings.stMult) || 3;
+    const limit = Math.max(100, period * 4);
+    const klines = await fetchBinance(`/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=${limit}`);
+    if (!Array.isArray(klines) || klines.length < period + 2) return;
+    const result = calcSuperTrend(klines, period, mult);
+    if (!result) return;
+    STATE.superTrend = {
+      direction: result.direction,
+      value: result.value,
+      btcPrice: parseFloat(parseFloat(klines[klines.length - 1][4]).toFixed(2)),
+      updatedAt: new Date().toISOString()
+    };
+    broadcast({ type: 'superTrend', data: STATE.superTrend });
+  } catch (e) {}
 }
 
 async function scanSym(sym, candles) {
@@ -1082,6 +1194,8 @@ function getPublicState() {
     waitQueue: queueWithReversals(),
     sentSigs: STATE.sentSigs,
     sysStatus: STATE.sysStatus,
+    ema200: STATE.ema200,
+    superTrend: STATE.superTrend,
     lastUpdate: nowStr(),
   };
 }
@@ -1117,6 +1231,8 @@ async function handleClientMsg(msg) {
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
       broadcast({ type: 'settings', data: STATE.settings });
+      if (msg.data.ema200TF !== undefined) updateEMA200();
+      if (msg.data.stTF !== undefined || msg.data.stPeriod !== undefined || msg.data.stMult !== undefined) updateSuperTrend();
       // إعادة تشغيل WS عند تغيير الفريم الزمني
       if (msg.data.interval && msg.data.interval !== oldInterval) {
         Object.keys(candleCache).forEach(k => delete candleCache[k]);
@@ -1708,6 +1824,10 @@ async function init() {
     setInterval(async () => {
       if (!binanceWs || binanceWs.readyState !== WebSocket.OPEN) await scanAll();
     }, 120000);
+    updateEMA200();
+    setInterval(updateEMA200, 10 * 60 * 1000);
+    updateSuperTrend();
+    setInterval(updateSuperTrend, 10 * 60 * 1000);
   } catch (e) {
     console.error('❌ Init failed:', e.message);
   }
