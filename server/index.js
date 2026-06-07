@@ -55,6 +55,8 @@ const DEFAULT_SETTINGS = {
   dataMode: 'ws', soundEnabled: true,
   maxOpenTrades: 0,
   sigQueueFilters: { ob: true, os: true, conf: true, trail: true },
+  ema200TF: '4h',
+  ema200FilterOn: false,
 };
 
 const STATE = {
@@ -75,6 +77,7 @@ const STATE = {
   sentSigs: {},
   copyOn: false,
   waitQueue: [],
+  ema200: { value: null, direction: null, btcPrice: null, updatedAt: null },
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
   sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
 };
@@ -416,6 +419,12 @@ function triggerAlert(sym, sig, val) {
   db.saveAlert(item);
   broadcast({ type: 'alert', data: item });
 
+  // فلتر EMA 200 — يؤثر على القائمة والإرسال لكن ليس السجل
+  if (st.ema200FilterOn && STATE.ema200?.direction) {
+    const dir = STATE.ema200.direction;
+    if ((sig.side === 'LONG' && dir !== 'up') || (sig.side === 'SHORT' && dir !== 'down')) return;
+  }
+
   // فحص حد الصفقات — إضافة للقائمة إذا وصل الحد
   const maxOT = parseInt(st.maxOpenTrades) || 0;
   if (maxOT > 0 && countOpenPositions() >= maxOT) {
@@ -464,6 +473,33 @@ function autoSendFromQueue() {
   const scored = queueWithReversals();
   const top = scored[0];
   if (top) sendQueueItemNow(top, livePrices[top.symbol]);
+}
+
+function calcEMA(data, period) {
+  const k = 2 / (period + 1);
+  let ema = data[0];
+  for (let i = 1; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
+  return ema;
+}
+
+async function updateEMA200() {
+  try {
+    const tf = STATE.settings.ema200TF || '4h';
+    const res = await fetch(`${BASE}/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=210`);
+    if (!res.ok) return;
+    const klines = await res.json();
+    if (!Array.isArray(klines) || klines.length < 201) return;
+    const closes = klines.map(k => parseFloat(k[4]));
+    const ema200 = calcEMA(closes, 200);
+    const currentPrice = closes[closes.length - 1];
+    STATE.ema200 = {
+      value: parseFloat(ema200.toFixed(2)),
+      direction: currentPrice > ema200 ? 'up' : 'down',
+      btcPrice: parseFloat(currentPrice.toFixed(2)),
+      updatedAt: new Date().toISOString()
+    };
+    broadcast({ type: 'ema200', data: STATE.ema200 });
+  } catch (e) {}
 }
 
 async function scanSym(sym, candles) {
@@ -1082,6 +1118,7 @@ function getPublicState() {
     waitQueue: queueWithReversals(),
     sentSigs: STATE.sentSigs,
     sysStatus: STATE.sysStatus,
+    ema200: STATE.ema200,
     lastUpdate: nowStr(),
   };
 }
@@ -1117,6 +1154,7 @@ async function handleClientMsg(msg) {
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
       broadcast({ type: 'settings', data: STATE.settings });
+      if (msg.data.ema200TF !== undefined) updateEMA200();
       // إعادة تشغيل WS عند تغيير الفريم الزمني
       if (msg.data.interval && msg.data.interval !== oldInterval) {
         Object.keys(candleCache).forEach(k => delete candleCache[k]);
@@ -1708,6 +1746,8 @@ async function init() {
     setInterval(async () => {
       if (!binanceWs || binanceWs.readyState !== WebSocket.OPEN) await scanAll();
     }, 120000);
+    updateEMA200();
+    setInterval(updateEMA200, 10 * 60 * 1000);
   } catch (e) {
     console.error('❌ Init failed:', e.message);
   }
