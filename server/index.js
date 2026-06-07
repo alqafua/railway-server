@@ -57,6 +57,7 @@ const DEFAULT_SETTINGS = {
   sigQueueFilters: { ob: true, os: true, conf: true, trail: true },
   ema200TF: '4h',
   ema200FilterOn: false,
+  dirFilter: 'all',
 };
 
 const STATE = {
@@ -403,6 +404,12 @@ function triggerAlert(sym, sig, val) {
   const isConf = ['cl', 'cs'].includes(sig.type);
   const isTrail = ['ts', 'tl'].includes(sig.type);
   const typeKey = isOB ? 'ob' : isOS ? 'os' : isConf ? 'conf' : isTrail ? 'trail' : null;
+
+  // فلتر الاتجاه اليدوي — يوقف كل شي (سجل + قائمة + تلغرام)
+  if (st.dirFilter && st.dirFilter !== 'all' && sig.side) {
+    const required = st.dirFilter === 'long' ? 'LONG' : 'SHORT';
+    if (sig.side !== required) return;
+  }
 
   // sigQueueFilters يتحكم بما يظهر في السجل والقائمة
   const sqFilters = { ob: true, os: true, conf: true, trail: true, ...(st.sigQueueFilters || {}) };
