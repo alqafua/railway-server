@@ -998,3 +998,502 @@ async function syncCopy() {
   for (const [sym, pos] of Object.entries(curr)) {
     const isNew = !prev[sym];
     if (isNew) {
+      addCopyLog('info', `📡 ماستر فتح: ${sym} ${parseFloat(pos.positionAmt) > 0 ? 'LONG' : 'SHORT'}`);
+
+      // إصلاح #4 — مزامنة الصفقات المفتوحة فوراً
+      if (!STATE.openTrades.some(t => t.symbol === sym)) {
+        const newTrade = {
+          id: Date.now() + Math.random(),
+          symbol: sym,
+          side: parseFloat(pos.positionAmt) > 0 ? 'LONG' : 'SHORT',
+          entryPrice: parseFloat(pos.entryPrice) || livePrices[sym] || 0,
+          openTime: nowStr(), openTs: Date.now(),
+          sl: STATE.settings.cxSL, tp1: STATE.settings.cxTP1,
+          leverage: pos.leverage || STATE.settings.cxLev,
+          margin: STATE.settings.cxMargin,
+          label: '🪞 Copy', executed: true
+        };
+        STATE.openTrades = [newTrade, ...STATE.openTrades];
+        db.saveOpenTrades(STATE.openTrades);
+        broadcast({ type: 'trades', data: STATE.openTrades });
+      }
+    }
+    for (const f of followers) {
+      if (!f.apiOk) continue;
+      const fPos = (f.livePositions || []).find(p => p.symbol === sym);
+      if (!fPos) { await openFollower(f, pos); await new Promise(r => setTimeout(r, 300)); }
+    }
+    if (isNew) tgSend(`🪞 Copy\n#${sym.replace('USDT', '/USDT')}\nماستر فتح: ${parseFloat(pos.positionAmt) > 0 ? 'Long' : 'Short'}\nحسابات: ${followers.length}`, STATE.settings.cxChat);
+  }
+
+  // إغلاق صفقات أغلقها الماستر
+  for (const [sym] of Object.entries(prev)) {
+    if (!curr[sym]) {
+      addCopyLog('info', `📡 ماستر أغلق: ${sym}`);
+
+      const prevPos = prev[sym];
+      const isLongPos = parseFloat(prevPos.positionAmt) > 0;
+      const side = isLongPos ? 'LONG' : 'SHORT';
+      const entryPrice = parseFloat(prevPos.entryPrice) || 0;
+      const exitPrice = livePrices[sym] || entryPrice;
+      const lev = parseFloat(prevPos.leverage) || 1;
+      const rawPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+      const pct = parseFloat(((isLongPos ? rawPct : -rawPct) * lev).toFixed(2));
+
+      // ابحث في openTrades أو أنشئ سجل جديد
+      const t = STATE.openTrades.find(x => x.symbol === sym);
+      const closed = t
+        ? { ...t, exitPrice, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' }
+        : { id: Date.now() + Math.random(), symbol: sym, side, entryPrice, exitPrice,
+            pct, result: pct >= 0 ? 'win' : 'loss',
+            openTime: '', exitTime: nowStr(), openTs: 0, closeTs: Date.now(),
+            sl: '', tp1: '', leverage: String(prevPos.leverage || 20),
+            margin: prevPos.marginType || 'Cross', label: '🪞 Binance', executed: true };
+
+      STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
+      STATE.openTrades = STATE.openTrades.filter(x => x.symbol !== sym);
+      delete STATE.sentSigs[sym];
+      db.saveClosedTrade(closed);
+      db.saveOpenTrades(STATE.openTrades);
+
+      // تحديث إحصائيات الماستر
+      if (!master.stats) master.stats = { opens:0, closes:0, wins:0, losses:0, tot:0 };
+      master.stats.closes++;
+      if (pct >= 0) master.stats.wins++; else master.stats.losses++;
+      master.stats.tot = parseFloat(((master.stats.tot || 0) + pct).toFixed(2));
+      // تسجيل الصفقة في سجل الماستر المغلقة (مع USD PnL تقديري)
+      if (!master.closedTrades) master.closedTrades = [];
+      const posAmt = Math.abs(parseFloat(prevPos.positionAmt));
+      const pnlUsd = posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1);
+      master.closedTrades = [{ symbol: sym, side, entryPrice, exitPrice, pnl: pnlUsd, pct, closeTs: Date.now(), closeTime: nowStr() }, ...master.closedTrades].slice(0, 200);
+
+      broadcast({ type: 'trades', data: STATE.openTrades });
+      broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
+      // أرسل تلقائياً من قائمة الانتظار عند إغلاق صفقة
+      setTimeout(autoSendFromQueue, 1000);
+
+      for (const f of followers) {
+        const fp = (f.livePositions || []).find(p => p.symbol === sym);
+        if (fp) { await closeFollower(f, sym, parseFloat(fp.positionAmt)); await new Promise(r => setTimeout(r, 300)); }
+      }
+      tgSend(`🔒 Copy أُغلقت ${sym.replace('USDT', '/USDT')} ${pct >= 0 ? '✅' : '❌'} ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`, STATE.settings.cxChatClose || STATE.settings.cxChat);
+    }
+  }
+
+  STATE.masterPositions = curr;
+  db.saveAccounts(STATE.copyAccounts);
+  broadcast({ type: 'accounts', data: getSafeAccounts() });
+
+  // نسخ أوامر SL/TP الجديدة من الماستر
+  await syncOrders(master, followers);
+}
+
+async function startCopy() {
+  if (copyTimer) clearInterval(copyTimer);
+  STATE.copyOn = true;
+
+  // جلب خط الأساس أولاً قبل بدء الـ timer — بـ await لمنع race condition
+  const master = STATE.copyAccounts.find(a => a.isMaster);
+  if (master?.apiKey) {
+    try {
+      const p = await getPositions(master);
+      const baseline = {};
+      p.forEach(x => baseline[x.symbol] = x);
+      STATE.masterPositions = baseline;
+      master.livePositions = p;
+      addCopyLog('info', `📌 خط الأساس: ${Object.keys(baseline).length} صفقة موجودة — لن تُنسخ`);
+    } catch (e) {
+      STATE.masterPositions = {};
+      addCopyLog('fail', `⚠️ تعذر جلب خط الأساس: ${e.message}`);
+    }
+  } else {
+    STATE.masterPositions = {};
+  }
+
+  copyTimer = setInterval(syncCopy, 5000);
+  addCopyLog('info', '▶️ بدأ النسخ — فقط الصفقات الجديدة من الآن');
+  broadcast({ type: 'copyOn', data: true });
+}
+
+function stopCopy() {
+  if (copyTimer) { clearInterval(copyTimer); copyTimer = null; }
+  STATE.copyOn = false;
+  addCopyLog('info', '⏸ توقف النسخ');
+  broadcast({ type: 'copyOn', data: false });
+}
+
+async function emergencyStop() {
+  stopCopy();
+  addCopyLog('fail', '🚨 إيقاف طارئ...');
+  for (const acc of STATE.copyAccounts) {
+    if (!acc.apiKey || !acc.apiSecret) continue;
+    try {
+      const pos = await getPositions(acc);
+      for (const p of pos) {
+        await closeFollower(acc, p.symbol, parseFloat(p.positionAmt));
+        await new Promise(r => setTimeout(r, 150));
+      }
+    } catch (e) {
+      // إصلاح — تسجيل الأخطاء بدل ابتلاعها
+      addCopyLog('fail', `❌ إيقاف طارئ ${acc.name}: ${e.message}`);
+    }
+  }
+  addCopyLog('info', '✅ اكتمل الإيقاف');
+  db.saveAccounts(STATE.copyAccounts);
+  broadcast({ type: 'accounts', data: getSafeAccounts() });
+}
+
+function getSafeAccounts() {
+  return STATE.copyAccounts.map(a => ({
+    id: a.id, name: a.name, tag: a.tag, isMaster: a.isMaster,
+    isEnabled: a.isEnabled, sizeRatio: a.sizeRatio,
+    apiKeyPreview: a.apiKey ? a.apiKey.slice(0, 8) + '••••' + a.apiKey.slice(-4) : '',
+    balance: a.liveBalance ?? a.balance ?? null,
+    balanceAt: a.balanceAt,
+    livePositions: a.livePositions || [],
+    apiOk: a.apiOk,
+    stats: a.stats || { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 },
+    closedTrades: (a.closedTrades || []).slice(0, 50)
+  }));
+}
+
+// ══════════════════════════════════════════════
+//  WEBSOCKET — Clients
+// ══════════════════════════════════════════════
+const clients = new Set();
+
+function broadcast(msg) {
+  const str = JSON.stringify(msg);
+  clients.forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(str); });
+}
+
+let sysErrorTimer = null;
+function reportError(loc, errMsg) {
+  STATE.sysStatus = { ok: false, lastError: errMsg, errorLoc: loc, errorTs: Date.now() };
+  broadcast({ type: 'sysStatus', data: STATE.sysStatus });
+  if (sysErrorTimer) clearTimeout(sysErrorTimer);
+  sysErrorTimer = setTimeout(() => {
+    STATE.sysStatus = { ok: true, lastError: null, errorLoc: null, errorTs: null };
+    broadcast({ type: 'sysStatus', data: STATE.sysStatus });
+    sysErrorTimer = null;
+  }, 60000);
+}
+
+function getPublicState() {
+  return {
+    symbols: STATE.symbols,
+    symbolData: STATE.symbolData,
+    symbolMeta: STATE.symbolMeta,
+    alerts: STATE.alerts,
+    openTrades: STATE.openTrades,
+    closedTrades: STATE.closedTrades,
+    settings: STATE.settings,
+    copyOn: STATE.copyOn,
+    copyLog: STATE.copyLog.slice(0, 50),
+    accounts: getSafeAccounts(),
+    dcaOrders: STATE.dcaOrders,
+    pendingOrders: STATE.pendingOrders,
+    waitQueue: queueWithReversals(),
+    sentSigs: STATE.sentSigs,
+    sysStatus: STATE.sysStatus,
+    ema200: STATE.ema200,
+    superTrend: STATE.superTrend,
+    lastUpdate: nowStr(),
+  };
+}
+
+wss.on('connection', (ws, req) => {
+  // إصلاح أمني — التحقق من التوكن قبل قبول الاتصال
+  try {
+    const url = new URL(req.url, `http://localhost`);
+    const token = url.searchParams.get('token');
+    if (!token) { ws.close(4001, 'Unauthorized'); return; }
+    jwt.verify(token, JWT_SECRET);
+  } catch (e) { ws.close(4001, 'Invalid token'); return; }
+
+  clients.add(ws);
+  ws.send(JSON.stringify({ type: 'init', data: getPublicState() }));
+  ws.on('message', async (raw) => {
+    try { await handleClientMsg(JSON.parse(raw)); } catch (e) {}
+  });
+  ws.on('close', () => clients.delete(ws));
+  ws.on('error', () => clients.delete(ws));
+});
+
+async function handleClientMsg(msg) {
+  switch (msg.type) {
+    case 'updateSettings': {
+      const oldInterval = STATE.settings.interval;
+      if (msg.data.sigFilters) {
+        msg.data.sigFilters = { ...STATE.settings.sigFilters, ...msg.data.sigFilters };
+      }
+      if (msg.data.sigQueueFilters) {
+        msg.data.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...msg.data.sigQueueFilters };
+      }
+      Object.assign(STATE.settings, msg.data);
+      db.saveSettings(STATE.settings);
+      broadcast({ type: 'settings', data: STATE.settings });
+      if (msg.data.ema200TF !== undefined) updateEMA200();
+      if (msg.data.stTF !== undefined || msg.data.stPeriod !== undefined || msg.data.stMult !== undefined) updateSuperTrend();
+      // إعادة تشغيل WS عند تغيير الفريم الزمني
+      if (msg.data.interval && msg.data.interval !== oldInterval) {
+        Object.keys(candleCache).forEach(k => delete candleCache[k]);
+        startBinanceWS();
+        broadcast({ type: 'scanning', data: true });
+        scanAll().then(() => broadcast({ type: 'scanning', data: false }));
+      }
+      break;
+    }
+
+    case 'scanNow': scanAll(); break;
+
+    // ══ Backtest ══════════════════════════════════════════════
+    case 'btInfo': {
+      const stored = {};
+      for (const tf of BT.ALLOWED_TF) stored[tf] = BT.listStoredSymbols(tf).filter(s => s !== 'BTCUSDT').length;
+      broadcast({ type: 'btInfo', data: { symbolsScanned: STATE.symbols.length, stored, busy: btState.busy } });
+      break;
+    }
+    case 'btDownload': {
+      if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
+      btState.busy = true; btState.cancel = false;
+      const days = parseInt(msg.data?.days) || 90;
+      const toMs = Date.now(), fromMs = toMs - days * 86400000;
+      const baseSyms = (msg.data?.symbols?.length ? msg.data.symbols : STATE.symbols);
+      const syms = baseSyms.includes('BTCUSDT') ? baseSyms : ['BTCUSDT', ...baseSyms];
+      (async () => {
+        try {
+          await BT.downloadData(syms, BT.ALLOWED_TF, fromMs, toMs, p => {
+            if (btState.cancel) throw new Error('أُلغي التنزيل');
+            broadcast({ type: 'btProgress', data: { ...p, kind: 'download' } });
+          });
+          broadcast({ type: 'btDownloadDone', data: { ok: true } });
+        } catch (e) { broadcast({ type: 'btDownloadDone', data: { ok: false, error: e.message } }); }
+        finally { btState.busy = false; }
+      })();
+      break;
+    }
+    case 'btRun': {
+      try {
+        const set = { ...STATE.settings, ...(msg.data?.settings || {}) };
+        const tf = BT.ALLOWED_TF.includes(set.interval) ? set.interval : '1h';
+        const syms = BT.listStoredSymbols(tf).filter(s => s !== 'BTCUSDT');
+        if (!syms.length) { broadcast({ type: 'btResult', data: { error: 'لا توجد بيانات مخزّنة لهذا الفريم — نزّل أولاً' } }); break; }
+        const ds = BT.loadDatasetByTf(syms, [tf])[tf];
+        const ftf = BT.ALLOWED_TF.includes(set.ema200TF) ? set.ema200TF : (BT.ALLOWED_TF.includes(set.stTF) ? set.stTF : tf);
+        const btc = BT.loadCandles('BTCUSDT', ftf) || BT.loadCandles('BTCUSDT', tf);
+        const regime = btc ? BT.buildBtcRegime(btc, ftf, ftf, parseInt(set.stPeriod) || 10, parseFloat(set.stMult) || 3) : null;
+        const res = BT.runBacktest(ds, set, regime);
+        broadcast({ type: 'btResult', data: { metrics: res.metrics, trades: res.trades.length, tf } });
+      } catch (e) { broadcast({ type: 'btResult', data: { error: e.message } }); }
+      break;
+    }
+    case 'btOptimize': {
+      if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
+      btState.busy = true; btState.cancel = false;
+      const budgetMs = (parseFloat(msg.data?.budgetHours) || 24) * 3600000;
+      const minTrades = parseInt(msg.data?.minTrades) || 30;
+      (async () => {
+        try {
+          const tfs = BT.ALLOWED_TF;
+          const symSet = new Set();
+          for (const tf of tfs) BT.listStoredSymbols(tf).forEach(s => symSet.add(s));
+          const symbols = [...symSet].filter(s => s !== 'BTCUSDT');
+          if (!symbols.length) { broadcast({ type: 'btOptDone', data: { error: 'لا توجد بيانات — نزّل أولاً' } }); btState.busy = false; return; }
+          const datasetByTf = BT.loadDatasetByTf(symbols, tfs);
+          const btcByTf = BT.loadBtcByTf(tfs);
+          const res = await BT.optimize(datasetByTf, btcByTf, {
+            budgetMs, minTrades, capFrac: 0.01,
+            stPeriod: parseInt(STATE.settings.stPeriod) || 10, stMult: parseFloat(STATE.settings.stMult) || 3,
+            shouldStop: () => btState.cancel,
+            onProgress: p => broadcast({ type: 'btProgress', data: { ...p, kind: 'optimize' } }),
+          });
+          broadcast({ type: 'btOptDone', data: res });
+          if (res.best) {
+            const m = res.best.metrics, c = res.best.combo;
+            const txt = `🏁 أفضل إعداد (Backtest)\nالفريم: ${c.interval} | ${c.mode}${c.mode !== 'RSI' ? '(' + c.maPeriod + ')' : ''}\nالإشارات: ${c.sigPreset} | فلتر: ${c.regime}\nTP1:${c.cxTP1}%  SL:${c.sl[1]}%  TP2:${c.tp2[0] === 'on' ? c.tp2[1] + '%' : '—'}\nدخول2:${c.entry2[0] === 'on' ? c.entry2[1] + '%' : '—'}  رافعة:${c.cxLev}x\n━━━━━━━━━━\n📈 عائد: ${m.netReturnPct}%  |  نجاح: ${m.winRate}%\n📊 صفقات: ${m.trades}  |  PF: ${m.profitFactor}\n📉 أقصى تراجع: ${m.maxDrawdownPct}%`;
+            tgSend(txt, STATE.settings.cxChat);
+          }
+        } catch (e) { broadcast({ type: 'btOptDone', data: { error: e.message } }); }
+        finally { btState.busy = false; }
+      })();
+      break;
+    }
+    case 'btStop': { btState.cancel = true; broadcast({ type: 'btProgress', data: { phase: 'stopping' } }); break; }
+
+    case 'forceRescan':
+      Object.keys(candleCache).forEach(k => delete candleCache[k]);
+      startBinanceWS();
+      broadcast({ type: 'scanning', data: true });
+      scanAll().then(() => broadcast({ type: 'scanning', data: false }));
+      break;
+
+    case 'refreshAllAccounts': {
+      const refreshed = await Promise.all(STATE.copyAccounts.map(async acc => {
+        if (!acc.apiKey) return;
+        try {
+          [acc.liveBalance, acc.livePositions] = await Promise.all([getBalance(acc), getPositions(acc)]);
+          acc.balanceAt = Date.now(); acc.apiOk = true;
+        } catch (e) { acc.apiOk = false; }
+      }));
+      db.saveAccounts(STATE.copyAccounts);
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      break;
+    }
+    case 'toggleCopy': STATE.copyOn ? stopCopy() : startCopy(); break;
+    case 'emergencyStop': await emergencyStop(); break;
+    case 'clearSysError': {
+      if (sysErrorTimer) { clearTimeout(sysErrorTimer); sysErrorTimer = null; }
+      STATE.sysStatus = { ok: true, lastError: null, errorLoc: null, errorTs: null };
+      broadcast({ type: 'sysStatus', data: STATE.sysStatus });
+      break;
+    }
+
+    case 'addAccount': {
+      const acc = msg.data;
+      const copyExisting = !!acc.copyExisting;
+      delete acc.copyExisting;
+      try {
+        const bal = await getBalance(acc);
+        acc.id = Date.now();
+        acc.balance = bal; acc.balanceAt = Date.now();
+        acc.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
+        acc.apiOk = true;
+        // إصلاح — الأول يصير Master تلقائياً، وتبقى واحدة فقط
+        if (acc.isMaster || STATE.copyAccounts.length === 0) {
+          STATE.copyAccounts.forEach(a => a.isMaster = false);
+          acc.isMaster = true;
+        }
+        STATE.copyAccounts.push(acc);
+        db.saveAccounts(STATE.copyAccounts);
+        addCopyLog('success', `➕ أُضيف: ${acc.name} — $${bal.toFixed(2)}`);
+        // نسخ الصفقات الحالية من الماستر إذا طُلب ذلك
+        if (copyExisting && !acc.isMaster) {
+          const master = STATE.copyAccounts.find(a => a.isMaster);
+          if (master?.apiKey) {
+            try {
+              const masterPos = await getPositions(master);
+              let copied = 0;
+              for (const pos of masterPos) {
+                const ok = await openFollower(acc, pos);
+                if (ok) copied++;
+                await new Promise(r => setTimeout(r, 400));
+              }
+              addCopyLog('success', `🪞 نُسخت ${copied} صفقة للحساب الجديد: ${acc.name}`);
+            } catch (e) {
+              addCopyLog('fail', `⚠️ فشل نسخ الصفقات: ${e.message}`);
+            }
+          }
+        }
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+        broadcast({ type: 'addAccountResult', data: { success: true, balance: bal } });
+      } catch (e) {
+        broadcast({ type: 'addAccountResult', data: { success: false, error: e.message } });
+      }
+      break;
+    }
+
+    case 'testAccount': {
+      try {
+        const bal = await getBalance(msg.data);
+        broadcast({ type: 'testAccountResult', data: { success: true, balance: bal } });
+      } catch (e) {
+        broadcast({ type: 'testAccountResult', data: { success: false, error: e.message } });
+      }
+      break;
+    }
+
+    case 'updateAccount': {
+      const idx = STATE.copyAccounts.findIndex(a => a.id === msg.data.id);
+      if (idx >= 0) {
+        // إصلاح — منع تعدد الـ Master
+        if (msg.data.isMaster) STATE.copyAccounts.forEach(a => a.isMaster = false);
+        Object.assign(STATE.copyAccounts[idx], msg.data);
+        db.saveAccounts(STATE.copyAccounts);
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
+      break;
+    }
+
+    case 'deleteAccount':
+      STATE.copyAccounts = STATE.copyAccounts.filter(a => a.id !== msg.data.id);
+      db.saveAccounts(STATE.copyAccounts);
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      break;
+
+    case 'toggleAccount': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (acc) { acc.isEnabled = !acc.isEnabled; db.saveAccounts(STATE.copyAccounts); broadcast({ type: 'accounts', data: getSafeAccounts() }); }
+      break;
+    }
+
+    case 'refreshAccount': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (acc?.apiKey) {
+        try { acc.liveBalance = await getBalance(acc); acc.livePositions = await getPositions(acc); acc.balanceAt = Date.now(); acc.apiOk = true; }
+        catch (e) { acc.apiOk = false; }
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
+      break;
+    }
+
+    case 'closeAllAccount': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (acc?.apiKey) {
+        try {
+          const pos = await getPositions(acc);
+          for (const p of pos) await closeFollower(acc, p.symbol, parseFloat(p.positionAmt));
+        } catch (e) {}
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
+      break;
+    }
+
+    case 'sendReport': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (!acc) break;
+      const st = acc.stats || {};
+      const pos = acc.livePositions || [];
+      const pnlOpen = pos.reduce((s, p) => s + parseFloat(p.unRealizedProfit || 0), 0);
+      const wr = st.closes ? (st.wins / st.closes * 100).toFixed(0) : 0;
+      const closed = acc.closedTrades || [];
+      const totalPnlUsd = closed.reduce((s, t) => s + (t.pnl || 0), 0);
+      const lines = [
+        `📊 تقرير: ${acc.name}`, `━━━━━━━━━━━━━━━`,
+        `💵 الرصيد: $${parseFloat(acc.liveBalance || acc.balance || 0).toFixed(2)}`,
+        `📈 صفقات مفتوحة: ${pos.length}`,
+        `💹 PnL مفتوح: ${pnlOpen >= 0 ? '+' : ''}$${pnlOpen.toFixed(2)}`, ``,
+        `📋 الصفقات المغلقة: ${st.closes || 0}`,
+        `✅ رابحة: ${st.wins || 0}`, `❌ خاسرة: ${st.losses || 0}`,
+        `🎯 نسبة النجاح: ${wr}%`,
+        `📊 الأداء الكلي: ${(st.tot || 0) >= 0 ? '+' : ''}${(st.tot || 0).toFixed(2)}%`,
+        `💰 إجمالي PnL: ${totalPnlUsd >= 0 ? '+' : ''}$${totalPnlUsd.toFixed(2)}`,
+      ];
+      if (closed.length) {
+        lines.push('', '📜 آخر الصفقات:');
+        closed.slice(0, 10).forEach(t => {
+          lines.push(`${t.pnl >= 0 ? '✅' : '❌'} ${t.symbol.replace('USDT','')} ${t.side} → ${t.pnl >= 0 ? '+' : ''}$${(t.pnl || 0).toFixed(2)} (${t.pct >= 0 ? '+' : ''}${(t.pct || 0).toFixed(2)}%)`);
+        });
+      }
+      await tgSend(lines.join('\n'), STATE.settings.cxChatClose || STATE.settings.cxChat);
+      broadcast({ type: 'reportSent', data: { id: acc.id } });
+      break;
+    }
+
+    case 'sendQueueItem': {
+      const q = STATE.waitQueue.find(x => x.id === msg.data.id);
+      if (q) await sendQueueItemNow(q, livePrices[q.symbol]);
+      break;
+    }
+
+    case 'removeQueueItem': {
+      STATE.waitQueue = STATE.waitQueue.filter(x => x.id !== msg.data.id);
+      broadcast({ type: 'waitQueue', data: queueWithReversals() });
+      break;
+    }
+
+    case 'clearQueue': {
+      STATE.waitQueue = [];
+      broadcast({ type: 'waitQueue', data: queueWithReversals() });
+      break;
+    }
