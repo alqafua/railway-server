@@ -133,17 +133,52 @@ async function downloadData(symbols, intervals, fromMs, toMs, onProgress) {
 function typeKeyOf(t){ return ['a70','b70'].includes(t)?'ob':['b30','a30'].includes(t)?'os':['cl','cs'].includes(t)?'conf':t==='ts'?'ts':t==='tl'?'tl':null; }
 
 // كل الإشارات الخام (fSig=trail||sig + conf) موسومة بالنوع — بلا فلاتر نوع/اتجاه/سوق
+//  محسوبة O(n): المؤشر (RSI/SMA/EMA) يُحسب مرة واحدة لكامل السلسلة بدل إعادة
+//  حسابه من الصفر لكل شمعة (كان O(n²) ويجمّد السيرفر بالكامل أثناء التشغيل).
 function generateRawSignals(candles, settings) {
   const closes = candles.map(c => c[4]);
   const out = []; const peaks = {};
   const mode = settings.mode, ma = parseInt(settings.maPeriod) || 14;
   const ed = !!settings.enableDiv; const minLen = S.RSI_P + 2;
+
+  // المؤشر الكامل مرة واحدة (نفس قيم computeIndSeries لكل بادئة، بسبب السببية)
+  const fullRsi = S.calcRSISeries(closes, S.RSI_P);
+  const N = fullRsi.length;
+  let fullInd;
+  if (mode === 'RSI') {
+    fullInd = fullRsi;
+  } else if (mode === 'SMA') {
+    fullInd = [];
+    if (N >= ma) {
+      let sum = 0;
+      for (let k = 0; k < ma; k++) sum += fullRsi[k];
+      fullInd.push(sum / ma);
+      for (let k = ma; k < N; k++) { sum += fullRsi[k] - fullRsi[k - ma]; fullInd.push(sum / ma); }
+    }
+  } else { // EMA
+    fullInd = [];
+    if (N >= ma) {
+      const k = 2 / (ma + 1);
+      let e = fullRsi[0];
+      fullInd.push(e);
+      for (let idx = 1; idx < N; idx++) { e = fullRsi[idx] * k + e * (1 - k); if (idx >= ma - 1) fullInd.push(e); }
+    }
+  }
+
+  const WIN = 40; // نافذة كافية لـ checkDiv (يحتاج ≤26) ولـ revCount
   for (let i = minLen; i < candles.length; i++) {
-    const cls = closes.slice(0, i + 1);
-    const cu = S.computeInd(cls, mode, ma);
-    const pv = S.computeInd(cls.slice(0, -1), mode, ma);
-    if (cu === null || pv === null) continue;
-    const id = S.computeIndSeries(cls, mode, ma);
+    const m = i + 1 - S.RSI_P, mPrev = m - 1;
+    let L, Lp;
+    if (mode === 'RSI') { L = m; Lp = mPrev; }
+    else if (mode === 'SMA') { L = m >= ma ? m - ma + 1 : 0; Lp = mPrev >= ma ? mPrev - ma + 1 : 0; }
+    else { L = m >= ma ? m - ma + 2 : 0; Lp = mPrev >= ma ? mPrev - ma + 2 : 0; }
+    if (L < 1 || Lp < 1) continue;
+    const cu = fullInd[L - 1], pv = fullInd[Lp - 1];
+
+    const wlen = Math.min(L, WIN);
+    const id = fullInd.slice(L - wlen, L);
+    const cls = closes.slice(i + 1 - wlen, i + 1);
+
     const sig = S.detectSignal(pv, cu, cls, id, ed, settings);
     const conf = S.detectConf(pv, cu, cls, id, ed);
     const trail = S.detectTrail(peaks, '_', cu, cls, id, ed, settings);
