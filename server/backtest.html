@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Backtest — RSI Scanner Pro</title>
+<style>
+  :root{--bg:#0a1628;--bg2:#0f1d33;--bg3:#15263f;--accent:#00e5ff;--orange:#ffa726;--green:#2ed573;--red:#ff4757;--text:#e8f0fb;--text2:#7d93b2;--line:rgba(255,255,255,.08)}
+  *{box-sizing:border-box;font-family:-apple-system,system-ui,'Segoe UI',Tahoma,sans-serif}
+  body{margin:0;background:var(--bg);color:var(--text);font-size:14px;-webkit-tap-highlight-color:transparent}
+  .wrap{max-width:760px;margin:0 auto;padding:16px}
+  h1{font-size:20px;color:var(--accent);margin:8px 0 2px}
+  .sub{color:var(--text2);font-size:12px;margin-bottom:16px}
+  .card{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+  .card h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+  label{display:block;color:var(--text2);font-size:12px;margin:8px 0 4px}
+  input,select{width:100%;background:var(--bg3);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:11px;font-size:14px;outline:none}
+  input:focus,select:focus{border-color:var(--accent)}
+  .row{display:flex;gap:10px}.row>div{flex:1}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  button{width:100%;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:700;cursor:pointer;margin-top:12px;background:var(--accent);color:#04222b}
+  button.sec{background:var(--bg3);color:var(--text);border:1px solid var(--line)}
+  button.danger{background:var(--red);color:#fff}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .toggle{display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-top:8px}
+  .sw{width:42px;height:24px;border-radius:14px;background:#33415a;position:relative;transition:.2s}
+  .sw.on{background:var(--orange)}.sw i{position:absolute;top:3px;right:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.2s}.sw.on i{right:21px}
+  .bar{height:12px;background:var(--bg3);border-radius:8px;overflow:hidden;margin:10px 0}
+  .bar>div{height:100%;background:linear-gradient(90deg,var(--accent),var(--green));width:0;transition:width .3s}
+  .stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px}
+  .stat{background:var(--bg3);border-radius:10px;padding:10px;text-align:center}
+  .stat .v{font-size:18px;font-weight:800}.stat .k{font-size:11px;color:var(--text2);margin-top:2px}
+  .muted{color:var(--text2);font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  th,td{padding:7px 5px;border-bottom:1px solid var(--line);text-align:center}
+  th{color:var(--text2);font-weight:600}
+  .pos{color:var(--green)}.neg{color:var(--red)}
+  .hide{display:none}
+  .login{max-width:340px;margin:60px auto;text-align:center}
+  .badge{display:inline-block;background:var(--bg3);border-radius:20px;padding:4px 11px;font-size:12px;margin:3px}
+  canvas{width:100%;height:90px;display:block;margin-top:10px}
+  .warn{background:rgba(255,167,38,.1);border:1px solid rgba(255,167,38,.3);border-radius:9px;padding:9px 11px;font-size:12px;color:var(--orange);margin-top:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- تسجيل الدخول -->
+  <div id="loginView" class="login">
+    <h1>🔬 Backtest</h1>
+    <div class="sub">سجّل الدخول للمتابعة</div>
+    <div class="card">
+      <input id="u" placeholder="Username" autocomplete="off">
+      <input id="p" type="password" placeholder="••••" autocomplete="off" style="margin-top:8px">
+      <div id="loginErr" class="neg" style="font-size:12px;min-height:16px;margin-top:6px"></div>
+      <button onclick="doLogin()">دخول →</button>
+    </div>
+  </div>
+
+  <!-- التطبيق -->
+  <div id="app" class="hide">
+    <h1>🔬 Backtest & المُحسِّن التلقائي</h1>
+    <div class="sub">يعمل على شموع مغلقة بنفس مؤشرك — الفريمات: 5m · 30m · 1h · 4h</div>
+
+    <!-- 1) البيانات -->
+    <div class="card">
+      <h2>📥 البيانات</h2>
+      <div id="dataInfo" class="muted">جارٍ الفحص…</div>
+      <label>عمق التاريخ (أيام)</label>
+      <input id="days" type="number" value="90" min="7" max="730">
+      <div class="warn">كل العملات × 4 فريمات قد يستغرق دقائق طويلة ويُنزَّل مرة واحدة. الفريمات الصغيرة (5m) أثقل.</div>
+      <button id="dlBtn" onclick="download()">تنزيل / تحديث البيانات</button>
+      <div id="dlProg" class="hide">
+        <div class="bar"><div id="dlFill"></div></div>
+        <div id="dlTxt" class="muted"></div>
+      </div>
+    </div>
+
+    <!-- 2) باك تيست فردي -->
+    <div class="card">
+      <h2>▶️ باك تيست بإعداداتك</h2>
+      <div class="grid">
+        <div><label>الفريم</label><select id="s_interval"><option>5m</option><option>30m</option><option selected>1h</option><option>4h</option></select></div>
+        <div><label>المؤشر</label><select id="s_mode"><option>RSI</option><option selected>SMA</option><option>EMA</option></select></div>
+        <div><label>فترة MA</label><input id="s_maPeriod" type="number" value="14"></div>
+        <div><label>الرافعة</label><input id="s_cxLev" type="number" value="20"></div>
+        <div><label>TP1 %</label><input id="s_cxTP1" type="number" value="3" step="0.1"></div>
+        <div><label>TP1 كمية %</label><input id="s_cxTP1Amt" type="number" value="50"></div>
+        <div><label>SL %</label><input id="s_cxSL" type="number" value="3" step="0.1"></div>
+        <div><label>دخول2 مسافة %</label><input id="s_cxEntry2Dist" type="number" value="2" step="0.1"></div>
+      </div>
+      <div class="grid">
+        <div class="toggle" onclick="tog('t_sl')"><span>وقف خسارة</span><div id="t_sl" class="sw on"><i></i></div></div>
+        <div class="toggle" onclick="tog('t_tp2')"><span>هدف ثانٍ</span><div id="t_tp2" class="sw"><i></i></div></div>
+        <div class="toggle" onclick="tog('t_e2')"><span>دخول ثانٍ</span><div id="t_e2" class="sw"><i></i></div></div>
+        <div class="toggle" onclick="tog('t_div')"><span>دايفرجنس</span><div id="t_div" class="sw"><i></i></div></div>
+        <div class="toggle" onclick="tog('t_ema')"><span>فلتر EMA200</span><div id="t_ema" class="sw"><i></i></div></div>
+        <div class="toggle" onclick="tog('t_st')"><span>فلتر SuperTrend</span><div id="t_st" class="sw"><i></i></div></div>
+      </div>
+      <button id="runBtn" onclick="runBT()">شغّل الباك تيست</button>
+      <div id="runRes" class="hide">
+        <div class="stats">
+          <div class="stat"><div class="v" id="r_ret">—</div><div class="k">العائد</div></div>
+          <div class="stat"><div class="v" id="r_wr">—</div><div class="k">نسبة النجاح</div></div>
+          <div class="stat"><div class="v" id="r_tr">—</div><div class="k">صفقات</div></div>
+          <div class="stat"><div class="v" id="r_pf">—</div><div class="k">Profit Factor</div></div>
+          <div class="stat"><div class="v" id="r_dd">—</div><div class="k">أقصى تراجع</div></div>
+          <div class="stat"><div class="v" id="r_avg">—</div><div class="k">متوسط/صفقة</div></div>
+        </div>
+        <canvas id="eq" width="700" height="90"></canvas>
+        <button class="sec" onclick="downloadBackup(settingsFromForm())">⬇️ حمّل هذا الإعداد كنسخة احتياطية</button>
+      </div>
+    </div>
+
+    <!-- 3) المُحسِّن التلقائي -->
+    <div class="card">
+      <h2>🤖 الفحص التلقائي لأفضل إعداد</h2>
+      <div class="muted">يجرّب كل المجموعات (المؤشر + الإدارة + الفلاتر + الفريم) ويختار الأفضل للفترة المخزّنة.</div>
+      <label>📤 (اختياري) ارفع نسختك الحالية لتُستخدم كأساس — يعدّل عليها ويعطيك بدلها بلا مشتركين</label>
+      <input type="file" accept=".json,application/json" onchange="loadBase(this)">
+      <div id="baseMsg" class="muted" style="margin-top:4px"></div>
+      <div class="row">
+        <div><label>الميزانية (ساعات)</label><input id="o_budget" type="number" value="24" step="0.5"></div>
+        <div><label>أقل عدد صفقات</label><input id="o_min" type="number" value="30"></div>
+      </div>
+      <button id="optBtn" onclick="startOpt()">ابدأ الفحص التلقائي</button>
+      <button id="stopBtn" class="danger hide" onclick="stopOpt()">⏹ إيقاف</button>
+
+      <div id="optProg" class="hide">
+        <div class="bar"><div id="optFill"></div></div>
+        <div class="stats">
+          <div class="stat"><div class="v" id="o_pct">0%</div><div class="k">مكتمل</div></div>
+          <div class="stat"><div class="v" id="o_elapsed">0:00</div><div class="k">منقضٍ</div></div>
+          <div class="stat"><div class="v" id="o_eta">—</div><div class="k">متبقٍّ</div></div>
+        </div>
+        <div id="o_count" class="muted" style="margin-top:8px;text-align:center"></div>
+        <div id="o_live" class="muted" style="margin-top:6px;text-align:center"></div>
+      </div>
+
+      <div id="optDone" class="hide">
+        <div class="warn">⚠️ هذه أفضل نتيجة على البيانات الماضية — لا تضمن المستقبل (overfitting). جرّبها بحذر وعلى رأس مال صغير أولاً.</div>
+        <div id="bestBox" style="margin-top:10px"></div>
+        <h2 style="margin-top:14px">🏆 أفضل 10</h2>
+        <div style="overflow-x:auto"><table id="lbTbl"></table></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let token=null, ws=null;
+const $=id=>document.getElementById(id);
+function tog(id){const e=$(id);e.classList.toggle('on');}
+function isOn(id){return $(id).classList.contains('on');}
+const apiBase=location.origin;
+
+async function doLogin(){
+  const u=$('u').value, p=$('p').value;
+  try{
+    const r=await fetch(apiBase+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    const d=await r.json();
+    if(d.token){token=d.token; $('loginView').classList.add('hide'); $('app').classList.remove('hide'); connect(); prefill();}
+    else $('loginErr').textContent=d.error||'بيانات خاطئة';
+  }catch(e){$('loginErr').textContent='تعذّر الاتصال';}
+}
+
+async function prefill(){
+  try{
+    const r=await fetch(apiBase+'/api/state?token='+token); const s=(await r.json()).settings||{};
+    window.baseSettings=s;
+    const m={s_interval:'interval',s_mode:'mode',s_maPeriod:'maPeriod',s_cxLev:'cxLev',s_cxTP1:'cxTP1',s_cxTP1Amt:'cxTP1Amt',s_cxSL:'cxSL',s_cxEntry2Dist:'cxEntry2Dist'};
+    for(const k in m){ if(s[m[k]]!=null) $(k).value=s[m[k]]; }
+    setSw('t_sl',s.cxSLon); setSw('t_tp2',s.cxTP2on); setSw('t_e2',s.cxEntry2on); setSw('t_div',s.enableDiv); setSw('t_ema',s.ema200FilterOn); setSw('t_st',s.stFilterOn);
+  }catch(e){}
+}
+function setSw(id,v){const e=$(id);if(v)e.classList.add('on');else e.classList.remove('on');}
+
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(proto+'://'+location.host+'?token='+token);
+  ws.onopen=()=>send('btInfo',{});
+  ws.onmessage=e=>{ let m; try{m=JSON.parse(e.data);}catch(_){return;} handle(m); };
+  ws.onclose=()=>setTimeout(connect,3000);
+}
+function send(type,data){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type,data})); }
+
+function fmtTime(ms){ if(!ms||ms<0)return '—'; const s=Math.round(ms/1000); const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60; return (h?h+':':'')+String(m).padStart(h?2:1,'0')+':'+String(ss).padStart(2,'0'); }
+
+function handle(m){
+  if(m.type==='btInfo'){
+    const d=m.data; const parts=Object.entries(d.stored).map(([tf,n])=>`<span class="badge">${tf}: ${n} عملة</span>`).join('');
+    $('dataInfo').innerHTML = (Object.values(d.stored).some(n=>n>0)? parts : '<span class="muted">لا توجد بيانات مخزّنة بعد</span>') + `<div class="muted" style="margin-top:6px">السكانر يفحص حالياً ${d.symbolsScanned} عملة</div>`;
+  }
+  else if(m.type==='btProgress'){
+    const d=m.data;
+    if(d.kind==='download'){
+      $('dlProg').classList.remove('hide');
+      const pct=d.totalUnits?Math.round(d.doneUnits/d.totalUnits*100):0;
+      $('dlFill').style.width=pct+'%';
+      $('dlTxt').textContent=`${d.doneUnits}/${d.totalUnits} — ${d.sym||''} ${d.tf||''} ${d.candles!=null?'('+d.candles+' شمعة)':''} ${d.error?'⚠️'+d.error:''}`;
+    } else if(d.kind==='optimize'){
+      $('optProg').classList.remove('hide');
+      const pct=d.total?(d.done/d.total*100):0;
+      $('optFill').style.width=pct.toFixed(1)+'%';
+      $('o_pct').textContent=pct.toFixed(1)+'%';
+      $('o_elapsed').textContent=fmtTime(d.elapsedMs);
+      $('o_eta').textContent=fmtTime(d.etaMs);
+      $('o_count').textContent=`قُيِّم ${d.evaluated||0} توليفة من ${d.total||0}`;
+      if(d.best&&d.best.metrics) $('o_live').textContent=`أفضل حتى الآن: عائد ${d.best.metrics.netReturnPct}% · نجاح ${d.best.metrics.winRate}% · صفقات ${d.best.metrics.trades}`;
+    } else if(d.phase==='busy'){ alert('هناك عملية شغّالة بالفعل — انتظر انتهاءها.'); }
+  }
+  else if(m.type==='btDownloadDone'){
+    $('dlBtn').disabled=false; $('dlBtn').textContent='تنزيل / تحديث البيانات';
+    $('dlTxt').textContent = m.data.ok?'✅ اكتمل التنزيل':('❌ '+(m.data.error||'فشل'));
+    send('btInfo',{});
+  }
+  else if(m.type==='btResult'){
+    $('runBtn').disabled=false; $('runBtn').textContent='شغّل الباك تيست';
+    if(m.data.error){ alert('❌ '+m.data.error); return; }
+    const x=m.data.metrics; $('runRes').classList.remove('hide');
+    const sgn=v=>(v>=0?'pos':'neg');
+    $('r_ret').innerHTML=`<span class="${sgn(x.netReturnPct)}">${x.netReturnPct}%</span>`;
+    $('r_wr').textContent=x.winRate+'%'; $('r_tr').textContent=x.trades;
+    $('r_pf').textContent=x.profitFactor; $('r_dd').innerHTML=`<span class="neg">${x.maxDrawdownPct}%</span>`;
+    $('r_avg').innerHTML=`<span class="${sgn(x.avgPnlPct)}">${x.avgPnlPct}%</span>`;
+    drawEquity(x.equity||[1]);
+  }
+  else if(m.type==='btOptDone'){
+    $('optBtn').disabled=false; $('optBtn').textContent='ابدأ الفحص التلقائي'; $('stopBtn').classList.add('hide');
+    if(m.data.error){ alert('❌ '+m.data.error); return; }
+    showBest(m.data);
+  }
+}
+
+function drawEquity(eq){
+  const c=$('eq'),ctx=c.getContext('2d'),W=c.width,H=c.height,n=eq.length;
+  ctx.clearRect(0,0,W,H); if(n<2)return;
+  const mn=Math.min(...eq),mx=Math.max(...eq),rng=(mx-mn)||1;
+  ctx.beginPath(); ctx.lineWidth=2; ctx.strokeStyle=eq[n-1]>=eq[0]?'#2ed573':'#ff4757';
+  eq.forEach((v,i)=>{const x=i/(n-1)*W,y=H-((v-mn)/rng)*(H-10)-5; i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+  ctx.stroke();
+}
+
+function settingsFromForm(){
+  return {
+    interval:$('s_interval').value, mode:$('s_mode').value, maPeriod:+$('s_maPeriod').value,
+    cxLev:+$('s_cxLev').value, cxTP1:+$('s_cxTP1').value, cxTP1Amt:+$('s_cxTP1Amt').value, cxSL:+$('s_cxSL').value,
+    cxEntry2Dist:+$('s_cxEntry2Dist').value,
+    cxSLon:isOn('t_sl'), cxTP2on:isOn('t_tp2'), cxEntry2on:isOn('t_e2'), enableDiv:isOn('t_div'),
+    ema200FilterOn:isOn('t_ema'), stFilterOn:isOn('t_st'),
+  };
+}
+
+function download(){ $('dlBtn').disabled=true; $('dlBtn').textContent='⏳ جارٍ التنزيل…'; send('btDownload',{days:+$('days').value}); }
+function runBT(){ $('runBtn').disabled=true; $('runBtn').textContent='⏳ يحسب…'; send('btRun',{settings:settingsFromForm()}); }
+function startOpt(){
+  if(!confirm('سيبدأ الفحص وقد يستمر ساعات. متأكد؟'))return;
+  $('optBtn').disabled=true; $('optBtn').textContent='⏳ يفحص…'; $('stopBtn').classList.remove('hide'); $('optDone').classList.add('hide');
+  send('btOptimize',{budgetHours:+$('o_budget').value,minTrades:+$('o_min').value});
+}
+function stopOpt(){ send('btStop',{}); $('stopBtn').textContent='⏹ يوقف…'; }
+
+// ── نسخة الإعدادات (إعدادات فقط — بلا مشتركين) ──
+window.baseSettings={}; window.__best=null;
+// الحقول التي يحسّنها الفحص (تُكتب فوق نسختك؛ الباقي يبقى كما هو — حجم الدخول، تلغرام، السيولة…)
+const OPT_FIELDS=['interval','mode','maPeriod','revMode','revCount','enableDiv','sigQueueFilters',
+  'trSon','trLon','trSstart','trSgap','trLstart','trLgap','ema200FilterOn','stFilterOn',
+  'cxTP1','cxSLon','cxSL','cxTP2on','cxTP2','cxEntry2on','cxEntry2Dist','cxTrailTp','cxTrailPct','cxLev'];
+function downloadBackup(optSet){
+  if(!optSet){alert('لا يوجد إعداد للتحميل');return;}
+  const merged={...(window.baseSettings||{})};
+  OPT_FIELDS.forEach(k=>{ if(optSet[k]!==undefined) merged[k]=optSet[k]; });
+  const payload={settings:merged, exportedAt:new Date().toISOString()}; // بدون accounts → لا يلمس المشتركين
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='افضل-اعداد-نسخه.json'; a.click();
+}
+function loadBase(input){
+  const f=input.files[0]; if(!f)return; const rd=new FileReader();
+  rd.onload=()=>{ try{ const d=JSON.parse(rd.result); window.baseSettings=d.settings||d; $('baseMsg').textContent='✅ نسختك مُحمّلة كأساس — سيُعدّل عليها فقط ما يخصّ الفحص.'; }catch(e){ $('baseMsg').textContent='❌ ملف غير صالح'; } };
+  rd.readAsText(f);
+}
+
+function showBest(res){
+  $('optDone').classList.remove('hide');
+  const b=res.best;
+  if(!b){ $('bestBox').innerHTML='<div class="muted">لا توجد نتيجة تحقق الحد الأدنى للصفقات.</div>'; return; }
+  const c=b.combo,m=b.metrics; window.__best=b.settings;
+  $('bestBox').innerHTML=`
+    <div class="card" style="margin:0;background:var(--bg3)">
+      <div style="font-weight:800;color:var(--accent);margin-bottom:8px">⭐ الإعداد الأفضل</div>
+      <div>الفريم: <b>${c.interval}</b> · المؤشر: <b>${c.mode}${c.mode!=='RSI'?'('+c.maPeriod+')':''}</b> · إشارات: <b>${c.sigPreset}</b> · فلتر: <b>${c.regime}</b></div>
+      <div style="margin-top:6px">TP1: <b>${c.cxTP1}%</b> · SL: <b>${c.sl[1]}%</b> · TP2: <b>${c.tp2[0]==='on'?c.tp2[1]+'%':'—'}</b> · دخول2: <b>${c.entry2[0]==='on'?c.entry2[1]+'%':'—'}</b> · رافعة: <b>${c.cxLev}x</b></div>
+      <div class="stats" style="margin-top:10px">
+        <div class="stat"><div class="v pos">${m.netReturnPct}%</div><div class="k">عائد</div></div>
+        <div class="stat"><div class="v">${m.winRate}%</div><div class="k">نجاح</div></div>
+        <div class="stat"><div class="v">${m.trades}</div><div class="k">صفقات</div></div>
+        <div class="stat"><div class="v">${m.profitFactor}</div><div class="k">PF</div></div>
+        <div class="stat"><div class="v neg">${m.maxDrawdownPct}%</div><div class="k">تراجع</div></div>
+        <div class="stat"><div class="v">${b.score}</div><div class="k">النقاط</div></div>
+      </div>
+      <div class="muted" style="margin-top:8px">✅ أُرسلت لتلغرام أيضاً. قُيِّم ${res.evaluated} توليفة في ${fmtTime(res.elapsedMs)}.</div>
+    </div>
+    <button onclick="downloadBackup(window.__best)">⬇️ حمّل أفضل إعداد كنسخة احتياطية (إعدادات فقط)</button>`;
+  const rows=(res.leaderboard||[]).map((e,i)=>`<tr>
+    <td>${i+1}</td><td>${e.combo.interval}</td><td>${e.combo.mode}</td><td>${e.combo.sigPreset}</td>
+    <td>${e.combo.cxTP1}/${e.combo.sl[1]}</td><td class="${e.metrics.netReturnPct>=0?'pos':'neg'}">${e.metrics.netReturnPct}%</td>
+    <td>${e.metrics.winRate}%</td><td>${e.metrics.trades}</td><td class="neg">${e.metrics.maxDrawdownPct}%</td></tr>`).join('');
+  $('lbTbl').innerHTML=`<tr><th>#</th><th>فريم</th><th>مؤشر</th><th>إشارة</th><th>TP/SL</th><th>عائد</th><th>نجاح</th><th>صفقات</th><th>تراجع</th></tr>`+rows;
+}
+</script>
+</body>
+</html>

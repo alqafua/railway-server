@@ -10,6 +10,8 @@ const fetch = require('node-fetch');
 const crypto = require('crypto');
 const cors = require('cors');
 const db = require('./db');
+const BT = require('./backtest');
+const btState = { busy: false, cancel: false };
 
 const app = express();
 const server = http.createServer(app);
@@ -1245,6 +1247,80 @@ async function handleClientMsg(msg) {
 
     case 'scanNow': scanAll(); break;
 
+    // ══ Backtest ══════════════════════════════════════════════
+    case 'btInfo': {
+      const stored = {};
+      for (const tf of BT.ALLOWED_TF) stored[tf] = BT.listStoredSymbols(tf).filter(s => s !== 'BTCUSDT').length;
+      broadcast({ type: 'btInfo', data: { symbolsScanned: STATE.symbols.length, stored, busy: btState.busy } });
+      break;
+    }
+    case 'btDownload': {
+      if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
+      btState.busy = true; btState.cancel = false;
+      const days = parseInt(msg.data?.days) || 90;
+      const toMs = Date.now(), fromMs = toMs - days * 86400000;
+      const baseSyms = (msg.data?.symbols?.length ? msg.data.symbols : STATE.symbols);
+      const syms = baseSyms.includes('BTCUSDT') ? baseSyms : ['BTCUSDT', ...baseSyms];
+      (async () => {
+        try {
+          await BT.downloadData(syms, BT.ALLOWED_TF, fromMs, toMs, p => {
+            if (btState.cancel) throw new Error('أُلغي التنزيل');
+            broadcast({ type: 'btProgress', data: { ...p, kind: 'download' } });
+          });
+          broadcast({ type: 'btDownloadDone', data: { ok: true } });
+        } catch (e) { broadcast({ type: 'btDownloadDone', data: { ok: false, error: e.message } }); }
+        finally { btState.busy = false; }
+      })();
+      break;
+    }
+    case 'btRun': {
+      try {
+        const set = { ...STATE.settings, ...(msg.data?.settings || {}) };
+        const tf = BT.ALLOWED_TF.includes(set.interval) ? set.interval : '1h';
+        const syms = BT.listStoredSymbols(tf).filter(s => s !== 'BTCUSDT');
+        if (!syms.length) { broadcast({ type: 'btResult', data: { error: 'لا توجد بيانات مخزّنة لهذا الفريم — نزّل أولاً' } }); break; }
+        const ds = BT.loadDatasetByTf(syms, [tf])[tf];
+        const ftf = BT.ALLOWED_TF.includes(set.ema200TF) ? set.ema200TF : (BT.ALLOWED_TF.includes(set.stTF) ? set.stTF : tf);
+        const btc = BT.loadCandles('BTCUSDT', ftf) || BT.loadCandles('BTCUSDT', tf);
+        const regime = btc ? BT.buildBtcRegime(btc, ftf, ftf, parseInt(set.stPeriod) || 10, parseFloat(set.stMult) || 3) : null;
+        const res = BT.runBacktest(ds, set, regime);
+        broadcast({ type: 'btResult', data: { metrics: res.metrics, trades: res.trades.length, tf } });
+      } catch (e) { broadcast({ type: 'btResult', data: { error: e.message } }); }
+      break;
+    }
+    case 'btOptimize': {
+      if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
+      btState.busy = true; btState.cancel = false;
+      const budgetMs = (parseFloat(msg.data?.budgetHours) || 24) * 3600000;
+      const minTrades = parseInt(msg.data?.minTrades) || 30;
+      (async () => {
+        try {
+          const tfs = BT.ALLOWED_TF;
+          const symSet = new Set();
+          for (const tf of tfs) BT.listStoredSymbols(tf).forEach(s => symSet.add(s));
+          const symbols = [...symSet].filter(s => s !== 'BTCUSDT');
+          if (!symbols.length) { broadcast({ type: 'btOptDone', data: { error: 'لا توجد بيانات — نزّل أولاً' } }); btState.busy = false; return; }
+          const datasetByTf = BT.loadDatasetByTf(symbols, tfs);
+          const btcByTf = BT.loadBtcByTf(tfs);
+          const res = await BT.optimize(datasetByTf, btcByTf, {
+            budgetMs, minTrades, capFrac: 0.01,
+            stPeriod: parseInt(STATE.settings.stPeriod) || 10, stMult: parseFloat(STATE.settings.stMult) || 3,
+            shouldStop: () => btState.cancel,
+            onProgress: p => broadcast({ type: 'btProgress', data: { ...p, kind: 'optimize' } }),
+          });
+          broadcast({ type: 'btOptDone', data: res });
+          if (res.best) {
+            const m = res.best.metrics, c = res.best.combo;
+            const txt = `🏁 أفضل إعداد (Backtest)\nالفريم: ${c.interval} | ${c.mode}${c.mode !== 'RSI' ? '(' + c.maPeriod + ')' : ''}\nالإشارات: ${c.sigPreset} | فلتر: ${c.regime}\nTP1:${c.cxTP1}%  SL:${c.sl[1]}%  TP2:${c.tp2[0] === 'on' ? c.tp2[1] + '%' : '—'}\nدخول2:${c.entry2[0] === 'on' ? c.entry2[1] + '%' : '—'}  رافعة:${c.cxLev}x\n━━━━━━━━━━\n📈 عائد: ${m.netReturnPct}%  |  نجاح: ${m.winRate}%\n📊 صفقات: ${m.trades}  |  PF: ${m.profitFactor}\n📉 أقصى تراجع: ${m.maxDrawdownPct}%`;
+            tgSend(txt, STATE.settings.cxChat);
+          }
+        } catch (e) { broadcast({ type: 'btOptDone', data: { error: e.message } }); }
+        finally { btState.busy = false; }
+      })();
+      break;
+    }
+    case 'btStop': { btState.cancel = true; broadcast({ type: 'btProgress', data: { phase: 'stopping' } }); break; }
+
     case 'forceRescan':
       Object.keys(candleCache).forEach(k => delete candleCache[k]);
       startBinanceWS();
@@ -1747,6 +1823,25 @@ app.get('/api/export', authMiddleware, (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename*=UTF-8\'\'%D9%86%D8%B3%D8%AE%D9%87%20%D8%A7%D8%AD%D8%AA%D9%8A%D8%A7%D8%B7%D9%8A%D9%87.json');
   res.setHeader('Content-Type', 'application/json');
   res.json(payload);
+});
+
+app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest.html')));
+
+app.get('/api/backtest/export', authMiddleware, (req, res) => {
+  try {
+    const { buffer, count } = BT.exportDataBundle();
+    res.setHeader('Content-Disposition', 'attachment; filename="backtest-data.bin"');
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('X-File-Count', String(count));
+    res.send(buffer);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/backtest/import', authMiddleware, express.raw({ type: '*/*', limit: '500mb' }), (req, res) => {
+  try {
+    const { count } = BT.importDataBundle(req.body);
+    res.json({ ok: true, count });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/binance/*', authMiddleware, async (req, res) => {
