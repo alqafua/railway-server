@@ -1284,7 +1284,7 @@ async function handleClientMsg(msg) {
         const btc = BT.loadCandles('BTCUSDT', ftf) || BT.loadCandles('BTCUSDT', tf);
         const regime = btc ? BT.buildBtcRegime(btc, ftf, ftf, parseInt(set.stPeriod) || 10, parseFloat(set.stMult) || 3) : null;
         const res = BT.runBacktest(ds, set, regime);
-        broadcast({ type: 'btResult', data: { metrics: res.metrics, trades: res.trades.length, tf } });
+        broadcast({ type: 'btResult', data: { metrics: res.metrics, trades: res.trades.length, tf, signalStats: res.signalStats } });
       } catch (e) { broadcast({ type: 'btResult', data: { error: e.message } }); }
       break;
     }

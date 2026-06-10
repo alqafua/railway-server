@@ -335,6 +335,37 @@ function simulateTrade(candles, sigIndex, side, settings) {
   return { pnlPct: parseFloat(pnlPct.toFixed(4)), exitReason, bars, filledW: parseFloat(filledW.toFixed(3)), entryIdx };
 }
 
+// ── احترام المؤشر: هل انعكس السعر باتجاه الإشارة خلال REV_LOOKBACK شمعة؟ ──
+//  respected = أفضل حركة باتجاه الإشارة (high لـ LONG / low لـ SHORT) >= REV_THRESHOLD%
+const REV_LOOKBACK = 5, REV_THRESHOLD = 3;
+function reversalStats(sigs, candles) {
+  let total = 0, respected = 0, sumPct = 0, sumBarsResp = 0, maxPct = -Infinity, maxBars = 0;
+  for (const sg of sigs) {
+    const refPrice = candles[sg.i][4];
+    let bestPct = -Infinity, bestBar = 0;
+    for (let b = 1; b <= REV_LOOKBACK; b++) {
+      const idx = sg.i + b;
+      if (idx >= candles.length) break;
+      const h = candles[idx][2], l = candles[idx][3];
+      const pct = sg.side === 'LONG' ? (h - refPrice) / refPrice * 100 : (refPrice - l) / refPrice * 100;
+      if (pct > bestPct) { bestPct = pct; bestBar = b; }
+    }
+    if (bestPct === -Infinity) continue; // لا توجد شموع بعد الإشارة (نهاية البيانات)
+    total++;
+    sumPct += bestPct;
+    if (bestPct >= REV_THRESHOLD) { respected++; sumBarsResp += bestBar; }
+    if (bestPct > maxPct) { maxPct = bestPct; maxBars = bestBar; }
+  }
+  return {
+    total, respected, notRespected: total - respected,
+    respectRate: total ? parseFloat((respected / total * 100).toFixed(1)) : 0,
+    avgReversalPct: total ? parseFloat((sumPct / total).toFixed(2)) : 0,
+    avgRespectedBars: respected ? parseFloat((sumBarsResp / respected).toFixed(1)) : null,
+    maxReversalPct: total ? parseFloat(maxPct.toFixed(2)) : 0,
+    maxReversalBars: total ? maxBars : 0,
+  };
+}
+
 // ── باك تيست رمز واحد ──────────────────────────────────────────────
 //  صفقة واحدة كحد أقصى لكل رمز في نفس الوقت (واقعي)
 function runSymbol(candles, settings, btcRegime) {
@@ -348,7 +379,7 @@ function runSymbol(candles, settings, btcRegime) {
     busyUntil = tr.entryIdx + tr.bars - 1;
     trades.push({ ...tr, side: sg.side, type: sg.type, ts: sg.ts });
   }
-  return trades;
+  return { trades, sigStats: reversalStats(sigs, candles) };
 }
 
 // ── مقاييس مجمّعة ─────────────────────────────────────────────────
@@ -385,13 +416,15 @@ function computeMetrics(trades, capFrac = 0.01) {
 function runBacktest(dataset, settings, btcRegime) {
   // dataset: { SYM: candles[] }
   let all = [];
+  const signalStats = {};
   for (const sym of Object.keys(dataset)) {
-    const trs = runSymbol(dataset[sym], settings, btcRegime).map(t => ({ ...t, sym }));
-    all = all.concat(trs);
+    const { trades, sigStats } = runSymbol(dataset[sym], settings, btcRegime);
+    all = all.concat(trades.map(t => ({ ...t, sym })));
+    if (sigStats.total) signalStats[sym] = sigStats;
   }
   const capFrac = (parseFloat(String(settings.cxAmt).replace('%', '')) || 1) / 100;
   const metrics = computeMetrics(all, capFrac);
-  return { metrics, trades: all };
+  return { metrics, trades: all, signalStats };
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
