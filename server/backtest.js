@@ -569,6 +569,22 @@ function signalCombos() {
   return out;
 }
 
+// ── أفضل توليفات "مؤشر" (مود/فترة/انعكاس/دايفرجنس) من نتيجة الفحص العام، لكل منها على فريم 1h و4h ──
+function topRecipes(leaderboard, intervals = ['1h', '4h'], maxRecipes = 2) {
+  const seen = new Set(); const recipes = [];
+  for (const e of (leaderboard || [])) {
+    const s = e.settings || {};
+    const key = JSON.stringify([s.mode, s.maPeriod, s.revMode, s.revCount, !!s.enableDiv]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    recipes.push({ mode: s.mode, maPeriod: s.maPeriod, revMode: s.revMode, revCount: s.revCount, enableDiv: !!s.enableDiv });
+    if (recipes.length >= maxRecipes) break;
+  }
+  const out = [];
+  for (const r of recipes) for (const iv of intervals) out.push({ ...r, interval: iv });
+  return out;
+}
+
 async function optimize(datasetByTf, btcByTf, opts = {}) {
   const minTrades = opts.minTrades ?? 30;
   const budgetMs = opts.budgetMs ?? (24 * 3600 * 1000);
@@ -666,8 +682,133 @@ async function optimize(datasetByTf, btcByTf, opts = {}) {
   return { best: leaderboard[0] || null, leaderboard, evaluated, elapsedMs, totalSig };
 }
 
+// ── شبكات ضبط Trailing RSI لكل عملة (إيجاد العتبة/المسافة التي تجعل الإشارة تقع عند أفضل قمة/قاع) ──
+const TRAIL_S_GRID = []; for (const ss of [60, 65, 70, 75, 80, 85]) for (const sg of [2, 3, 4, 5]) TRAIL_S_GRID.push([ss, sg]);
+const TRAIL_L_GRID = []; for (const ls of [40, 35, 30, 25, 20, 15]) for (const lg of [2, 3, 4, 5]) TRAIL_L_GRID.push([ls, lg]);
+const REV_MIN_SIG = 5; // أقل عدد إشارات لاعتماد متوسط الانعكاس بثقة
+
+const RAW_DEFAULTS = { ob: true, os: true, conf: true, regimeMode: 'off', filterTF: '4h', stP: 10, stM: 3, dir: 'all', tp1: 3, tp1Amt: 50, sl: ['on', 3], tp2: ['off', 0], entry2: ['off', 0], trailExit: ['off', 0], be: false, lev: 10, liqMin: 0 };
+
+// يبحث في شبكة عتبات Trailing (شورت أو لونق) لإيجاد القيمة التي تُولِّد إشارات أقرب لقمم/قيعان السعر
+function tuneTrailSide(candles, baseSl, side) {
+  const grid = side === 'S' ? TRAIL_S_GRID : TRAIL_L_GRID;
+  const k = side === 'S' ? 'ts' : 'tl';
+  let best = null;
+  for (const [lvl, gap] of grid) {
+    const trail = side === 'S' ? { m: 'S', ss: lvl, sg: gap } : { m: 'L', ls: lvl, lg: gap };
+    const rawSet = buildSettings({ ...baseSl, trail }, RAW_DEFAULTS);
+    const raw = generateRawSignals(candles, rawSet);
+    const stats = reversalStats(raw.filter(s => s.k === k), candles);
+    const score = stats.total > 0 ? stats.avgReversalPct * Math.min(1, stats.total / REV_MIN_SIG) : -Infinity;
+    if (!best || score > best.score) best = { lvl, gap, stats, score };
+  }
+  return best;
+}
+
+// ── فحص لكل عملة على حدة: يضبط عتبات Trailing لتقع الإشارات عند أفضل قمة/قاع، ثم يبحث عن أفضل إدارة صفقة ──
+async function optimizePerSymbol(datasetByTf, btcByTf, recipes, opts = {}) {
+  const minTrades = opts.minTrades ?? 5;
+  const budgetMs = opts.budgetMs ?? (3 * 3600 * 1000);
+  const onProgress = opts.onProgress || (() => {});
+  const capFrac = opts.capFrac ?? 0.01;
+
+  const symSet = new Set();
+  for (const r of recipes) Object.keys(datasetByTf[r.interval] || {}).forEach(s => symSet.add(s));
+  const symbols = [...symSet];
+  const total = Math.max(1, symbols.length * recipes.length);
+  const sliceMs = budgetMs / total;
+  const t0 = Date.now();
+  let done = 0;
+  const regimeStore = {};
+  function regimeFor(ftf, stP, stM) {
+    const key = ftf + '|' + stP + '|' + stM;
+    if (!regimeStore[key]) {
+      const btc = btcByTf[ftf] || btcByTf['4h'] || [];
+      regimeStore[key] = btc.length ? buildBtcRegime(btc, ftf, ftf, stP, stM) : (() => ({ ema200dir: null, stDir: null }));
+    }
+    return regimeStore[key];
+  }
+
+  const bySymbol = {};
+  for (const sym of symbols) {
+    if (opts.shouldStop && opts.shouldStop()) break;
+    let bestForSym = null;
+    for (const r of recipes) {
+      if (opts.shouldStop && opts.shouldStop()) break;
+      const candles = (datasetByTf[r.interval] || {})[sym];
+      if (candles && candles.length) {
+        const baseSl = { interval: r.interval, mode: r.mode, ma: r.maPeriod, rev: [r.revMode, r.revCount], div: r.enableDiv, trail: { m: 'off' } };
+
+        // 1) ضبط عتبات Trailing لهذه العملة (شورت ولونق كل على حدة)
+        const tunedS = tuneTrailSide(candles, baseSl, 'S');
+        const tunedL = tuneTrailSide(candles, baseSl, 'L');
+        const sl = { ...baseSl, trail: { m: 'both', ss: tunedS.lvl, sg: tunedS.gap, ls: tunedL.lvl, lg: tunedL.gap } };
+        const raw = generateRawSignals(candles, buildSettings(sl, RAW_DEFAULTS));
+
+        // 2) بحث عشوائي لإعدادات الإدارة (TP/SL/دخول2/TP2/BE/رافعة/فلتر السوق)
+        const comboStart = Date.now();
+        let innerN = 0; let bestMgmt = null;
+        while (Date.now() - comboStart < sliceMs && innerN < 1500) {
+          let ob = rnd(SPACE.ob), os = rnd(SPACE.os), conf = rnd(SPACE.conf);
+          if (!ob && !os && !conf) ob = true;
+          const regimeMode = rnd(SPACE.regimeMode);
+          let ftf = '4h', stP = 10, stM = 3, regimeFn = null;
+          if (regimeMode !== 'off') { ftf = rnd(SPACE.filterTF); stP = rnd(SPACE.stP); stM = rnd(SPACE.stM); regimeFn = regimeFor(ftf, stP, stM); }
+          const ch = {
+            ob, os, conf, regimeMode, filterTF: ftf, stP, stM, dir: rnd(SPACE.dir),
+            tp1: rnd(SPACE.tp1), tp1Amt: rnd(SPACE.tp1Amt), sl: rnd(SPACE.sl), tp2: rnd(SPACE.tp2),
+            entry2: rnd(SPACE.entry2), trailExit: rnd(SPACE.trailExit), be: rnd(SPACE.be), lev: rnd(SPACE.lev), liqMin: 0,
+          };
+          const set = buildSettings(sl, ch);
+          const fopt = { types: { ob: ch.ob, os: ch.os, conf: ch.conf, ts: true, tl: true }, dirFilter: ch.dir, ema200FilterOn: set.ema200FilterOn, stFilterOn: set.stFilterOn };
+
+          const sigs = filterSignals(raw, fopt, regimeFn);
+          let busy = -1; const all = [];
+          for (const sg of sigs) {
+            if (sg.i <= busy) continue;
+            const tr = simulateTrade(candles, sg.i, sg.side, set);
+            if (!tr) continue;
+            busy = tr.entryIdx + tr.bars - 1;
+            all.push({ ...tr, side: sg.side, ts: sg.ts });
+          }
+          const m = computeMetrics(all, capFrac);
+          if (m.trades >= minTrades) {
+            const score = m.netReturnPct / (1 + m.maxDrawdownPct / 100);
+            if (!bestMgmt || score > bestMgmt.score) bestMgmt = { score: parseFloat(score.toFixed(3)), settings: set, combo: comboView(sl, ch), metrics: m };
+          }
+          innerN++;
+        }
+
+        const recipeScore = (tunedS.stats.total ? tunedS.stats.avgReversalPct : 0) + (tunedL.stats.total ? tunedL.stats.avgReversalPct : 0);
+        const candidate = {
+          recipeScore,
+          sigStats: {
+            ts: { trStart: tunedS.lvl, trGap: tunedS.gap, ...tunedS.stats },
+            tl: { trStart: tunedL.lvl, trGap: tunedL.gap, ...tunedL.stats },
+          },
+          settings: bestMgmt ? bestMgmt.settings : buildSettings(sl, RAW_DEFAULTS),
+          combo: bestMgmt ? bestMgmt.combo : comboView(sl, RAW_DEFAULTS),
+          metrics: bestMgmt ? bestMgmt.metrics : null,
+          score: bestMgmt ? bestMgmt.score : null,
+        };
+        if (!bestForSym || candidate.recipeScore > bestForSym.recipeScore) bestForSym = candidate;
+      }
+      done++;
+      const elapsedMs = Date.now() - t0;
+      onProgress({ done, total, sym, elapsedMs, etaMs: Math.max(0, budgetMs - elapsedMs), best: bestForSym });
+      await new Promise(r => setImmediate(r));
+    }
+    if (bestForSym) bySymbol[sym] = bestForSym;
+    if (Date.now() - t0 > budgetMs) break;
+  }
+
+  const elapsedMs = Date.now() - t0;
+  onProgress({ done: total, total, elapsedMs, etaMs: 0, finished: true });
+  return { bySymbol, symbolsScanned: Object.keys(bySymbol).length, totalSymbols: symbols.length, elapsedMs };
+}
+
 Object.assign(module.exports, {
   superTrendSeries, emaDirSeries, buildBtcRegime,
   listStoredSymbols, loadDatasetByTf, loadBtcByTf,
-  SPACE, signalCombos, optimize,
+  SPACE, signalCombos, optimize, topRecipes, optimizePerSymbol,
 });

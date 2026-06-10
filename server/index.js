@@ -1319,6 +1319,33 @@ async function handleClientMsg(msg) {
       })();
       break;
     }
+    case 'btOptPerSymbol': {
+      if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
+      const recipes = BT.topRecipes(msg.data?.leaderboard, ['1h', '4h'], 2);
+      if (!recipes.length) { broadcast({ type: 'btOptSymDone', data: { error: 'لا توجد نتيجة فحص عام — شغّل "الفحص التلقائي" أولاً (أو استعد ملف نتيجة سابقة)' } }); break; }
+      btState.busy = true; btState.cancel = false;
+      const budgetMs = (parseFloat(msg.data?.budgetHours) || 3) * 3600000;
+      const minTrades = parseInt(msg.data?.minTrades) || 5;
+      (async () => {
+        try {
+          const tfs = ['1h', '4h']; // الفحص لكل عملة يقتصر على هذين الفريمين فقط
+          const symSet = new Set();
+          for (const tf of tfs) BT.listStoredSymbols(tf).forEach(s => symSet.add(s));
+          const symbols = [...symSet].filter(s => s !== 'BTCUSDT');
+          if (!symbols.length) { broadcast({ type: 'btOptSymDone', data: { error: 'لا توجد بيانات — نزّل أولاً' } }); btState.busy = false; return; }
+          const datasetByTf = BT.loadDatasetByTf(symbols, tfs);
+          const btcByTf = BT.loadBtcByTf(tfs);
+          const res = await BT.optimizePerSymbol(datasetByTf, btcByTf, recipes, {
+            budgetMs, minTrades, capFrac: 0.01,
+            shouldStop: () => btState.cancel,
+            onProgress: p => broadcast({ type: 'btProgress', data: { ...p, kind: 'optSym' } }),
+          });
+          broadcast({ type: 'btOptSymDone', data: res });
+        } catch (e) { broadcast({ type: 'btOptSymDone', data: { error: e.message } }); }
+        finally { btState.busy = false; }
+      })();
+      break;
+    }
     case 'btStop': { btState.cancel = true; broadcast({ type: 'btProgress', data: { phase: 'stopping' } }); break; }
 
     case 'forceRescan':
