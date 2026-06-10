@@ -17,8 +17,8 @@ const BASE = 'https://fapi.binance.com';
 const DATA_DIR = process.env.BT_DATA_DIR || path.join(__dirname, '../data/backtest');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-// الفريمات المسموحة فقط (حسب طلبك)
-const ALLOWED_TF = ['5m', '30m', '1h', '4h'];
+// الفريمات المسموحة فقط (حسب طلبك) — الساعة و4 ساعات فقط
+const ALLOWED_TF = ['1h', '4h'];
 const TF_MS = { '5m': 300000, '30m': 1800000, '1h': 3600000, '4h': 14400000 };
 
 const FEE_RATE = parseFloat(process.env.BT_FEE || '0.0005'); // 0.05% تيكر لكل تعبئة/خروج
@@ -494,7 +494,7 @@ function loadBtcByTf(tfs) { const out = {}; for (const tf of tfs) { const c = lo
 // ── مساحة البحث الكاملة (كل بارامترات الموشر) ──
 const SPACE = {
   // طبقة الإشارة (غالية)
-  interval: ['5m', '30m', '1h', '4h'],
+  interval: ['1h', '4h'],
   mode: ['RSI', 'SMA', 'EMA'],
   ma: [7, 14, 21],
   rev: [['candles',1], ['candles',2], ['rsi',1]],
@@ -509,7 +509,7 @@ const SPACE = {
   // طبقة رخيصة
   ob: [true, false], os: [true, false], conf: [true, false],
   regimeMode: ['off', 'ema', 'st', 'both'],
-  filterTF: ['5m', '30m', '1h', '4h'],               // فريم فلتر EMA200/SuperTrend (مثل ema200TF/stTF)
+  filterTF: ['1h', '4h'],                            // فريم فلتر EMA200/SuperTrend (مثل ema200TF/stTF)
   stP: [7, 10, 14], stM: [2, 3],                     // فترة/مضاعف SuperTrend
   dir: ['all', 'long', 'short'],
   tp1: [2, 3, 5, 8], tp1Amt: [50, 100],

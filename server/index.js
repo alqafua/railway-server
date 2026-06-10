@@ -1321,14 +1321,14 @@ async function handleClientMsg(msg) {
     }
     case 'btOptPerSymbol': {
       if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
-      const recipes = BT.topRecipes(msg.data?.leaderboard, ['1h', '4h'], 2);
+      const recipes = BT.topRecipes(msg.data?.leaderboard, BT.ALLOWED_TF, 2);
       if (!recipes.length) { broadcast({ type: 'btOptSymDone', data: { error: 'لا توجد نتيجة فحص عام — شغّل "الفحص التلقائي" أولاً (أو استعد ملف نتيجة سابقة)' } }); break; }
       btState.busy = true; btState.cancel = false;
       const budgetMs = (parseFloat(msg.data?.budgetHours) || 3) * 3600000;
       const minTrades = parseInt(msg.data?.minTrades) || 5;
       (async () => {
         try {
-          const tfs = ['1h', '4h']; // الفحص لكل عملة يقتصر على هذين الفريمين فقط
+          const tfs = BT.ALLOWED_TF; // الفحص لكل عملة يقتصر على هذين الفريمين فقط
           const symSet = new Set();
           for (const tf of tfs) BT.listStoredSymbols(tf).forEach(s => symSet.add(s));
           const symbols = [...symSet].filter(s => s !== 'BTCUSDT');
