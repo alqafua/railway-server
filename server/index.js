@@ -46,6 +46,7 @@ const DEFAULT_SETTINGS = {
   cxToken: process.env.TG_TOKEN || '',
   cxChat: process.env.TG_CHAT || '',
   cxChatClose: process.env.TG_CHAT_CLOSE || '',
+  cxChatBT: process.env.TG_CHAT_BT || '',
   cxEntry2on: true, cxEntry2Dist: '0.2', cxEntry2Amt: '50',
   cxEntry3on: false, cxEntry3Dist: '4', cxEntry3Amt: '50',
   cxBEon: false,
@@ -310,6 +311,19 @@ async function tgSend(text, chat) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chat, text })
     });
+  } catch (e) {}
+}
+
+// إرسال ملف (نتائج فحص/باك تيست بصيغة JSON) كمستند تلغرام
+async function tgSendDocument(buf, filename, caption, chat) {
+  const st = STATE.settings;
+  if (!st.cxToken || !chat) return;
+  try {
+    const form = new FormData();
+    form.append('chat_id', chat);
+    if (caption) form.append('caption', caption.slice(0, 1024));
+    form.append('document', new Blob([buf], { type: 'application/json' }), filename);
+    await fetch(`https://api.telegram.org/bot${st.cxToken}/sendDocument`, { method: 'POST', body: form });
   } catch (e) {}
 }
 
@@ -1271,7 +1285,11 @@ async function handleClientMsg(msg) {
             broadcast({ type: 'btProgress', data: { ...p, kind: 'download' } });
           });
           broadcast({ type: 'btDownloadDone', data: { ok: true } });
-        } catch (e) { broadcast({ type: 'btDownloadDone', data: { ok: false, error: e.message } }); }
+          tgSend('✅ انتهى تنزيل بيانات الباك تيست', STATE.settings.cxChatBT);
+        } catch (e) {
+          broadcast({ type: 'btDownloadDone', data: { ok: false, error: e.message } });
+          tgSend('❌ فشل تنزيل بيانات الباك تيست: ' + e.message, STATE.settings.cxChatBT);
+        }
         finally { btState.busy = false; }
       })();
       break;
@@ -1288,7 +1306,13 @@ async function handleClientMsg(msg) {
         const regime = btc ? BT.buildBtcRegime(btc, ftf, ftf, parseInt(set.stPeriod) || 10, parseFloat(set.stMult) || 3) : null;
         const res = BT.runBacktest(ds, set, regime);
         broadcast({ type: 'btResult', data: { metrics: res.metrics, trades: res.trades.length, tf, signalStats: res.signalStats } });
-      } catch (e) { broadcast({ type: 'btResult', data: { error: e.message } }); }
+        const m = res.metrics;
+        const txt = `🧪 نتيجة الباك تيست\nالفريم: ${tf}\nصفقات: ${res.trades.length}\nعائد: ${m.netReturnPct}%  |  نجاح: ${m.winRate}%\nPF: ${m.profitFactor}  |  أقصى تراجع: ${m.maxDrawdownPct}%`;
+        tgSendDocument(Buffer.from(JSON.stringify({ tf, settings: set, ...res }, null, 2)), `bt_run_${tf}_${Date.now()}.json`, txt, STATE.settings.cxChatBT);
+      } catch (e) {
+        broadcast({ type: 'btResult', data: { error: e.message } });
+        tgSend('❌ فشل الباك تيست: ' + e.message, STATE.settings.cxChatBT);
+      }
       break;
     }
     // بيانات شارت التحقق (شموع + المؤشر + كل الإشارات + الصفقات) لرمز واحد بإعدادات معيّنة
@@ -1328,12 +1352,19 @@ async function handleClientMsg(msg) {
             onProgress: p => broadcast({ type: 'btProgress', data: { ...p, kind: 'optimize' } }),
           });
           broadcast({ type: 'btOptDone', data: res });
+          let txt;
           if (res.best) {
             const m = res.best.metrics, c = res.best.combo;
-            const txt = `🏁 أفضل إعداد (Backtest)\nالفريم: ${c.interval} | ${c.mode}${c.mode !== 'RSI' ? '(' + c.maPeriod + ')' : ''}\nالإشارات: ${c.sigPreset} | فلتر: ${c.regime}\nTP1:${c.cxTP1}%  SL:${c.sl[1]}%  TP2:${c.tp2[0] === 'on' ? c.tp2[1] + '%' : '—'}\nدخول2:${c.entry2[0] === 'on' ? c.entry2[1] + '%' : '—'}  رافعة:${c.cxLev}x\n━━━━━━━━━━\n📈 عائد: ${m.netReturnPct}%  |  نجاح: ${m.winRate}%\n📊 صفقات: ${m.trades}  |  PF: ${m.profitFactor}\n📉 أقصى تراجع: ${m.maxDrawdownPct}%`;
+            txt = `🏁 أفضل إعداد (Backtest)\nالفريم: ${c.interval} | ${c.mode}${c.mode !== 'RSI' ? '(' + c.maPeriod + ')' : ''}\nالإشارات: ${c.sigPreset} | فلتر: ${c.regime}\nTP1:${c.cxTP1}%  SL:${c.sl[1]}%  TP2:${c.tp2[0] === 'on' ? c.tp2[1] + '%' : '—'}\nدخول2:${c.entry2[0] === 'on' ? c.entry2[1] + '%' : '—'}  رافعة:${c.cxLev}x\n━━━━━━━━━━\n📈 عائد: ${m.netReturnPct}%  |  نجاح: ${m.winRate}%\n📊 صفقات: ${m.trades}  |  PF: ${m.profitFactor}\n📉 أقصى تراجع: ${m.maxDrawdownPct}%`;
             tgSend(txt, STATE.settings.cxChat);
+          } else {
+            txt = `🏁 انتهى الفحص التلقائي العام — لم يُعثر على نتيجة (تم تقييم ${res.evaluated || 0})`;
           }
-        } catch (e) { broadcast({ type: 'btOptDone', data: { error: e.message } }); }
+          tgSendDocument(Buffer.from(JSON.stringify(res, null, 2)), `bt_optimize_${Date.now()}.json`, txt, STATE.settings.cxChatBT);
+        } catch (e) {
+          broadcast({ type: 'btOptDone', data: { error: e.message } });
+          tgSend('❌ فشل الفحص التلقائي العام: ' + e.message, STATE.settings.cxChatBT);
+        }
         finally { btState.busy = false; }
       })();
       break;
@@ -1360,7 +1391,12 @@ async function handleClientMsg(msg) {
             onProgress: p => broadcast({ type: 'btProgress', data: { ...p, kind: 'optSym' } }),
           });
           broadcast({ type: 'btOptSymDone', data: res });
-        } catch (e) { broadcast({ type: 'btOptSymDone', data: { error: e.message } }); }
+          const txt = `🏁 انتهى الفحص لكل عملة\nالعملات: ${res.symbolsScanned}/${res.totalSymbols}`;
+          tgSendDocument(Buffer.from(JSON.stringify(res, null, 2)), `bt_optsym_${Date.now()}.json`, txt, STATE.settings.cxChatBT);
+        } catch (e) {
+          broadcast({ type: 'btOptSymDone', data: { error: e.message } });
+          tgSend('❌ فشل الفحص لكل عملة: ' + e.message, STATE.settings.cxChatBT);
+        }
         finally { btState.busy = false; }
       })();
       break;
@@ -1937,6 +1973,7 @@ async function init() {
   if (process.env.TG_TOKEN) STATE.settings.cxToken = process.env.TG_TOKEN;
   if (process.env.TG_CHAT) STATE.settings.cxChat = process.env.TG_CHAT;
   if (process.env.TG_CHAT_CLOSE) STATE.settings.cxChatClose = process.env.TG_CHAT_CLOSE;
+  if (process.env.TG_CHAT_BT) STATE.settings.cxChatBT = process.env.TG_CHAT_BT;
   db.saveSettings(STATE.settings);
 
   STATE.copyAccounts = db.loadAccounts();
