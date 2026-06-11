@@ -278,6 +278,7 @@ function simulateTrade(candles, sigIndex, side, settings) {
   let entryNotionalFee = FEE_RATE * w1 * lev; // رسوم الدخول 1
   let peak = entry1Px;                        // لأعلى/أدنى للتريلينج
   let bars = 0, exitReason = 'open';
+  let exitIdx = null, exitPx = null;          // للعرض البياني
 
   const avgEntry = () => fills.reduce((s, x) => s + x.px * x.w, 0) / fills.reduce((s, x) => s + x.w, 0);
 
@@ -302,10 +303,11 @@ function simulateTrade(candles, sigIndex, side, settings) {
     // 2) تعارض داخل الشمعة → نفترض الوقف أولاً (تحفّظاً)
     const slHit = curSL !== null && ((isLong && lo <= curSL) || (!isLong && hi >= curSL));
     if (slHit) {
-      const exitPx = curSL;
-      realized += remaining * filledW * sign * (exitPx / ent - 1);
+      const px = curSL;
+      realized += remaining * filledW * sign * (px / ent - 1);
       entryNotionalFee += FEE_RATE * remaining * filledW * lev; // رسوم الخروج
       remaining = 0; exitReason = (beOn && tp1hit) ? 'breakeven' : 'sl';
+      exitIdx = j; exitPx = px;
       break;
     }
 
@@ -316,12 +318,12 @@ function simulateTrade(candles, sigIndex, side, settings) {
       realized += part * filledW * sign * (tp1Px / ent - 1);
       entryNotionalFee += FEE_RATE * part * filledW * lev;
       remaining -= part; tp1hit = true;
-      if (!tp2on) { exitReason = 'tp1'; remaining = 0; break; }
+      if (!tp2on) { exitReason = 'tp1'; remaining = 0; exitIdx = j; exitPx = tp1Px; break; }
     }
     if (tp2on && tp1hit && ((isLong && hi >= tp2Px) || (!isLong && lo <= tp2Px))) {
       realized += remaining * filledW * sign * (tp2Px / ent - 1);
       entryNotionalFee += FEE_RATE * remaining * filledW * lev;
-      remaining = 0; exitReason = 'tp2'; break;
+      remaining = 0; exitReason = 'tp2'; exitIdx = j; exitPx = tp2Px; break;
     }
 
     // 4) تريلينج (تقريبي على أساس القمة/القاع وإغلاق الشمعة)
@@ -331,7 +333,7 @@ function simulateTrade(candles, sigIndex, side, settings) {
       if ((isLong && close <= trigger) || (!isLong && close >= trigger)) {
         realized += remaining * filledW * sign * (trigger / ent - 1);
         entryNotionalFee += FEE_RATE * remaining * filledW * lev;
-        remaining = 0; exitReason = 'trail'; break;
+        remaining = 0; exitReason = 'trail'; exitIdx = j; exitPx = trigger; break;
       }
     }
   }
@@ -339,16 +341,24 @@ function simulateTrade(candles, sigIndex, side, settings) {
   // لم تُغلق حتى نهاية البيانات → أغلق على آخر إغلاق
   if (remaining > 0) {
     const ent = avgEntry();
-    const exitPx = candles[candles.length - 1][4];
-    realized += remaining * filledW * sign * (exitPx / ent - 1);
+    const px = candles[candles.length - 1][4];
+    realized += remaining * filledW * sign * (px / ent - 1);
     entryNotionalFee += FEE_RATE * remaining * filledW * lev;
     exitReason = exitReason === 'open' ? 'expired' : exitReason;
+    exitIdx = candles.length - 1; exitPx = px;
   }
 
   // العائد على الهامش = (الحركة السعرية الموزونة × الرافعة) − الرسوم
   const grossPct = realized * lev * 100;
   const pnlPct = grossPct - entryNotionalFee * 100;
-  return { pnlPct: parseFloat(pnlPct.toFixed(4)), exitReason, bars, filledW: parseFloat(filledW.toFixed(3)), entryIdx };
+  return {
+    pnlPct: parseFloat(pnlPct.toFixed(4)), exitReason, bars, filledW: parseFloat(filledW.toFixed(3)), entryIdx,
+    // تفاصيل إضافية للعرض البياني (مستويات الأسعار + نقطة الخروج)
+    entryTs: candles[entryIdx][0], entryPx: parseFloat(avgEntry().toFixed(8)), refPrice,
+    tp1Px: parseFloat(tp1Px.toFixed(8)), tp2Px: tp2Px !== null ? parseFloat(tp2Px.toFixed(8)) : null,
+    slPx: slPx !== null ? parseFloat(slPx.toFixed(8)) : null,
+    exitIdx, exitTs: exitIdx !== null ? candles[exitIdx][0] : null, exitPx: exitPx !== null ? parseFloat(exitPx.toFixed(8)) : null,
+  };
 }
 
 // ── احترام المؤشر: هل انعكس السعر باتجاه الإشارة خلال REV_LOOKBACK شمعة؟ ──
@@ -430,6 +440,49 @@ function getSymbolChartData(sym, settings, btcRegime) {
   };
 }
 
+// ── باك تيست رمز واحد بتفاصيل كاملة (للعرض على الشارت) ──
+//  يُرجع كل الإشارات المفلترة (مع موقعها وسعرها وهل تحوّلت لصفقة) + الصفقات
+//  بمستويات TP1/TP2/SL ونقطة الخروج، لمطابقتها يدوياً مع المؤشر الحي
+function runSymbolDetailed(candles, settings, btcRegime) {
+  const raw = generateRawSignals(candles, settings);
+  const sf = { ob: true, os: true, conf: true, trail: true, ...(settings.sigQueueFilters || {}) };
+  const types = { ob: sf.ob, os: sf.os, conf: sf.conf, ts: sf.trail, tl: sf.trail };
+  const sigs = filterSignals(raw, { types, dirFilter: settings.dirFilter, ema200FilterOn: settings.ema200FilterOn, stFilterOn: settings.stFilterOn }, btcRegime);
+
+  const trades = [];
+  let busyUntil = -1;
+  const signals = sigs.map(sg => {
+    let taken = false;
+    if (sg.i > busyUntil) {
+      const tr = simulateTrade(candles, sg.i, sg.side, settings);
+      if (tr) {
+        busyUntil = tr.entryIdx + tr.bars - 1;
+        trades.push({ ...tr, side: sg.side, type: sg.type, ts: sg.ts });
+        taken = true;
+      }
+    }
+    return { i: sg.i, ts: sg.ts, side: sg.side, type: sg.type, k: sg.k, price: candles[sg.i][4], taken };
+  });
+
+  // إحصاءات احترام إشارات Trailing (من كامل الإشارات الخام، بصرف النظر عن فلتر trail)
+  const sigStats = {
+    ts: { trStart: settings.trSstart, trGap: settings.trSgap, ...reversalStats(raw.filter(s => s.k === 'ts'), candles) },
+    tl: { trStart: settings.trLstart, trGap: settings.trLgap, ...reversalStats(raw.filter(s => s.k === 'tl'), candles) },
+  };
+  return { signals, trades, sigStats };
+}
+
+// ── بيانات شارت كاملة لرمز: شموع + إشارات + صفقات + مقاييس ──
+function getChartData(symbol, settings, btcRegime) {
+  const tf = ALLOWED_TF.includes(settings.interval) ? settings.interval : '1h';
+  const candles = loadCandles(symbol, tf);
+  if (!candles || !candles.length) return { error: `لا توجد بيانات مخزّنة لـ ${symbol} على فريم ${tf} — نزّل البيانات أولاً` };
+  const { signals, trades, sigStats } = runSymbolDetailed(candles, settings, btcRegime);
+  const capFrac = (parseFloat(String(settings.cxAmt).replace('%', '')) || 1) / 100;
+  const metrics = computeMetrics(trades, capFrac);
+  return { tf, candles, signals, trades, metrics, sigStats };
+}
+
 // ── مقاييس مجمّعة ─────────────────────────────────────────────────
 //  capFrac = نسبة رأس المال لكل صفقة (cxAmt مثل "1%") — للمنحنى المركّب
 function computeMetrics(trades, capFrac = 0.01) {
@@ -482,7 +535,7 @@ module.exports = {
   saveCandles, loadCandles, dataInfo,
   fetchKlinesRange, downloadData,
   exportDataBundle, importDataBundle,
-  generateSignals, generateRawSignals, filterSignals, simulateTrade, runSymbol, computeMetrics, runBacktest,
+  generateSignals, generateRawSignals, filterSignals, simulateTrade, runSymbol, runSymbolDetailed, getChartData, computeMetrics, runBacktest,
   getSymbolChartData,
 };
 

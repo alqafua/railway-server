@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>إشارات & شارت — RSI Scanner Pro</title>
+<style>
+  :root{--bg:#0a1628;--bg2:#0f1d33;--bg3:#15263f;--accent:#00e5ff;--orange:#ffa726;--green:#2ed573;--red:#ff4757;--purple:#a259ff;--text:#e8f0fb;--text2:#7d93b2;--line:rgba(255,255,255,.08)}
+  *{box-sizing:border-box;font-family:-apple-system,system-ui,'Segoe UI',Tahoma,sans-serif}
+  body{margin:0;background:var(--bg);color:var(--text);font-size:14px;-webkit-tap-highlight-color:transparent}
+  .wrap{max-width:1100px;margin:0 auto;padding:16px}
+  h1{font-size:20px;color:var(--accent);margin:8px 0 2px}
+  .sub{color:var(--text2);font-size:12px;margin-bottom:16px}
+  .nav{display:flex;gap:8px;margin-bottom:10px}
+  .nav a{color:var(--accent);text-decoration:none;font-size:12px;background:var(--bg3);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+  .card{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+  .card h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  label{display:block;color:var(--text2);font-size:12px;margin:8px 0 4px}
+  input,select{width:100%;background:var(--bg3);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:11px;font-size:14px;outline:none}
+  input:focus,select:focus{border-color:var(--accent)}
+  .row{display:flex;gap:10px}.row>div{flex:1}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  button{border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:700;cursor:pointer;margin-top:12px;background:var(--accent);color:#04222b}
+  button.sec{background:var(--bg3);color:var(--text);border:1px solid var(--line)}
+  button.danger{background:var(--red);color:#fff}
+  button.small{padding:7px 10px;font-size:12px;margin-top:0;border-radius:7px}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .toggle{display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-top:8px;cursor:pointer}
+  .sw{width:42px;height:24px;border-radius:14px;background:#33415a;position:relative;transition:.2s;flex-shrink:0}
+  .sw.on{background:var(--orange)}.sw i{position:absolute;top:3px;right:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.2s}.sw.on i{right:21px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-top:8px}
+  .stat{background:var(--bg3);border-radius:10px;padding:10px;text-align:center}
+  .stat .v{font-size:18px;font-weight:800}.stat .k{font-size:11px;color:var(--text2);margin-top:2px}
+  .muted{color:var(--text2);font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  th,td{padding:7px 5px;border-bottom:1px solid var(--line);text-align:center;white-space:nowrap}
+  th{color:var(--text2);font-weight:600;cursor:pointer;user-select:none}
+  th.sorted{color:var(--accent)}
+  tr.sel{background:rgba(0,229,255,.08)}
+  .pos{color:var(--green)}.neg{color:var(--red)}
+  .hide{display:none}
+  .login{max-width:340px;margin:60px auto;text-align:center}
+  .badge{display:inline-block;background:var(--bg3);border-radius:20px;padding:4px 11px;font-size:12px;margin:3px}
+  canvas{width:100%;height:90px;display:block;margin-top:10px}
+  .warn{background:rgba(255,167,38,.1);border:1px solid rgba(255,167,38,.3);border-radius:9px;padding:9px 11px;font-size:12px;color:var(--orange);margin-top:10px}
+  .scrollx{overflow-x:auto}
+  .fgroup{margin-bottom:6px}
+  .fgroup summary{cursor:pointer;color:var(--accent);font-size:13px;font-weight:700;padding:8px 0;list-style:none}
+  .fgroup summary::-webkit-details-marker{display:none}
+  .fgroup summary::before{content:'▸ ';display:inline-block;transition:.15s}
+  .fgroup[open] summary::before{content:'▾ '}
+  #chart{width:100%;height:420px;border-radius:10px;overflow:hidden;margin-top:10px;background:var(--bg3)}
+  .legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:11px}
+  .legend span{background:var(--bg3);border-radius:8px;padding:3px 8px;border:1px solid var(--line)}
+  .search-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+  .search-row input{flex:1}
+  .topbtns{display:flex;gap:8px;flex-wrap:wrap}
+  .topbtns button{flex:1;min-width:120px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- تسجيل الدخول -->
+  <div id="loginView" class="login">
+    <h1>📈 إشارات & شارت</h1>
+    <div class="sub">سجّل الدخول للمتابعة</div>
+    <div class="card">
+      <input id="u" placeholder="Username" autocomplete="off">
+      <input id="p" type="password" placeholder="••••" autocomplete="off" style="margin-top:8px">
+      <div id="loginErr" class="neg" style="font-size:12px;min-height:16px;margin-top:6px"></div>
+      <button style="width:100%" onclick="doLogin()">دخول →</button>
+    </div>
+  </div>
+
+  <!-- التطبيق -->
+  <div id="app" class="hide">
+    <div class="nav"><a href="/backtest">⬅️ Backtest & المُحسِّن</a></div>
+    <h1>📈 إشارات & شارت — تحقّق يدوي</h1>
+    <div class="sub">ارفع نتيجة الفحص، اختر عملة، شغّل الشارت، وراجع أماكن الإشارات والـ TP/SL لمطابقتها مع المؤشر الحي.</div>
+
+    <!-- 1) رفع نتيجة الفحص -->
+    <div class="card">
+      <h2>📂 تحميل نتائج الفحص</h2>
+      <div class="muted">ارفع ملف JSON الناتج من «الفحص لكل عملة» أو «الفحص العام» أو ملف إعدادات مُصدَّر — يكتشف النوع تلقائياً.</div>
+      <input type="file" accept=".json,application/json" onchange="loadScanFile(this)">
+      <div id="loadMsg" class="muted" style="margin-top:6px"></div>
+      <div id="dataInfo" class="muted" style="margin-top:6px"></div>
+    </div>
+
+    <!-- 2) جدول النتائج -->
+    <div id="tableCard" class="card hide">
+      <h2>📊 نتائج العملات (<span id="rowCount">0</span>)</h2>
+      <div class="search-row">
+        <input id="search" placeholder="🔎 بحث برمز العملة…" oninput="renderTable()">
+      </div>
+      <div class="scrollx"><table id="resultsTbl"></table></div>
+    </div>
+
+    <!-- 3) العملة والإعدادات -->
+    <div id="settingsCard" class="card">
+      <h2>⚙️ العملة والإعدادات</h2>
+      <label>رمز العملة</label>
+      <input id="f_symbol" placeholder="مثال: BTCUSDT" style="text-transform:uppercase">
+      <div id="fieldGroups"></div>
+      <div class="topbtns">
+        <button id="runBtn" onclick="runChart()">▶️ شغّل / حدّث الشارت</button>
+        <button class="sec" onclick="exportSettings()">⬇️ تصدير الإعدادات</button>
+      </div>
+      <div id="settingsMsg" class="muted" style="margin-top:6px"></div>
+    </div>
+
+    <!-- 4) النتائج + الشارت -->
+    <div id="resultCard" class="card hide">
+      <h2>📈 النتائج والشارت — <span id="r_symbol" style="color:var(--accent)"></span></h2>
+      <div id="r_error" class="warn hide"></div>
+      <div id="r_body">
+        <div class="stats">
+          <div class="stat"><div class="v" id="r_ret">—</div><div class="k">العائد</div></div>
+          <div class="stat"><div class="v" id="r_wr">—</div><div class="k">نسبة النجاح</div></div>
+          <div class="stat"><div class="v" id="r_tr">—</div><div class="k">صفقات</div></div>
+          <div class="stat"><div class="v" id="r_pf">—</div><div class="k">Profit Factor</div></div>
+          <div class="stat"><div class="v" id="r_dd">—</div><div class="k">أقصى تراجع</div></div>
+          <div class="stat"><div class="v" id="r_avg">—</div><div class="k">متوسط/صفقة</div></div>
+          <div class="stat"><div class="v" id="r_ts">—</div><div class="k">احترام TS</div></div>
+          <div class="stat"><div class="v" id="r_tl">—</div><div class="k">احترام TL</div></div>
+        </div>
+        <canvas id="eq" width="900" height="90"></canvas>
+
+        <div id="chart"></div>
+        <div id="legend" class="legend"></div>
+
+        <h2 style="margin-top:14px">📋 الصفقات (<span id="tradeCount">0</span>) — اضغط صف لعرض المستويات على الشارت</h2>
+        <div class="scrollx"><table id="tradesTbl"></table></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/[email protected]/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+let token=null, ws=null;
+const $=id=>document.getElementById(id);
+const apiBase=location.origin;
+
+// ════════════════════════════════════════════════════════════
+//  تسجيل الدخول + اتصال WebSocket
+// ════════════════════════════════════════════════════════════
+async function doLogin(){
+  const u=$('u').value, p=$('p').value;
+  try{
+    const r=await fetch(apiBase+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    const d=await r.json();
+    if(d.token){token=d.token; $('loginView').classList.add('hide'); $('app').classList.remove('hide'); connect(); prefill(); renderSettingsForm();}
+    else $('loginErr').textContent=d.error||'بيانات خاطئة';
+  }catch(e){$('loginErr').textContent='تعذّر الاتصال';}
+}
+
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(proto+'://'+location.host+'?token='+token);
+  ws.onopen=()=>send('btInfo',{});
+  ws.onmessage=e=>{ let m; try{m=JSON.parse(e.data);}catch(_){return;} handle(m); };
+  ws.onclose=()=>setTimeout(connect,3000);
+}
+function send(type,data){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type,data})); }
+
+async function prefill(){
+  try{
+    const r=await fetch(apiBase+'/api/state?token='+token); const s=(await r.json()).settings||{};
+    window.curSettings = JSON.parse(JSON.stringify(s));
+    setFormFromSettings(window.curSettings);
+  }catch(e){}
+}
+
+function handle(m){
+  if(m.type==='btInfo'){
+    const d=m.data; const parts=Object.entries(d.stored||{}).map(([tf,n])=>`<span class="badge">${tf}: ${n} عملة</span>`).join('');
+    $('dataInfo').innerHTML = (Object.values(d.stored||{}).some(n=>n>0)? parts : '<span class="muted">لا توجد بيانات مخزّنة بعد — نزّلها من صفحة Backtest أولاً</span>');
+  }
+  else if(m.type==='btChartData'){
+    onChartData(m.data);
+  }
+}
+
+function fmtTime(ms){ if(!ms||ms<0)return '—'; const s=Math.round(ms/1000); const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60; return (h?h+':':'')+String(m).padStart(h?2:1,'0')+':'+String(ss).padStart(2,'0'); }
+function fmtDate(ts){ if(!ts) return '—'; const d=new Date(ts); return d.toLocaleDateString('ar-EG',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit',hour12:false}); }
+</script>
+<script src="/signals_app.js"></script>
+</body>
+</html>
