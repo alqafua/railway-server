@@ -1292,7 +1292,7 @@ async function handleClientMsg(msg) {
       break;
     }
     // بيانات شارت التحقق (شموع + المؤشر + كل الإشارات + الصفقات) لرمز واحد بإعدادات معيّنة
-    case 'btChartData': {
+    case 'btSymChartData': {
       try {
         const sym = msg.data?.symbol;
         if (!sym) throw new Error('symbol مطلوب');
@@ -1303,8 +1303,8 @@ async function handleClientMsg(msg) {
         const regime = btc ? BT.buildBtcRegime(btc, ftf, ftf, parseInt(set.stPeriod) || 10, parseFloat(set.stMult) || 3) : null;
         const data = BT.getSymbolChartData(sym, set, regime);
         if (!data) throw new Error(`لا توجد بيانات مخزّنة لـ ${sym} على فريم ${tf} — نزّل البيانات أولاً`);
-        broadcast({ type: 'btChartDataDone', data: { symbol: sym, ...data } });
-      } catch (e) { broadcast({ type: 'btChartDataDone', data: { error: e.message } }); }
+        broadcast({ type: 'btSymChartDataDone', data: { symbol: sym, ...data } });
+      } catch (e) { broadcast({ type: 'btSymChartDataDone', data: { error: e.message } }); }
       break;
     }
     case 'btOptimize': {
