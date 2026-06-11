@@ -1249,9 +1249,12 @@ async function handleClientMsg(msg) {
 
     // ══ Backtest ══════════════════════════════════════════════
     case 'btInfo': {
-      const stored = {};
-      for (const tf of BT.ALLOWED_TF) stored[tf] = BT.listStoredSymbols(tf).filter(s => s !== 'BTCUSDT').length;
-      broadcast({ type: 'btInfo', data: { symbolsScanned: STATE.symbols.length, stored, busy: btState.busy } });
+      const stored = {}, storedSymbols = {};
+      for (const tf of BT.ALLOWED_TF) {
+        const syms = BT.listStoredSymbols(tf).filter(s => s !== 'BTCUSDT').sort();
+        stored[tf] = syms.length; storedSymbols[tf] = syms;
+      }
+      broadcast({ type: 'btInfo', data: { symbolsScanned: STATE.symbols.length, stored, storedSymbols, busy: btState.busy } });
       break;
     }
     case 'btDownload': {
@@ -1286,6 +1289,22 @@ async function handleClientMsg(msg) {
         const res = BT.runBacktest(ds, set, regime);
         broadcast({ type: 'btResult', data: { metrics: res.metrics, trades: res.trades.length, tf, signalStats: res.signalStats } });
       } catch (e) { broadcast({ type: 'btResult', data: { error: e.message } }); }
+      break;
+    }
+    // بيانات شارت التحقق (شموع + المؤشر + كل الإشارات + الصفقات) لرمز واحد بإعدادات معيّنة
+    case 'btChartData': {
+      try {
+        const sym = msg.data?.symbol;
+        if (!sym) throw new Error('symbol مطلوب');
+        const set = { ...STATE.settings, ...(msg.data?.settings || {}) };
+        const tf = BT.ALLOWED_TF.includes(set.interval) ? set.interval : '1h';
+        const ftf = BT.ALLOWED_TF.includes(set.ema200TF) ? set.ema200TF : (BT.ALLOWED_TF.includes(set.stTF) ? set.stTF : tf);
+        const btc = BT.loadCandles('BTCUSDT', ftf) || BT.loadCandles('BTCUSDT', tf);
+        const regime = btc ? BT.buildBtcRegime(btc, ftf, ftf, parseInt(set.stPeriod) || 10, parseFloat(set.stMult) || 3) : null;
+        const data = BT.getSymbolChartData(sym, set, regime);
+        if (!data) throw new Error(`لا توجد بيانات مخزّنة لـ ${sym} على فريم ${tf} — نزّل البيانات أولاً`);
+        broadcast({ type: 'btChartDataDone', data: { symbol: sym, ...data } });
+      } catch (e) { broadcast({ type: 'btChartDataDone', data: { error: e.message } }); }
       break;
     }
     case 'btOptimize': {

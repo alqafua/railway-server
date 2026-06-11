@@ -77,15 +77,29 @@ function importDataBundle(buf) {
 }
 
 // جلب klines مع ترقيم الصفحات (1500/طلب) — يُسقط الشمعة الجارية (غير المغلقة)
-async function fetchKlinesRange(sym, tf, startMs, endMs) {
+//  onWait(info) اختياري: يُستدعى عند تجاوز حد Binance (429/418) قبل إعادة المحاولة
+const MAX_RATE_RETRIES = 6;
+async function fetchKlinesRange(sym, tf, startMs, endMs, onWait) {
   const out = [];
   let cursor = startMs;
   const step = TF_MS[tf];
   while (cursor < endMs) {
     const url = `${BASE}/fapi/v1/klines?symbol=${sym}&interval=${tf}&startTime=${cursor}&limit=1500`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Binance ${res.status} (${sym} ${tf})`);
-    const d = await res.json();
+    let d;
+    for (let attempt = 1; ; attempt++) {
+      const res = await fetch(url);
+      if (res.status === 429 || res.status === 418) {
+        if (attempt > MAX_RATE_RETRIES) throw new Error(`Binance ${res.status} (${sym} ${tf}) — توقف بعد عدة محاولات`);
+        const ra = parseInt(res.headers.get('retry-after')) || 0;
+        const waitSec = ra || (res.status === 418 ? 120 : Math.min(30, 5 * attempt));
+        onWait && onWait({ sym, tf, status: res.status, waitSec, attempt });
+        await sleep(waitSec * 1000);
+        continue;
+      }
+      if (!res.ok) throw new Error(`Binance ${res.status} (${sym} ${tf})`);
+      d = await res.json();
+      break;
+    }
     if (!Array.isArray(d) || d.length === 0) break;
     for (const k of d) {
       if (k[0] >= endMs) break;
@@ -95,7 +109,7 @@ async function fetchKlinesRange(sym, tf, startMs, endMs) {
     const last = d[d.length - 1][0];
     if (last <= cursor) break;        // لا تقدّم → اخرج
     cursor = last + step;
-    await sleep(120);                 // احترام rate limit
+    await sleep(250);                 // احترام rate limit
     if (d.length < 1500) break;       // آخر صفحة
   }
   // أسقط الشمعة الأخيرة إن لم تُغلق بعد (openTime + step > now)
@@ -113,7 +127,9 @@ async function downloadData(symbols, intervals, fromMs, toMs, onProgress) {
   for (const sym of symbols) {
     for (const tf of tfs) {
       try {
-        const rows = await fetchKlinesRange(sym, tf, fromMs, toMs);
+        const rows = await fetchKlinesRange(sym, tf, fromMs, toMs, w => {
+          onProgress && onProgress({ phase: 'wait', doneUnits, totalUnits, sym: w.sym, tf: w.tf, status: w.status, waitSec: w.waitSec, attempt: w.attempt });
+        });
         if (rows.length) saveCandles(sym, tf, rows);
         doneUnits++;
         onProgress && onProgress({ phase: 'download', doneUnits, totalUnits, sym, tf, candles: rows.length });
@@ -379,7 +395,39 @@ function runSymbol(candles, settings, btcRegime) {
     busyUntil = tr.entryIdx + tr.bars - 1;
     trades.push({ ...tr, side: sg.side, type: sg.type, ts: sg.ts });
   }
-  return { trades, sigStats: reversalStats(sigs, candles) };
+  return { trades, sigStats: reversalStats(sigs, candles), sigs };
+}
+
+// ── بيانات شارت التحقق: شموع + المؤشر + كل الإشارات + الصفقات لرمز واحد ──
+//  تُستخدم لعرض شارت (يطابق TradingView) يبيّن أين ظهرت كل إشارة وأين
+//  دخلت/خرجت كل صفقة، للتحقق اليدوي من صحة المؤشر والمحاكاة.
+function getSymbolChartData(sym, settings, btcRegime) {
+  const tf = ALLOWED_TF.includes(settings.interval) ? settings.interval : '1h';
+  const candles = loadCandles(sym, tf);
+  if (!candles || !candles.length) return null;
+
+  const { trades, sigs } = runSymbol(candles, settings, btcRegime);
+
+  // المؤشر (RSI/SMA/EMA) محاذٍ لفهارس الشموع — للعرض في لوحة سفلية
+  const ma = parseInt(settings.maPeriod) || 14;
+  const offset = settings.mode === 'RSI' ? S.RSI_P : S.RSI_P + ma - 1;
+  const indSeries = S.computeIndSeries(candles.map(c => c[4]), settings.mode, ma);
+  const indicator = candles.map((_, i) => {
+    const k = i - offset;
+    return (k >= 0 && k < indSeries.length) ? parseFloat(indSeries[k].toFixed(2)) : null;
+  });
+
+  return {
+    tf,
+    candles,
+    indicator,
+    signals: sigs.map(s => ({ i: s.i, ts: s.ts, side: s.side, type: s.type })),
+    trades: trades.map(t => ({
+      entryIdx: t.entryIdx,
+      exitIdx: Math.min(t.entryIdx + t.bars - 1, candles.length - 1),
+      side: t.side, type: t.type, exitReason: t.exitReason, pnlPct: t.pnlPct,
+    })),
+  };
 }
 
 // ── مقاييس مجمّعة ─────────────────────────────────────────────────
@@ -435,6 +483,7 @@ module.exports = {
   fetchKlinesRange, downloadData,
   exportDataBundle, importDataBundle,
   generateSignals, generateRawSignals, filterSignals, simulateTrade, runSymbol, computeMetrics, runBacktest,
+  getSymbolChartData,
 };
 
 // ══════════════════════════════════════════════════════════════════
