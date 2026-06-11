@@ -34,6 +34,7 @@ body{background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
 .ntab:hover{color:var(--text);background:rgba(255,255,255,.03)}
 .ntab.dash{color:var(--accent);border-bottom-color:var(--accent)}
 .ntab.sub{color:var(--green);border-bottom-color:var(--green)}
+.ntab.bt{color:var(--purple)}
 .nbadge{background:var(--green);color:#000;border-radius:8px;font-size:9px;padding:1px 6px;font-weight:800}
 .nav-right{margin-right:auto;display:flex;align-items:center;gap:10px;padding:0 14px}
 .copy-pill{display:flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;cursor:pointer;border:1px solid;transition:all .2s}
@@ -474,6 +475,7 @@ function rNav(){
   sb.appendChild(document.createTextNode('🪞 المشتركون'));
   if(C.accounts.length)sb.appendChild(el('span',{className:'nbadge'},String(C.accounts.length)));
   nav.appendChild(sb);
+  nav.appendChild(el('button',{className:'ntab bt',onClick:()=>{location.href='/backtest';}},'🔬 Backtest'));
   const nr=el('div',{className:'nav-right'});
   const pill=el('div',{className:`copy-pill ${C.copyOn?'on':'off'}`,onClick:()=>send('toggleCopy')});
   pill.appendChild(el('span',{className:`cpd ${C.copyOn?'on':'off'}`}));
