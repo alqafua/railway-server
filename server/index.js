@@ -1348,6 +1348,21 @@ async function handleClientMsg(msg) {
     }
     case 'btStop': { btState.cancel = true; broadcast({ type: 'btProgress', data: { phase: 'stopping' } }); break; }
 
+    // بيانات شارت لرمز واحد: شموع + إشارات + صفقات (TP/SL/الخروج) + مقاييس — للتحقق اليدوي
+    case 'btChartData': {
+      try {
+        const symbol = String(msg.data?.symbol || '').toUpperCase().trim();
+        if (!symbol) { broadcast({ type: 'btChartData', data: { error: 'حدّد رمز العملة' } }); break; }
+        const set = { ...STATE.settings, ...(msg.data?.settings || {}) };
+        const ftf = BT.ALLOWED_TF.includes(set.ema200TF) ? set.ema200TF : (BT.ALLOWED_TF.includes(set.stTF) ? set.stTF : (BT.ALLOWED_TF.includes(set.interval) ? set.interval : '1h'));
+        const btc = BT.loadCandles('BTCUSDT', ftf) || BT.loadCandles('BTCUSDT', set.interval);
+        const regime = btc ? BT.buildBtcRegime(btc, ftf, ftf, parseInt(set.stPeriod) || 10, parseFloat(set.stMult) || 3) : null;
+        const res = BT.getChartData(symbol, set, regime);
+        broadcast({ type: 'btChartData', data: { symbol, ...res } });
+      } catch (e) { broadcast({ type: 'btChartData', data: { error: e.message } }); }
+      break;
+    }
+
     case 'forceRescan':
       Object.keys(candleCache).forEach(k => delete candleCache[k]);
       startBinanceWS();
@@ -1853,6 +1868,8 @@ app.get('/api/export', authMiddleware, (req, res) => {
 });
 
 app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest.html')));
+app.get('/signals', (req, res) => res.sendFile(path.join(__dirname, 'signals.html')));
+app.get('/signals_app.js', (req, res) => res.sendFile(path.join(__dirname, 'signals_app.js')));
 
 app.get('/api/backtest/export', authMiddleware, (req, res) => {
   try {
