@@ -296,17 +296,24 @@ function simulateTrade(candles, sigIndex, side, settings) {
     }
 
     const ent = avgEntry();
+    // مستوى التصفية (Liquidation): بهامش = 1/الرافعة — لا يمكن أن تخسر الصفقة أكثر من هامشها
+    const liqPx = ent * (1 - sign / lev);
     // SL ديناميكي: بريك-إيفن بعد TP1
     let curSL = slPx;
     if (beOn && tp1hit) curSL = ent;
+    // الوقف الفعّال = الأقرب من وقف المستخدم ومستوى التصفية (أيهما يُصاب أولاً)
+    let stopPx = liqPx, stopReason = 'liquidation';
+    if (curSL !== null && (isLong ? curSL > liqPx : curSL < liqPx)) {
+      stopPx = curSL; stopReason = (beOn && tp1hit) ? 'breakeven' : 'sl';
+    }
 
     // 2) تعارض داخل الشمعة → نفترض الوقف أولاً (تحفّظاً)
-    const slHit = curSL !== null && ((isLong && lo <= curSL) || (!isLong && hi >= curSL));
+    const slHit = (isLong && lo <= stopPx) || (!isLong && hi >= stopPx);
     if (slHit) {
-      const px = curSL;
+      const px = stopPx;
       realized += remaining * filledW * sign * (px / ent - 1);
       entryNotionalFee += FEE_RATE * remaining * filledW * lev; // رسوم الخروج
-      remaining = 0; exitReason = (beOn && tp1hit) ? 'breakeven' : 'sl';
+      remaining = 0; exitReason = stopReason;
       exitIdx = j; exitPx = px;
       break;
     }
