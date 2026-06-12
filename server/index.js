@@ -89,7 +89,34 @@ const STATE = {
   superTrend: { value: null, direction: null, btcPrice: null, updatedAt: null },
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
   sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
+  symbolSettings: {},    // إعدادات خاصة لكل عملة — تُدمج فوق STATE.settings عند توليد إشاراتها
 };
+
+// الحقول المسموح بتخصيصها لكل عملة على حدة (لا تشمل interval/ema200TF/stTF لأنها تتطلب
+// بيانات شموع/نظام BTC على فريم مختلف غير متوفرة لكل عملة)
+const SYMBOL_OVERRIDE_FIELDS = [
+  'mode', 'maPeriod', 'revMode', 'revCount', 'enableDiv', 'dirFilter',
+  'sigQueueFilters', 'sigFilters',
+  'trSon', 'trSstart', 'trSgap', 'trLon', 'trLstart', 'trLgap',
+  'ema200FilterOn', 'stFilterOn',
+  'cxMargin', 'cxLev', 'cxAmt',
+  'cxSLon', 'cxSL',
+  'cxTP1', 'cxTP1Amt', 'cxTP2on', 'cxTP2', 'cxTP2Amt',
+  'cxEntry2on', 'cxEntry2Dist', 'cxEntry2Amt',
+  'cxEntry3on', 'cxEntry3Dist', 'cxEntry3Amt',
+  'cxTrailTp', 'cxTrailPct', 'cxBEon',
+];
+
+// يدمج إعدادات العملة الخاصة (إن وُجدت) فوق الإعدادات العامة — يُرجع STATE.settings
+// كما هي (بنفس المرجع) إذا لم تكن للعملة إعدادات خاصة، لضمان عدم تغيير السلوك الحالي
+function settingsFor(sym) {
+  const ov = STATE.symbolSettings[sym];
+  if (!ov || !Object.keys(ov).length) return STATE.settings;
+  const merged = { ...STATE.settings, ...ov };
+  if (ov.sigQueueFilters) merged.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...ov.sigQueueFilters };
+  if (ov.sigFilters) merged.sigFilters = { ...STATE.settings.sigFilters, ...ov.sigFilters };
+  return merged;
+}
 
 // ══════════════════════════════════════════════
 //  AUTH + RATE LIMIT
@@ -178,9 +205,9 @@ function checkDiv(cls, ind, type) {
   return false;
 }
 
-function detectSignal(pv, cu, cls, id, ed) {
+function detectSignal(pv, cu, cls, id, ed, st = STATE.settings) {
   if (pv === null || cu === null) return null;
-  const rm = STATE.settings.revMode, rv = parseInt(STATE.settings.revCount) || 1;
+  const rm = st.revMode, rv = parseInt(st.revCount) || 1;
   if (rm === 'candles' && rv > 1 && id.length >= rv) {
     const n = id.slice(-rv);
     if (!n.every((v, i) => i === 0 || v > n[i - 1]) && !n.every((v, i) => i === 0 || v < n[i - 1])) return null;
@@ -199,8 +226,7 @@ function detectConf(pv, cu, cls, id, ed) {
   return null;
 }
 
-function detectTrail(sym, cu, cls, id, ed) {
-  const st = STATE.settings;
+function detectTrail(sym, cu, cls, id, ed, st = STATE.settings) {
   if (!STATE.rsiPeaks[sym]) STATE.rsiPeaks[sym] = { sp: null, sf: false, lp: null, lf: false };
   const pk = STATE.rsiPeaks[sym];
   if (st.trSon) {
@@ -327,8 +353,7 @@ async function tgSendDocument(buf, filename, caption, chat) {
   } catch (e) {}
 }
 
-function buildMsg(sym, side) {
-  const st = STATE.settings;
+function buildMsg(sym, side, st = STATE.settings) {
   const p = livePrices[sym], pair = sym.replace('USDT', '/USDT');
   const fp = n => { if (!n && n !== 0) return 'N/A'; if (n >= 100) return n.toFixed(2); if (n >= 1) return n.toFixed(3); if (n >= 0.1) return n.toFixed(4); return n.toFixed(6); };
   let tp1 = null, tp2 = null, sll = null, e2 = null, e3 = null;
@@ -355,8 +380,7 @@ function buildMsg(sym, side) {
   return L.join('\n');
 }
 
-async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabel = '') {
-  const st = STATE.settings;
+async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabel = '', st = STATE.settings) {
   if (fromQueue) {
     // القائمة الذكية: تعتمد على sigFilters.queue فقط، مش autoSend
     if (st.sigFilters?.queue === false) return;
@@ -375,7 +399,7 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   const origPrice = overridePrice ? livePrices[sym] : null;
   if (overridePrice) livePrices[sym] = overridePrice;
   const prefix = fromQueue && queueLabel ? `⏳ قائمة الانتظار | ${queueLabel}\n` : '';
-  const text = prefix + buildMsg(sym, side) + note;
+  const text = prefix + buildMsg(sym, side, st) + note;
   if (origPrice !== null) livePrices[sym] = origPrice;
   st.cxLev = origLev;
   await tgSend(text, st.cxChat);
@@ -410,8 +434,7 @@ function countOpenPositions() {
   return new Set([...STATE.openTrades.map(t => t.symbol), ...liveSyms]).size;
 }
 
-function triggerAlert(sym, sig, val) {
-  const st = STATE.settings;
+function triggerAlert(sym, sig, val, st = STATE.settings) {
   const key = `${sym}_${sig.type}`, now = Date.now();
   if (STATE.cooldowns[key]) return;
   const master = STATE.copyAccounts.find(a => a.isMaster);
@@ -487,7 +510,7 @@ function triggerAlert(sym, sig, val) {
   if (isConf && !sigFilters.conf) return;
   if (isTrail && !sigFilters.trail) return;
 
-  sendSignal(sym, sig.side);
+  sendSignal(sym, sig.side, null, false, '', st);
 }
 
 function queueWithReversals() {
@@ -599,13 +622,13 @@ async function scanSym(sym, candles) {
     const cls = candles || candleCache[sym];
     if (!cls || cls.length < RSI_P + 2) return;
     livePrices[sym] = cls[cls.length - 1];
-    const st = STATE.settings;
+    const st = settingsFor(sym);
     const cu = computeInd(cls, st.mode, st.maPeriod);
     const pv = computeInd(cls.slice(0, -1), st.mode, st.maPeriod);
     const id = computeIndSeries(cls, st.mode, st.maPeriod);
-    const sig = detectSignal(pv, cu, cls, id, st.enableDiv);
+    const sig = detectSignal(pv, cu, cls, id, st.enableDiv, st);
     const conf = detectConf(pv, cu, cls, id, st.enableDiv);
-    const trail = detectTrail(sym, cu, cls, id, st.enableDiv);
+    const trail = detectTrail(sym, cu, cls, id, st.enableDiv, st);
     const zone = cu >= 70 ? 'ob' : cu <= 30 ? 'os' : 'neutral';
     const old = STATE.symbolData[sym] || {};
     const oldZone = old.zone || 'neutral';
@@ -614,8 +637,8 @@ async function scanSym(sym, candles) {
     }
     const fSig = trail || sig;
     STATE.symbolData[sym] = { rsi: cu, prevRsi: pv, signal: fSig, conf, zone, error: false, trailActive: !!trail };
-    if (fSig && (!old.signal || old.signal.type !== fSig.type)) triggerAlert(sym, fSig, cu);
-    if (conf && (!old.conf || old.conf.type !== conf.type)) triggerAlert(sym, conf, cu);
+    if (fSig && (!old.signal || old.signal.type !== fSig.type)) triggerAlert(sym, fSig, cu, st);
+    if (conf && (!old.conf || old.conf.type !== conf.type)) triggerAlert(sym, conf, cu, st);
 
     // فحص أوامر التعزيز
     const price = livePrices[sym];
@@ -736,7 +759,7 @@ function startBinanceWS() {
         // إصلاح #1 (تأخر الإشارات) — كشف الإشارات على الشمعة الحية بدون انتظار إغلاقها
         const a = candleCache[sym];
         if (a.length >= RSI_P + 2) {
-          const st = STATE.settings;
+          const st = settingsFor(sym);
           const tmp = [...a.slice(0, -1), close]; // استبدل آخر شمعة بالسعر الحي
           const cu = computeInd(tmp, st.mode, st.maPeriod);
           const pv = computeInd(a.slice(0, -1), st.mode, st.maPeriod);
@@ -757,18 +780,18 @@ function startBinanceWS() {
             // كشف الإشارات على الشمعة الحية
             if (pv !== null) {
               const id = computeIndSeries(tmp, st.mode, st.maPeriod);
-              const sig = detectSignal(pv, cu, tmp, id, st.enableDiv);
+              const sig = detectSignal(pv, cu, tmp, id, st.enableDiv, st);
               const conf = detectConf(pv, cu, tmp, id, st.enableDiv);
-              const trail = detectTrail(sym, cu, tmp, id, st.enableDiv);
+              const trail = detectTrail(sym, cu, tmp, id, st.enableDiv, st);
               const fSig = trail || sig;
               STATE.symbolData[sym].trailActive = !!trail;
               if (fSig && (!old.signal || old.signal.type !== fSig.type)) {
                 STATE.symbolData[sym].signal = fSig;
-                triggerAlert(sym, fSig, cu);
+                triggerAlert(sym, fSig, cu, st);
               }
               if (conf && (!old.conf || old.conf.type !== conf.type)) {
                 STATE.symbolData[sym].conf = conf;
-                triggerAlert(sym, conf, cu);
+                triggerAlert(sym, conf, cu, st);
               }
             }
           }
@@ -1202,6 +1225,7 @@ function getPublicState() {
     openTrades: STATE.openTrades,
     closedTrades: STATE.closedTrades,
     settings: STATE.settings,
+    symbolSettings: STATE.symbolSettings,
     copyOn: STATE.copyOn,
     copyLog: STATE.copyLog.slice(0, 50),
     accounts: getSafeAccounts(),
@@ -1255,6 +1279,30 @@ async function handleClientMsg(msg) {
         startBinanceWS();
         broadcast({ type: 'scanning', data: true });
         scanAll().then(() => broadcast({ type: 'scanning', data: false }));
+      }
+      break;
+    }
+
+    // إعدادات خاصة لعملة واحدة — تُدمج فوق الإعدادات العامة عند توليد إشارات هذه العملة فقط
+    case 'setSymbolSettings': {
+      const { symbol, settings } = msg.data || {};
+      if (!symbol || !settings || typeof settings !== 'object') break;
+      const clean = {};
+      for (const k of SYMBOL_OVERRIDE_FIELDS) if (settings[k] !== undefined) clean[k] = settings[k];
+      if (clean.sigQueueFilters) clean.sigQueueFilters = { ...clean.sigQueueFilters };
+      if (clean.sigFilters) clean.sigFilters = { ...clean.sigFilters };
+      STATE.symbolSettings[symbol] = clean;
+      db.saveSymbolSettings(STATE.symbolSettings);
+      broadcast({ type: 'symbolSettings', data: STATE.symbolSettings });
+      break;
+    }
+
+    case 'removeSymbolSettings': {
+      const { symbol } = msg.data || {};
+      if (symbol && STATE.symbolSettings[symbol]) {
+        delete STATE.symbolSettings[symbol];
+        db.saveSymbolSettings(STATE.symbolSettings);
+        broadcast({ type: 'symbolSettings', data: STATE.symbolSettings });
       }
       break;
     }
@@ -1969,6 +2017,7 @@ async function init() {
 
   // تحميل الحالة من قاعدة البيانات
   STATE.settings = db.loadSettings(DEFAULT_SETTINGS);
+  STATE.symbolSettings = db.loadSymbolSettings();
   // تحديث إعدادات التلغرام من env vars عند كل تشغيل
   if (process.env.TG_TOKEN) STATE.settings.cxToken = process.env.TG_TOKEN;
   if (process.env.TG_CHAT) STATE.settings.cxChat = process.env.TG_CHAT;

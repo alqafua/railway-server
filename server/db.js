@@ -91,6 +91,9 @@ function saveAlert(alert) {
 }
 function loadAlerts() { return readJSON('alerts', []); }
 
+function saveSymbolSettings(map) { writeJSON('symbol_settings', map); }
+function loadSymbolSettings() { return readJSON('symbol_settings', {}); }
+
 module.exports = {
   saveSettings, loadSettings,
   saveAccounts, loadAccounts,
@@ -98,4 +101,5 @@ module.exports = {
   saveClosedTrade, loadClosedTrades,
   saveDcaOrders, loadDcaOrders,
   saveAlert, loadAlerts,
+  saveSymbolSettings, loadSymbolSettings,
 };
