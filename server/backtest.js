@@ -416,7 +416,30 @@ function getSymbolChartData(sym, settings, btcRegime) {
   const candles = loadCandles(sym, tf);
   if (!candles || !candles.length) return null;
 
-  const { trades, sigs } = runSymbol(candles, settings, btcRegime);
+  const sigs = generateSignals(candles, settings, btcRegime);
+
+  // محاكاة صفقة مستقلة لكل إشارة (بصرف النظر عن busyUntil) — تتيح للواجهة
+  // إعادة حساب «صفقة واحدة بنفس الوقت» عند اختيار أنواع إشارات معيّنة فقط
+  const signals = sigs.map(s => {
+    const tr = simulateTrade(candles, s.i, s.side, settings);
+    return {
+      i: s.i, ts: s.ts, side: s.side, type: s.type,
+      trade: tr ? {
+        entryIdx: tr.entryIdx,
+        exitIdx: Math.min(tr.entryIdx + tr.bars - 1, candles.length - 1),
+        exitReason: tr.exitReason, pnlPct: tr.pnlPct,
+      } : null,
+    };
+  });
+
+  // صفقة واحدة كحد أقصى بنفس الوقت (لكل الأنواع معاً — الحالة الافتراضية)
+  const trades = [];
+  let busyUntil = -1;
+  for (const sg of signals) {
+    if (sg.i <= busyUntil || !sg.trade) continue;
+    trades.push({ entryIdx: sg.trade.entryIdx, exitIdx: sg.trade.exitIdx, side: sg.side, type: sg.type, exitReason: sg.trade.exitReason, pnlPct: sg.trade.pnlPct });
+    busyUntil = sg.trade.exitIdx;
+  }
 
   // المؤشر (RSI/SMA/EMA) محاذٍ لفهارس الشموع — للعرض في لوحة سفلية
   const ma = parseInt(settings.maPeriod) || 14;
@@ -427,17 +450,7 @@ function getSymbolChartData(sym, settings, btcRegime) {
     return (k >= 0 && k < indSeries.length) ? parseFloat(indSeries[k].toFixed(2)) : null;
   });
 
-  return {
-    tf,
-    candles,
-    indicator,
-    signals: sigs.map(s => ({ i: s.i, ts: s.ts, side: s.side, type: s.type })),
-    trades: trades.map(t => ({
-      entryIdx: t.entryIdx,
-      exitIdx: Math.min(t.entryIdx + t.bars - 1, candles.length - 1),
-      side: t.side, type: t.type, exitReason: t.exitReason, pnlPct: t.pnlPct,
-    })),
-  };
+  return { tf, candles, indicator, signals, trades };
 }
 
 // ── باك تيست رمز واحد بتفاصيل كاملة (للعرض على الشارت) ──
