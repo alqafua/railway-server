@@ -46,7 +46,7 @@ const DEFAULT_SETTINGS = {
   cxToken: process.env.TG_TOKEN || '',
   cxChat: process.env.TG_CHAT || '',
   cxChatClose: process.env.TG_CHAT_CLOSE || '',
-  cxChatBT: process.env.TG_CHAT_BT || '',
+  cxChatBT: process.env.TG_CHAT_BT || '-1003974976122',
   cxEntry2on: true, cxEntry2Dist: '0.2', cxEntry2Amt: '50',
   cxEntry3on: false, cxEntry3Dist: '4', cxEntry3Amt: '50',
   cxBEon: false,
@@ -2036,6 +2036,7 @@ async function init() {
   if (process.env.TG_CHAT) STATE.settings.cxChat = process.env.TG_CHAT;
   if (process.env.TG_CHAT_CLOSE) STATE.settings.cxChatClose = process.env.TG_CHAT_CLOSE;
   if (process.env.TG_CHAT_BT) STATE.settings.cxChatBT = process.env.TG_CHAT_BT;
+  if (!STATE.settings.cxChatBT) STATE.settings.cxChatBT = DEFAULT_SETTINGS.cxChatBT;
   db.saveSettings(STATE.settings);
 
   STATE.copyAccounts = db.loadAccounts();
