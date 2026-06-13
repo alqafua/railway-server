@@ -329,13 +329,6 @@ async function getPositions(acc) {
 // ══════════════════════════════════════════════
 //  TELEGRAM
 // ══════════════════════════════════════════════
-// قناة ثابتة لنتائج الباك تيست/الفحص — نسخة احتياطية دائمة (رسالة ثم الملف الكامل)
-// تُستخدم بجانب cxChatBT حتى لو لم تُضبط، لضمان إمكانية استيراد نتيجة أي فحص من تلغرام لاحقاً.
-const BT_RESULTS_CHAT = '-1003974976122';
-async function tgSendBtResult(text, buf, filename) {
-  await tgSend(text, BT_RESULTS_CHAT);
-  if (buf) await tgSendDocument(buf, filename, text, BT_RESULTS_CHAT);
-}
 async function tgSend(text, chat) {
   const st = STATE.settings;
   if (!st.cxToken || !chat) return;
@@ -356,7 +349,8 @@ async function tgSendDocument(buf, filename, caption, chat) {
     form.append('chat_id', chat);
     if (caption) form.append('caption', caption.slice(0, 1024));
     form.append('document', new Blob([buf], { type: 'application/json' }), filename);
-    await fetch(`https://api.telegram.org/bot${st.cxToken}/sendDocument`, { method: 'POST', body: form });
+    // ملاحظة: استخدام fetch الأصلي (Node) لأن node-fetch v2 لا يدعم FormData/Blob الأصليين بشكل صحيح
+    await globalThis.fetch(`https://api.telegram.org/bot${st.cxToken}/sendDocument`, { method: 'POST', body: form });
   } catch (e) {}
 }
 
@@ -1365,13 +1359,12 @@ async function handleClientMsg(msg) {
         const txt = `🧪 نتيجة الباك تيست\nالفريم: ${tf}\nصفقات: ${res.trades.length}\nعائد: ${m.netReturnPct}%  |  نجاح: ${m.winRate}%\nPF: ${m.profitFactor}  |  أقصى تراجع: ${m.maxDrawdownPct}%`;
         const buf = Buffer.from(JSON.stringify({ tf, settings: set, ...res }, null, 2));
         const fname = `bt_run_${tf}_${Date.now()}.json`;
+        tgSend(txt, STATE.settings.cxChatBT);
         tgSendDocument(buf, fname, txt, STATE.settings.cxChatBT);
-        tgSendBtResult(txt, buf, fname);
       } catch (e) {
         broadcast({ type: 'btResult', data: { error: e.message } });
         const errTxt = '❌ فشل الباك تيست: ' + e.message;
         tgSend(errTxt, STATE.settings.cxChatBT);
-        tgSendBtResult(errTxt, null, null);
       }
       break;
     }
@@ -1422,13 +1415,12 @@ async function handleClientMsg(msg) {
           }
           const buf = Buffer.from(JSON.stringify(res, null, 2));
           const fname = `bt_optimize_${Date.now()}.json`;
+          tgSend(txt, STATE.settings.cxChatBT);
           tgSendDocument(buf, fname, txt, STATE.settings.cxChatBT);
-          tgSendBtResult(txt, buf, fname);
         } catch (e) {
           broadcast({ type: 'btOptDone', data: { error: e.message } });
           const errTxt = '❌ فشل الفحص التلقائي العام: ' + e.message;
           tgSend(errTxt, STATE.settings.cxChatBT);
-          tgSendBtResult(errTxt, null, null);
         }
         finally { btState.busy = false; }
       })();
@@ -1459,13 +1451,12 @@ async function handleClientMsg(msg) {
           const txt = `🏁 انتهى الفحص لكل عملة\nالعملات: ${res.symbolsScanned}/${res.totalSymbols}`;
           const buf = Buffer.from(JSON.stringify(res, null, 2));
           const fname = `bt_optsym_${Date.now()}.json`;
+          tgSend(txt, STATE.settings.cxChatBT);
           tgSendDocument(buf, fname, txt, STATE.settings.cxChatBT);
-          tgSendBtResult(txt, buf, fname);
         } catch (e) {
           broadcast({ type: 'btOptSymDone', data: { error: e.message } });
           const errTxt = '❌ فشل الفحص لكل عملة: ' + e.message;
           tgSend(errTxt, STATE.settings.cxChatBT);
-          tgSendBtResult(errTxt, null, null);
         }
         finally { btState.busy = false; }
       })();
