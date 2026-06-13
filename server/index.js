@@ -329,6 +329,13 @@ async function getPositions(acc) {
 // ══════════════════════════════════════════════
 //  TELEGRAM
 // ══════════════════════════════════════════════
+// قناة ثابتة لنتائج الباك تيست/الفحص — نسخة احتياطية دائمة (رسالة ثم الملف الكامل)
+// تُستخدم بجانب cxChatBT حتى لو لم تُضبط، لضمان إمكانية استيراد نتيجة أي فحص من تلغرام لاحقاً.
+const BT_RESULTS_CHAT = '-1003974976122';
+async function tgSendBtResult(text, buf, filename) {
+  await tgSend(text, BT_RESULTS_CHAT);
+  if (buf) await tgSendDocument(buf, filename, text, BT_RESULTS_CHAT);
+}
 async function tgSend(text, chat) {
   const st = STATE.settings;
   if (!st.cxToken || !chat) return;
@@ -1356,10 +1363,15 @@ async function handleClientMsg(msg) {
         broadcast({ type: 'btResult', data: { metrics: res.metrics, trades: res.trades.length, tf, signalStats: res.signalStats } });
         const m = res.metrics;
         const txt = `🧪 نتيجة الباك تيست\nالفريم: ${tf}\nصفقات: ${res.trades.length}\nعائد: ${m.netReturnPct}%  |  نجاح: ${m.winRate}%\nPF: ${m.profitFactor}  |  أقصى تراجع: ${m.maxDrawdownPct}%`;
-        tgSendDocument(Buffer.from(JSON.stringify({ tf, settings: set, ...res }, null, 2)), `bt_run_${tf}_${Date.now()}.json`, txt, STATE.settings.cxChatBT);
+        const buf = Buffer.from(JSON.stringify({ tf, settings: set, ...res }, null, 2));
+        const fname = `bt_run_${tf}_${Date.now()}.json`;
+        tgSendDocument(buf, fname, txt, STATE.settings.cxChatBT);
+        tgSendBtResult(txt, buf, fname);
       } catch (e) {
         broadcast({ type: 'btResult', data: { error: e.message } });
-        tgSend('❌ فشل الباك تيست: ' + e.message, STATE.settings.cxChatBT);
+        const errTxt = '❌ فشل الباك تيست: ' + e.message;
+        tgSend(errTxt, STATE.settings.cxChatBT);
+        tgSendBtResult(errTxt, null, null);
       }
       break;
     }
@@ -1408,10 +1420,15 @@ async function handleClientMsg(msg) {
           } else {
             txt = `🏁 انتهى الفحص التلقائي العام — لم يُعثر على نتيجة (تم تقييم ${res.evaluated || 0})`;
           }
-          tgSendDocument(Buffer.from(JSON.stringify(res, null, 2)), `bt_optimize_${Date.now()}.json`, txt, STATE.settings.cxChatBT);
+          const buf = Buffer.from(JSON.stringify(res, null, 2));
+          const fname = `bt_optimize_${Date.now()}.json`;
+          tgSendDocument(buf, fname, txt, STATE.settings.cxChatBT);
+          tgSendBtResult(txt, buf, fname);
         } catch (e) {
           broadcast({ type: 'btOptDone', data: { error: e.message } });
-          tgSend('❌ فشل الفحص التلقائي العام: ' + e.message, STATE.settings.cxChatBT);
+          const errTxt = '❌ فشل الفحص التلقائي العام: ' + e.message;
+          tgSend(errTxt, STATE.settings.cxChatBT);
+          tgSendBtResult(errTxt, null, null);
         }
         finally { btState.busy = false; }
       })();
@@ -1440,10 +1457,15 @@ async function handleClientMsg(msg) {
           });
           broadcast({ type: 'btOptSymDone', data: res });
           const txt = `🏁 انتهى الفحص لكل عملة\nالعملات: ${res.symbolsScanned}/${res.totalSymbols}`;
-          tgSendDocument(Buffer.from(JSON.stringify(res, null, 2)), `bt_optsym_${Date.now()}.json`, txt, STATE.settings.cxChatBT);
+          const buf = Buffer.from(JSON.stringify(res, null, 2));
+          const fname = `bt_optsym_${Date.now()}.json`;
+          tgSendDocument(buf, fname, txt, STATE.settings.cxChatBT);
+          tgSendBtResult(txt, buf, fname);
         } catch (e) {
           broadcast({ type: 'btOptSymDone', data: { error: e.message } });
-          tgSend('❌ فشل الفحص لكل عملة: ' + e.message, STATE.settings.cxChatBT);
+          const errTxt = '❌ فشل الفحص لكل عملة: ' + e.message;
+          tgSend(errTxt, STATE.settings.cxChatBT);
+          tgSendBtResult(errTxt, null, null);
         }
         finally { btState.busy = false; }
       })();
