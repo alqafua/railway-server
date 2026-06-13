@@ -749,7 +749,10 @@ async function optimize(datasetByTf, btcByTf, opts = {}) {
     // توليد الإشارات الخام مرة واحدة لهذه التوليفة (بعتبات Trailing من sl)
     const rawSet = buildSettings(sl, { ob:true, os:true, conf:true, regimeMode:'off', filterTF:'4h', stP:10, stM:3, dir:'all', tp1:3, tp1Amt:50, sl:['on',3], tp2:['off',0], entry2:['off',0], trailExit:['off',0], be:false, lev:10, liqMin:0 });
     const raw = {};
-    for (const sym of symbols) raw[sym] = generateRawSignals(dataset[sym], rawSet);
+    for (let si = 0; si < symbols.length; si++) {
+      raw[symbols[si]] = generateRawSignals(dataset[symbols[si]], rawSet);
+      if (si % 20 === 19) await new Promise(r => setImmediate(r));
+    }
     await new Promise(r => setImmediate(r));
 
     const comboStart = Date.now();
@@ -812,7 +815,7 @@ const REV_MIN_SIG = 5; // أقل عدد إشارات لاعتماد متوسط �
 const RAW_DEFAULTS = { ob: true, os: true, conf: true, regimeMode: 'off', filterTF: '4h', stP: 10, stM: 3, dir: 'all', tp1: 3, tp1Amt: 50, sl: ['on', 3], tp2: ['off', 0], entry2: ['off', 0], trailExit: ['off', 0], be: false, lev: 10, liqMin: 0 };
 
 // يبحث في شبكة عتبات Trailing (شورت أو لونق) لإيجاد القيمة التي تُولِّد إشارات أقرب لقمم/قيعان السعر
-function tuneTrailSide(candles, baseSl, side) {
+async function tuneTrailSide(candles, baseSl, side) {
   const grid = side === 'S' ? TRAIL_S_GRID : TRAIL_L_GRID;
   const k = side === 'S' ? 'ts' : 'tl';
   let best = null;
@@ -823,6 +826,7 @@ function tuneTrailSide(candles, baseSl, side) {
     const stats = reversalStats(raw.filter(s => s.k === k), candles);
     const score = stats.total > 0 ? stats.avgReversalPct * Math.min(1, stats.total / REV_MIN_SIG) : -Infinity;
     if (!best || score > best.score) best = { lvl, gap, stats, score };
+    await new Promise(r => setImmediate(r));
   }
   return best;
 }
@@ -862,8 +866,8 @@ async function optimizePerSymbol(datasetByTf, btcByTf, recipes, opts = {}) {
         const baseSl = { interval: r.interval, mode: r.mode, ma: r.maPeriod, rev: [r.revMode, r.revCount], div: r.enableDiv, trail: { m: 'off' } };
 
         // 1) ضبط عتبات Trailing لهذه العملة (شورت ولونق كل على حدة)
-        const tunedS = tuneTrailSide(candles, baseSl, 'S');
-        const tunedL = tuneTrailSide(candles, baseSl, 'L');
+        const tunedS = await tuneTrailSide(candles, baseSl, 'S');
+        const tunedL = await tuneTrailSide(candles, baseSl, 'L');
         const sl = { ...baseSl, trail: { m: 'both', ss: tunedS.lvl, sg: tunedS.gap, ls: tunedL.lvl, lg: tunedL.gap } };
         const raw = generateRawSignals(candles, buildSettings(sl, RAW_DEFAULTS));
 
@@ -899,6 +903,11 @@ async function optimizePerSymbol(datasetByTf, btcByTf, recipes, opts = {}) {
             if (!bestMgmt || score > bestMgmt.score) bestMgmt = { score: parseFloat(score.toFixed(3)), settings: set, combo: comboView(sl, ch), metrics: m };
           }
           innerN++;
+          if (innerN % 25 === 0) {
+            const elapsedMs = Date.now() - t0;
+            onProgress({ done, total, sym, elapsedMs, etaMs: Math.max(0, budgetMs - elapsedMs), best: (bestMgmt ? { metrics: bestMgmt.metrics } : bestForSym) });
+            await new Promise(r => setImmediate(r));
+          }
         }
 
         const recipeScore = (tunedS.stats.total ? tunedS.stats.avgReversalPct : 0) + (tunedL.stats.total ? tunedL.stats.avgReversalPct : 0);
