@@ -1486,6 +1486,58 @@ async function handleClientMsg(msg) {
     }
     case 'btStop': { btState.cancel = true; broadcast({ type: 'btProgress', data: { phase: 'stopping' } }); break; }
 
+    // إرسال ملخص "النتائج" الشامل (تحليل كل ملفات الفحص المرفوعة) إلى تلغرام
+    case 'resultsReport': {
+      (async () => {
+        try {
+          const a = msg.data?.analysis;
+          if (!a) throw new Error('لا توجد بيانات تحليل');
+          const lines = [];
+          lines.push('📊 ملخص النتائج الشامل');
+          lines.push(`📁 عدد الملفات: ${a.files?.length || 0}`);
+          lines.push(`🔢 عدد العملات: ${a.total || 0}  |  رابحة: ${a.profitable || 0}`);
+          lines.push(`📈 متوسط العائد: ${a.avgRet}%  |  📉 متوسط التراجع: ${a.avgDD}%`);
+          lines.push(`✅ نجاح: ${a.avgWin}%  |  📊 صفقات: ${a.avgTrades}`);
+          lines.push('');
+          lines.push(`✅ أحضر: ${a.counts?.include || 0}  |  ⚠️ راجع: ${a.counts?.watch || 0}  |  ❌ استبعد: ${a.counts?.exclude || 0}`);
+          if ((a.top || []).length) {
+            lines.push('');
+            lines.push('🏆 أفضل العملات:');
+            a.top.slice(0, 10).forEach((r, i) => {
+              const c = r.combo ? ` | ${r.combo.interval}/${r.combo.mode}${r.combo.sigPreset ? '/' + r.combo.sigPreset : ''}` : '';
+              lines.push(`${i + 1}. ${r.sym} — عائد ${r.ret}% | نجاح ${r.win}% | صفقات ${r.trades} | PF ${r.pf} | تراجع ${r.dd}%${c}`);
+            });
+          }
+          if ((a.worst || []).length) {
+            lines.push('');
+            lines.push('❌ الأضعف (مرشّحة للاستبعاد):');
+            a.worst.slice(0, 10).forEach((r, i) => {
+              lines.push(`${i + 1}. ${r.sym} — عائد ${r.ret}% | تراجع ${r.dd}% | صفقات ${r.trades}`);
+            });
+          }
+          if ((a.sigTop || []).length) {
+            lines.push('');
+            lines.push('🎯 أفضل جودة إشارات RSI:');
+            a.sigTop.forEach(s => lines.push(`${s.sym}: احترام ${s.respectRate}% (${s.total} إشارة)`));
+          }
+          if ((a.sigBottom || []).length) {
+            lines.push('');
+            lines.push('⚠️ أضعف جودة إشارات RSI:');
+            a.sigBottom.forEach(s => lines.push(`${s.sym}: احترام ${s.respectRate}% (${s.total} إشارة)`));
+          }
+          const txt = lines.join('\n');
+          const buf = Buffer.from(JSON.stringify(a, null, 2));
+          const fname = `results_report_${Date.now()}.json`;
+          await tgSend(txt, STATE.settings.cxChatBT);
+          await tgSendDocument(buf, fname, txt, STATE.settings.cxChatBT);
+          broadcast({ type: 'resultsReportDone', data: { ok: true } });
+        } catch (e) {
+          broadcast({ type: 'resultsReportDone', data: { ok: false, error: e.message } });
+        }
+      })();
+      break;
+    }
+
     // بيانات شارت لرمز واحد: شموع + إشارات + صفقات (TP/SL/الخروج) + مقاييس — للتحقق اليدوي
     case 'btChartData': {
       try {
