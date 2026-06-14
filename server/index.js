@@ -1500,6 +1500,10 @@ async function handleClientMsg(msg) {
           lines.push(`✅ نجاح: ${a.avgWin}%  |  📊 صفقات: ${a.avgTrades}`);
           lines.push('');
           lines.push(`✅ أحضر: ${a.counts?.include || 0}  |  ⚠️ راجع: ${a.counts?.watch || 0}  |  ❌ استبعد: ${a.counts?.exclude || 0}`);
+          if (a.filters) {
+            const f = a.filters;
+            lines.push(`🎛️ معايير "أحضر": صفقات≥${f.minTrades} | تراجع≤${f.maxDD}% | PF≥${f.minPF} | احترام شورت≥${f.minRespectShort}% | احترام لونج≥${f.minRespectLong}% | انعكاس≥${f.minAvgReversal}%`);
+          }
           if ((a.top || []).length) {
             lines.push('');
             lines.push('🏆 أفضل العملات:');
