@@ -1038,6 +1038,66 @@ async function optimizeIndicatorRespect(datasetByTf, opts = {}) {
   return { bySymbol, symbolsScanned: Object.keys(bySymbol).length, totalSymbols: symbols.length, elapsedMs };
 }
 
+// ── مؤشر العملة: مثل "احترام المؤشر" لكن لا يثبّت عتبات Trailing RSI على 75/3 (شورت) و25/3 (لونغ) —
+//   بل يفحص كل توليفة مؤشر (فريم/نوع/فترة/انعكاس/دايفرجنس) مع كل عتبات Trailing الممكنة (SPACE.trail،
+//   بما فيها إيقاف Trailing تماماً) ويختار لكل عملة التوليفة الكاملة الأقوى من الصفر.
+function indicatorRecipesTuned() {
+  const out = [];
+  for (const interval of SPACE.interval)
+    for (const mode of SPACE.mode)
+      for (const ma of (mode === 'RSI' ? [14] : SPACE.ma))
+        for (const rev of SPACE.rev)
+          for (const div of SPACE.div)
+            for (const trail of SPACE.trail)
+              out.push({ interval, mode, maPeriod: mode === 'RSI' ? 14 : ma, revMode: rev[0], revCount: rev[1], enableDiv: div, trail });
+  return out;
+}
+
+async function optimizeIndicatorTuned(datasetByTf, opts = {}) {
+  const onProgress = opts.onProgress || (() => {});
+  const recipes = indicatorRecipesTuned();
+  const symSet = new Set();
+  for (const r of recipes) Object.keys(datasetByTf[r.interval] || {}).forEach(s => symSet.add(s));
+  const symbols = [...symSet];
+  const total = Math.max(1, symbols.length * recipes.length);
+  const t0 = Date.now();
+  let done = 0;
+  const bySymbol = {};
+  for (const sym of symbols) {
+    if (opts.shouldStop && opts.shouldStop()) break;
+    let bestForSym = null;
+    for (const r of recipes) {
+      if (opts.shouldStop && opts.shouldStop()) break;
+      const candles = (datasetByTf[r.interval] || {})[sym];
+      if (candles && candles.length) {
+        const sl = { interval: r.interval, mode: r.mode, ma: r.maPeriod, rev: [r.revMode, r.revCount], div: r.enableDiv, trail: r.trail };
+        const raw = generateRawSignals(candles, buildSettings(sl, RAW_DEFAULTS));
+        const short = reversalStats(raw.filter(s => s.side === 'SHORT'), candles);
+        const long = reversalStats(raw.filter(s => s.side === 'LONG'), candles);
+        const shortScore = short.total ? short.avgReversalPct * Math.min(1, short.total / REV_MIN_SIG) : 0;
+        const longScore = long.total ? long.avgReversalPct * Math.min(1, long.total / REV_MIN_SIG) : 0;
+        const score = parseFloat((shortScore + longScore).toFixed(3));
+        const recipe = { interval: r.interval, mode: r.mode, maPeriod: r.maPeriod, revMode: r.revMode, revCount: r.revCount, enableDiv: r.enableDiv, trail: r.trail };
+        const candidate = { recipe, score, short, long, settings: buildSettings(sl, RAW_DEFAULTS), combo: comboView(sl, RAW_DEFAULTS) };
+        if (!bestForSym || candidate.score > bestForSym.score) bestForSym = candidate;
+      }
+      done++;
+      if (done % 50 === 0) {
+        const elapsedMs = Date.now() - t0;
+        onProgress({ done, total, sym, elapsedMs, etaMs: 0, best: bestForSym });
+        await new Promise(r => setImmediate(r));
+      }
+    }
+    if (bestForSym) bySymbol[sym] = bestForSym;
+    const elapsedMs = Date.now() - t0;
+    onProgress({ done, total, sym, elapsedMs, etaMs: 0, best: bestForSym });
+    await new Promise(r => setImmediate(r));
+  }
+  const elapsedMs = Date.now() - t0;
+  onProgress({ done: total, total, elapsedMs, etaMs: 0, finished: true });
+  return { bySymbol, symbolsScanned: Object.keys(bySymbol).length, totalSymbols: symbols.length, elapsedMs };
+}
+
 // ── الدخول والخروج: لكل عملة (بنفس "مؤشر" احترام المؤشر) يبحث عن أفضل إدارة صفقة:
 //    مبلغ الصفقة، الاستوب لوز، تريلنج الدخول والخروج، عدد نقاط الدخول/الخروج، الرافعة... ──
 const AMT_GRID = ['1%', '2%', '3%', '5%', '10%'];
@@ -1071,7 +1131,7 @@ async function optimizeManagement(datasetByTf, btcByTf, bySymbolRecipes, opts = 
     if (opts.shouldStop && opts.shouldStop()) break;
     const r = bySymbolRecipes[sym].recipe;
     const candles = (datasetByTf[r.interval] || {})[sym];
-    const sl = { interval: r.interval, mode: r.mode, ma: r.maPeriod, rev: [r.revMode, r.revCount], div: r.enableDiv, trail: FIXED_RESPECT_TRAIL };
+    const sl = { interval: r.interval, mode: r.mode, ma: r.maPeriod, rev: [r.revMode, r.revCount], div: r.enableDiv, trail: r.trail || FIXED_RESPECT_TRAIL };
     const raw = generateRawSignals(candles, buildSettings(sl, RAW_DEFAULTS));
 
     const comboStart = Date.now();
@@ -1113,9 +1173,10 @@ async function optimizeManagement(datasetByTf, btcByTf, bySymbolRecipes, opts = 
         await new Promise(r => setImmediate(r));
       }
     }
-    bySymbol[sym] = bestMgmt
+    const mgmtOut = bestMgmt
       ? { recipe: r, settings: bestMgmt.settings, combo: bestMgmt.combo, metrics: bestMgmt.metrics, score: bestMgmt.score }
       : { recipe: r, settings: { ...buildSettings(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.5%' }, combo: { ...comboView(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.5%' }, metrics: null, score: null };
+    bySymbol[sym] = { ...mgmtOut, short: bySymbolRecipes[sym].short || null, long: bySymbolRecipes[sym].long || null };
     done++;
     const elapsedMs = Date.now() - t0;
     onProgress({ done, total, sym, elapsedMs, etaMs: Math.max(0, budgetMs - elapsedMs), best: bySymbol[sym] });
@@ -1133,5 +1194,6 @@ Object.assign(module.exports, {
   listStoredSymbols, loadDatasetByTf, loadBtcByTf,
   SPACE, signalCombos, optimize, topRecipes, optimizePerSymbol,
   indicatorRecipes, optimizeIndicatorRespect,
+  indicatorRecipesTuned, optimizeIndicatorTuned,
   AMT_GRID, ENTRY_TRAIL_GRID, optimizeManagement,
 });

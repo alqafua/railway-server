@@ -1519,6 +1519,40 @@ async function handleClientMsg(msg) {
       })();
       break;
     }
+    case 'btOptTuned': {
+      if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
+      btState.busy = true; btState.cancel = false;
+      (async () => {
+        try {
+          const tfs = BT.ALLOWED_TF;
+          const symSet = new Set();
+          for (const tf of tfs) BT.listStoredSymbols(tf).forEach(s => symSet.add(s));
+          const symbols = [...symSet].filter(s => s !== 'BTCUSDT');
+          if (!symbols.length) { broadcast({ type: 'btOptTunedDone', data: { error: 'لا توجد بيانات — نزّل أولاً' } }); btState.busy = false; return; }
+          const datasetByTf = BT.loadDatasetByTf(symbols, tfs);
+          const res = await BT.optimizeIndicatorTuned(datasetByTf, {
+            shouldStop: () => btState.cancel,
+            onProgress: p => broadcast({ type: 'btProgress', data: { ...p, kind: 'optTuned' } }),
+          });
+          broadcast({ type: 'btOptTunedDone', data: res });
+          const ranked = Object.entries(res.bySymbol).sort((a, b) => b[1].score - a[1].score);
+          const lines = ranked.slice(0, 15).map(([sym, c], idx) =>
+            `${idx + 1}. ${sym.replace('USDT', '')} — شورت ${c.short.respectRate}%(${c.short.avgReversalPct}%, ن=${c.short.total}) | لونق ${c.long.respectRate}%(${c.long.avgReversalPct}%, ن=${c.long.total}) | ${c.combo.sigPreset}`
+          );
+          const txt = `🧬 مؤشر العملة — أفضل توليفة كاملة (مع عتبات Trailing) لكل عملة\nالعملات: ${res.symbolsScanned}/${res.totalSymbols}\n━━━━━━━━━━\n${lines.join('\n')}`;
+          const buf = Buffer.from(JSON.stringify(res, null, 2));
+          const fname = `bt_tuned_${Date.now()}.json`;
+          tgSend(txt, STATE.settings.cxChatBT);
+          tgSendDocument(buf, fname, txt, STATE.settings.cxChatBT);
+        } catch (e) {
+          broadcast({ type: 'btOptTunedDone', data: { error: e.message } });
+          const errTxt = '❌ فشل فحص مؤشر العملة: ' + e.message;
+          tgSend(errTxt, STATE.settings.cxChatBT);
+        }
+        finally { btState.busy = false; }
+      })();
+      break;
+    }
     case 'btOptManagement': {
       if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
       const bySymbolRecipes = msg.data?.bySymbol;
@@ -1557,6 +1591,23 @@ async function handleClientMsg(msg) {
       break;
     }
     case 'btStop': { btState.cancel = true; broadcast({ type: 'btProgress', data: { phase: 'stopping' } }); break; }
+
+    // إرسال ملف JSON جاهز + نص ملخص إلى قناة الباك تيست على تلغرام (لتبويب "الخلاصة")
+    case 'btSendFile': {
+      (async () => {
+        try {
+          const { text, payload, filename } = msg.data || {};
+          if (!text || !payload || !filename) throw new Error('بيانات ناقصة');
+          const buf = Buffer.from(JSON.stringify(payload, null, 2));
+          await tgSend(text, STATE.settings.cxChatBT);
+          await tgSendDocument(buf, filename, text, STATE.settings.cxChatBT);
+          broadcast({ type: 'btSendFileDone', data: { ok: true } });
+        } catch (e) {
+          broadcast({ type: 'btSendFileDone', data: { ok: false, error: e.message } });
+        }
+      })();
+      break;
+    }
 
     // إرسال ملخص "النتائج" الشامل (تحليل كل ملفات الفحص المرفوعة) إلى تلغرام
     case 'resultsReport': {
