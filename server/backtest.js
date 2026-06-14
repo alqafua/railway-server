@@ -978,8 +978,69 @@ async function optimizePerSymbol(datasetByTf, btcByTf, recipes, opts = {}) {
   return { bySymbol, symbolsScanned: Object.keys(bySymbol).length, totalSymbols: symbols.length, elapsedMs };
 }
 
+// ── احترام المؤشر: أفضل توليفة "مؤشر" لكل عملة من حيث انعكاس السعر بقوة بعد كل إشارة (شورت/لونق) ──
+//  يفحص كل توليفات المؤشر (فريم/نوع/فترة/انعكاس/دايفرجنس، بدون تغيير عتبات Trailing — ثابتة 75/3 شورت و25/3 لونق)
+//  ويُجمّع كل الإشارات (ob/os/conf/ts/tl) حسب جهة الصفقة فقط: SHORT أو LONG، ثم يحسب احترام كل جهة بـ reversalStats
+const FIXED_RESPECT_TRAIL = { m: 'both', ss: 75, sg: 3, ls: 25, lg: 3 };
+
+function indicatorRecipes() {
+  const out = [];
+  for (const interval of SPACE.interval)
+    for (const mode of SPACE.mode)
+      for (const ma of (mode === 'RSI' ? [14] : SPACE.ma))
+        for (const rev of SPACE.rev)
+          for (const div of SPACE.div)
+            out.push({ interval, mode, maPeriod: mode === 'RSI' ? 14 : ma, revMode: rev[0], revCount: rev[1], enableDiv: div });
+  return out;
+}
+
+async function optimizeIndicatorRespect(datasetByTf, opts = {}) {
+  const onProgress = opts.onProgress || (() => {});
+  const recipes = indicatorRecipes();
+  const symSet = new Set();
+  for (const r of recipes) Object.keys(datasetByTf[r.interval] || {}).forEach(s => symSet.add(s));
+  const symbols = [...symSet];
+  const total = Math.max(1, symbols.length * recipes.length);
+  const t0 = Date.now();
+  let done = 0;
+  const bySymbol = {};
+  for (const sym of symbols) {
+    if (opts.shouldStop && opts.shouldStop()) break;
+    let bestForSym = null;
+    for (const r of recipes) {
+      if (opts.shouldStop && opts.shouldStop()) break;
+      const candles = (datasetByTf[r.interval] || {})[sym];
+      if (candles && candles.length) {
+        const sl = { interval: r.interval, mode: r.mode, ma: r.maPeriod, rev: [r.revMode, r.revCount], div: r.enableDiv, trail: FIXED_RESPECT_TRAIL };
+        const raw = generateRawSignals(candles, buildSettings(sl, RAW_DEFAULTS));
+        const short = reversalStats(raw.filter(s => s.side === 'SHORT'), candles);
+        const long = reversalStats(raw.filter(s => s.side === 'LONG'), candles);
+        const shortScore = short.total ? short.avgReversalPct * Math.min(1, short.total / REV_MIN_SIG) : 0;
+        const longScore = long.total ? long.avgReversalPct * Math.min(1, long.total / REV_MIN_SIG) : 0;
+        const score = parseFloat((shortScore + longScore).toFixed(3));
+        const candidate = { recipe: r, score, short, long, settings: buildSettings(sl, RAW_DEFAULTS), combo: comboView(sl, RAW_DEFAULTS) };
+        if (!bestForSym || candidate.score > bestForSym.score) bestForSym = candidate;
+      }
+      done++;
+      if (done % 20 === 0) {
+        const elapsedMs = Date.now() - t0;
+        onProgress({ done, total, sym, elapsedMs, etaMs: 0, best: bestForSym });
+        await new Promise(r => setImmediate(r));
+      }
+    }
+    if (bestForSym) bySymbol[sym] = bestForSym;
+    const elapsedMs = Date.now() - t0;
+    onProgress({ done, total, sym, elapsedMs, etaMs: 0, best: bestForSym });
+    await new Promise(r => setImmediate(r));
+  }
+  const elapsedMs = Date.now() - t0;
+  onProgress({ done: total, total, elapsedMs, etaMs: 0, finished: true });
+  return { bySymbol, symbolsScanned: Object.keys(bySymbol).length, totalSymbols: symbols.length, elapsedMs };
+}
+
 Object.assign(module.exports, {
   superTrendSeries, emaDirSeries, buildBtcRegime,
   listStoredSymbols, loadDatasetByTf, loadBtcByTf,
   SPACE, signalCombos, optimize, topRecipes, optimizePerSymbol,
+  indicatorRecipes, optimizeIndicatorRespect,
 });
