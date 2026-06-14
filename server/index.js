@@ -65,6 +65,8 @@ const DEFAULT_SETTINGS = {
   stMult: 3,
   stFilterOn: false,
   dirFilter: 'all',
+  useSymbolSettings: true,
+  lockFields: { amt: false, lev: false, sl: false, targets: false, entries: false },
 };
 
 const STATE = {
@@ -107,15 +109,36 @@ const SYMBOL_OVERRIDE_FIELDS = [
   'cxTrailTp', 'cxTrailPct', 'cxBEon',
 ];
 
+// مجموعات الحقول التي يمكن "تثبيتها" على القيم العامة دائمًا عبر STATE.settings.lockFields
+const LOCK_FIELD_GROUPS = {
+  amt: ['cxAmt'],
+  lev: ['cxLev'],
+  sl: ['cxSLon', 'cxSL'],
+  targets: ['cxTP1', 'cxTP1Amt', 'cxTP2on', 'cxTP2', 'cxTP2Amt'],
+  entries: ['cxEntry2on', 'cxEntry2Dist', 'cxEntry2Amt', 'cxEntry3on', 'cxEntry3Dist', 'cxEntry3Amt'],
+};
+
+// يفرض على `merged` قيم الإعدادات العامة للمجموعات المُثبَّتة في lockFields، بحيث لا
+// يتجاوزها أي إعداد خاص بالعملة (من الواجهة أو من ملف مرفوع)
+function applyLockFields(merged) {
+  const lf = STATE.settings.lockFields;
+  if (!lf) return merged;
+  for (const [group, fields] of Object.entries(LOCK_FIELD_GROUPS)) {
+    if (lf[group]) for (const f of fields) merged[f] = STATE.settings[f];
+  }
+  return merged;
+}
+
 // يدمج إعدادات العملة الخاصة (إن وُجدت) فوق الإعدادات العامة — يُرجع STATE.settings
 // كما هي (بنفس المرجع) إذا لم تكن للعملة إعدادات خاصة، لضمان عدم تغيير السلوك الحالي
 function settingsFor(sym) {
+  if (STATE.settings.useSymbolSettings === false) return STATE.settings;
   const ov = STATE.symbolSettings[sym];
   if (!ov || !Object.keys(ov).length) return STATE.settings;
   const merged = { ...STATE.settings, ...ov };
   if (ov.sigQueueFilters) merged.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...ov.sigQueueFilters };
   if (ov.sigFilters) merged.sigFilters = { ...STATE.settings.sigFilters, ...ov.sigFilters };
-  return merged;
+  return applyLockFields(merged);
 }
 
 // ══════════════════════════════════════════════
@@ -1294,6 +1317,24 @@ async function handleClientMsg(msg) {
       if (clean.sigQueueFilters) clean.sigQueueFilters = { ...clean.sigQueueFilters };
       if (clean.sigFilters) clean.sigFilters = { ...clean.sigFilters };
       STATE.symbolSettings[symbol] = clean;
+      db.saveSymbolSettings(STATE.symbolSettings);
+      broadcast({ type: 'symbolSettings', data: STATE.symbolSettings });
+      break;
+    }
+
+    // تطبيق إعدادات مخصصة لعدة عملات دفعة واحدة (ملف bySymbol من نتائج الباكتيست)
+    case 'setSymbolSettingsBulk': {
+      const { bySymbol } = msg.data || {};
+      if (!bySymbol || typeof bySymbol !== 'object') break;
+      for (const [symbol, entry] of Object.entries(bySymbol)) {
+        const settings = entry && entry.settings;
+        if (!settings || typeof settings !== 'object') continue;
+        const clean = {};
+        for (const k of SYMBOL_OVERRIDE_FIELDS) if (settings[k] !== undefined) clean[k] = settings[k];
+        if (clean.sigQueueFilters) clean.sigQueueFilters = { ...clean.sigQueueFilters };
+        if (clean.sigFilters) clean.sigFilters = { ...clean.sigFilters };
+        STATE.symbolSettings[symbol] = clean;
+      }
       db.saveSymbolSettings(STATE.symbolSettings);
       broadcast({ type: 'symbolSettings', data: STATE.symbolSettings });
       break;
