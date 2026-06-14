@@ -951,6 +951,9 @@ async function optimizePerSymbol(datasetByTf, btcByTf, recipes, opts = {}) {
         const candidate = {
           recipeScore,
           sigStats: {
+            ob: reversalStats(raw.filter(s => s.k === 'ob'), candles),
+            os: reversalStats(raw.filter(s => s.k === 'os'), candles),
+            conf: reversalStats(raw.filter(s => s.k === 'conf'), candles),
             ts: { trStart: tunedS.lvl, trGap: tunedS.gap, ...tunedS.stats },
             tl: { trStart: tunedL.lvl, trGap: tunedL.gap, ...tunedL.stats },
           },
