@@ -1038,9 +1038,100 @@ async function optimizeIndicatorRespect(datasetByTf, opts = {}) {
   return { bySymbol, symbolsScanned: Object.keys(bySymbol).length, totalSymbols: symbols.length, elapsedMs };
 }
 
+// ── الدخول والخروج: لكل عملة (بنفس "مؤشر" احترام المؤشر) يبحث عن أفضل إدارة صفقة:
+//    مبلغ الصفقة، الاستوب لوز، تريلنج الدخول والخروج، عدد نقاط الدخول/الخروج، الرافعة... ──
+const AMT_GRID = ['1%', '2%', '3%', '5%', '10%'];
+const ENTRY_TRAIL_GRID = ['0%', '0.3%', '0.5%', '1%'];
+
+async function optimizeManagement(datasetByTf, btcByTf, bySymbolRecipes, opts = {}) {
+  const minTrades = opts.minTrades ?? 5;
+  const budgetMs = opts.budgetMs ?? (3 * 3600 * 1000);
+  const onProgress = opts.onProgress || (() => {});
+
+  const symbols = Object.keys(bySymbolRecipes).filter(sym => {
+    const r = bySymbolRecipes[sym] && bySymbolRecipes[sym].recipe;
+    return r && ((datasetByTf[r.interval] || {})[sym] || []).length;
+  });
+  const total = Math.max(1, symbols.length);
+  const sliceMs = budgetMs / total;
+  const t0 = Date.now();
+  let done = 0;
+  const regimeStore = {};
+  function regimeFor(ftf, stP, stM) {
+    const key = ftf + '|' + stP + '|' + stM;
+    if (!regimeStore[key]) {
+      const btc = btcByTf[ftf] || btcByTf['4h'] || [];
+      regimeStore[key] = btc.length ? buildBtcRegime(btc, ftf, ftf, stP, stM) : (() => ({ ema200dir: null, stDir: null }));
+    }
+    return regimeStore[key];
+  }
+
+  const bySymbol = {};
+  for (const sym of symbols) {
+    if (opts.shouldStop && opts.shouldStop()) break;
+    const r = bySymbolRecipes[sym].recipe;
+    const candles = (datasetByTf[r.interval] || {})[sym];
+    const sl = { interval: r.interval, mode: r.mode, ma: r.maPeriod, rev: [r.revMode, r.revCount], div: r.enableDiv, trail: FIXED_RESPECT_TRAIL };
+    const raw = generateRawSignals(candles, buildSettings(sl, RAW_DEFAULTS));
+
+    const comboStart = Date.now();
+    let innerN = 0; let bestMgmt = null;
+    while (Date.now() - comboStart < sliceMs && innerN < 1500) {
+      let ob = rnd(SPACE.ob), os = rnd(SPACE.os), conf = rnd(SPACE.conf);
+      if (!ob && !os && !conf) ob = true;
+      const regimeMode = rnd(SPACE.regimeMode);
+      let ftf = '4h', stP = 10, stM = 3, regimeFn = null;
+      if (regimeMode !== 'off') { ftf = rnd(SPACE.filterTF); stP = rnd(SPACE.stP); stM = rnd(SPACE.stM); regimeFn = regimeFor(ftf, stP, stM); }
+      const ch = {
+        ob, os, conf, regimeMode, filterTF: ftf, stP, stM, dir: rnd(SPACE.dir),
+        tp1: rnd(SPACE.tp1), tp1Amt: rnd(SPACE.tp1Amt), sl: rnd(SPACE.sl), tp2: rnd(SPACE.tp2),
+        entry2: rnd(SPACE.entry2), trailExit: rnd(SPACE.trailExit), be: rnd(SPACE.be), lev: rnd(SPACE.lev), liqMin: 0,
+        amt: rnd(AMT_GRID), entryTrail: rnd(ENTRY_TRAIL_GRID),
+      };
+      const set = { ...buildSettings(sl, ch), cxAmt: ch.amt, cxEntryTrail: ch.entryTrail };
+      const fopt = { types: { ob: ch.ob, os: ch.os, conf: ch.conf, ts: true, tl: true }, dirFilter: ch.dir, ema200FilterOn: set.ema200FilterOn, stFilterOn: set.stFilterOn };
+
+      const sigs = filterSignals(raw, fopt, regimeFn);
+      let busy = -1; const all = [];
+      for (const sg of sigs) {
+        if (sg.i <= busy) continue;
+        const tr = simulateTrade(candles, sg.i, sg.side, set);
+        if (!tr) continue;
+        busy = tr.entryIdx + tr.bars - 1;
+        all.push({ ...tr, side: sg.side, ts: sg.ts });
+      }
+      const capFrac = (parseFloat(String(ch.amt).replace('%', '')) || 1) / 100;
+      const m = computeMetrics(all, capFrac);
+      if (m.trades >= minTrades) {
+        const score = m.netReturnPct / (1 + m.maxDrawdownPct / 100);
+        if (!bestMgmt || score > bestMgmt.score) bestMgmt = { score: parseFloat(score.toFixed(3)), settings: set, combo: { ...comboView(sl, ch), cxAmt: ch.amt, cxEntryTrail: ch.entryTrail }, metrics: m };
+      }
+      innerN++;
+      if (innerN % 25 === 0) {
+        const elapsedMs = Date.now() - t0;
+        onProgress({ done, total, sym, elapsedMs, etaMs: Math.max(0, budgetMs - elapsedMs), best: bestMgmt });
+        await new Promise(r => setImmediate(r));
+      }
+    }
+    bySymbol[sym] = bestMgmt
+      ? { recipe: r, settings: bestMgmt.settings, combo: bestMgmt.combo, metrics: bestMgmt.metrics, score: bestMgmt.score }
+      : { recipe: r, settings: { ...buildSettings(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.5%' }, combo: { ...comboView(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.5%' }, metrics: null, score: null };
+    done++;
+    const elapsedMs = Date.now() - t0;
+    onProgress({ done, total, sym, elapsedMs, etaMs: Math.max(0, budgetMs - elapsedMs), best: bySymbol[sym] });
+    await new Promise(r => setImmediate(r));
+    if (Date.now() - t0 > budgetMs) break;
+  }
+
+  const elapsedMs = Date.now() - t0;
+  onProgress({ done: total, total, elapsedMs, etaMs: 0, finished: true });
+  return { bySymbol, symbolsScanned: Object.keys(bySymbol).length, totalSymbols: symbols.length, elapsedMs };
+}
+
 Object.assign(module.exports, {
   superTrendSeries, emaDirSeries, buildBtcRegime,
   listStoredSymbols, loadDatasetByTf, loadBtcByTf,
   SPACE, signalCombos, optimize, topRecipes, optimizePerSymbol,
   indicatorRecipes, optimizeIndicatorRespect,
+  AMT_GRID, ENTRY_TRAIL_GRID, optimizeManagement,
 });

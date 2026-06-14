@@ -1519,6 +1519,43 @@ async function handleClientMsg(msg) {
       })();
       break;
     }
+    case 'btOptManagement': {
+      if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
+      const bySymbolRecipes = msg.data?.bySymbol;
+      if (!bySymbolRecipes || !Object.keys(bySymbolRecipes).length) {
+        broadcast({ type: 'btOptManagementDone', data: { error: 'لا توجد نتائج "احترام المؤشر" — شغّله أولاً من النافذة الأولى' } });
+        break;
+      }
+      btState.busy = true; btState.cancel = false;
+      (async () => {
+        try {
+          const tfs = BT.ALLOWED_TF;
+          const symbols = Object.keys(bySymbolRecipes);
+          const datasetByTf = BT.loadDatasetByTf(symbols, tfs);
+          const btcByTf = BT.loadBtcByTf(tfs);
+          const res = await BT.optimizeManagement(datasetByTf, btcByTf, bySymbolRecipes, {
+            shouldStop: () => btState.cancel,
+            onProgress: p => broadcast({ type: 'btProgress', data: { ...p, kind: 'optMgmt' } }),
+          });
+          broadcast({ type: 'btOptManagementDone', data: res });
+          const ranked = Object.entries(res.bySymbol).filter(([, c]) => c.metrics).sort((a, b) => b[1].score - a[1].score);
+          const lines = ranked.slice(0, 15).map(([sym, c], idx) =>
+            `${idx + 1}. ${sym.replace('USDT', '')} — عائد ${c.metrics.netReturnPct}% | تراجع ${c.metrics.maxDrawdownPct}% | صفقات ${c.metrics.trades} | PF ${c.metrics.profitFactor} | مبلغ ${c.combo.cxAmt}`
+          );
+          const txt = `🚪 الدخول والخروج — أفضل إدارة صفقة لكل عملة\nالعملات: ${res.symbolsScanned}/${res.totalSymbols}\n━━━━━━━━━━\n${lines.join('\n')}`;
+          const buf = Buffer.from(JSON.stringify(res, null, 2));
+          const fname = `bt_management_${Date.now()}.json`;
+          tgSend(txt, STATE.settings.cxChatBT);
+          tgSendDocument(buf, fname, txt, STATE.settings.cxChatBT);
+        } catch (e) {
+          broadcast({ type: 'btOptManagementDone', data: { error: e.message } });
+          const errTxt = '❌ فشل فحص الدخول والخروج: ' + e.message;
+          tgSend(errTxt, STATE.settings.cxChatBT);
+        }
+        finally { btState.busy = false; }
+      })();
+      break;
+    }
     case 'btStop': { btState.cancel = true; broadcast({ type: 'btProgress', data: { phase: 'stopping' } }); break; }
 
     // إرسال ملخص "النتائج" الشامل (تحليل كل ملفات الفحص المرفوعة) إلى تلغرام
