@@ -47,6 +47,7 @@ const DEFAULT_SETTINGS = {
   cxChat: process.env.TG_CHAT || '',
   cxChatClose: process.env.TG_CHAT_CLOSE || '',
   cxChatBT: process.env.TG_CHAT_BT || '-1003974976122',
+  cxChatSettings: process.env.TG_CHAT_SETTINGS || '',
   cxEntry2on: true, cxEntry2Dist: '0.2', cxEntry2Amt: '50',
   cxEntry3on: false, cxEntry3Dist: '4', cxEntry3Amt: '50',
   cxBEon: false,
@@ -94,9 +95,10 @@ const STATE = {
   symbolSettings: {},    // إعدادات خاصة لكل عملة — تُدمج فوق STATE.settings عند توليد إشاراتها
 };
 
-// الحقول المسموح بتخصيصها لكل عملة على حدة (لا تشمل interval/ema200TF/stTF لأنها تتطلب
-// بيانات شموع/نظام BTC على فريم مختلف غير متوفرة لكل عملة)
+// الحقول المسموح بتخصيصها لكل عملة على حدة (لا تشمل ema200TF/stTF/stPeriod/stMult لأنها
+// تتطلب حساب مؤشرات BTC منفصلة لكل توليفة — تبقى عامة لكل البوت)
 const SYMBOL_OVERRIDE_FIELDS = [
+  'interval',
   'mode', 'maPeriod', 'revMode', 'revCount', 'enableDiv', 'dirFilter',
   'sigQueueFilters', 'sigFilters',
   'trSon', 'trSstart', 'trSgap', 'trLon', 'trLstart', 'trLgap',
@@ -302,6 +304,20 @@ async function getMaxLev(sym) {
   } catch (e) { return 20; }
 }
 
+// يضبط الرافعة المطلوبة بحيث لا تتجاوز الحد الأقصى المسموح للعملة — بالتدرّج (-10) في كل مرة
+// (مثلاً: رافعة مطلوبة ٥٠ وحد العملة ٢٠ → ينزل ٤٠ ثم ٣٠ ثم ٢٠)
+async function resolveLeverage(sym, requestedLev) {
+  const orig = parseInt(requestedLev) || 20;
+  let lv = orig;
+  const mx = await getMaxLev(sym);
+  while (lv > mx) {
+    lv -= 10;
+    if (lv <= 0) { lv = mx; break; }
+  }
+  const note = lv !== orig ? `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد ${mx}X)` : '';
+  return { lv, note };
+}
+
 const lotSizeCache = {}; // sym -> stepSize (from exchangeInfo)
 
 // جلب stepSize ديناميكياً إذا ما كان في الكاش (للعملات التي لم تُحمَّل عند البدء)
@@ -377,30 +393,67 @@ async function tgSendDocument(buf, filename, caption, chat) {
   } catch (e) {}
 }
 
+// فجوة الدخول "القريب من السعر" — يعتمده كورنكس كدخول أول فعلي (راجع buildMsg)
+const NEAR_ENTRY_GAP = 0.005; // 0.5%
+
 function buildMsg(sym, side, st = STATE.settings) {
   const p = livePrices[sym], pair = sym.replace('USDT', '/USDT');
   const fp = n => { if (!n && n !== 0) return 'N/A'; if (n >= 100) return n.toFixed(2); if (n >= 1) return n.toFixed(3); if (n >= 0.1) return n.toFixed(4); return n.toFixed(6); };
-  let tp1 = null, tp2 = null, sll = null, e2 = null, e3 = null;
+  let tp1 = null, tp2 = null, sll = null, eNear = null, e2 = null;
   if (p) {
-    const t1 = parseFloat(st.cxTP1) / 100, s = parseFloat(st.cxSL) / 100;
+    const t1 = parseFloat(st.cxTP1) / 100;
     tp1 = side === 'LONG' ? p * (1 + t1) : p * (1 - t1);
-    sll = side === 'LONG' ? p * (1 - s) : p * (1 + s);
     if (st.cxTP2on) { const t2 = parseFloat(st.cxTP2) / 100; tp2 = side === 'LONG' ? p * (1 + t2) : p * (1 - t2); }
+    // وقف الخسارة: حسب إعدادات العملة، وإن كان معطّلاً نضع ٢٠٠٠٪ (قيمة شكلية غير قابلة للوصول لإرضاء شرط كورنكس)
+    const s = st.cxSLon ? parseFloat(st.cxSL) / 100 : 20;
+    sll = side === 'LONG' ? Math.max(p * (1 - s), p * 0.0001) : p * (1 + s);
+    // الدخول "القريب من السعر" — كورنكس يعتمد الدخول الثاني كدخول أول فعلي، فهذا يمثّل نية الدخول بسعر السوق
+    eNear = side === 'LONG' ? p * (1 - NEAR_ENTRY_GAP) : p * (1 + NEAR_ENTRY_GAP);
     if (st.cxEntry2on) { const d2 = parseFloat(st.cxEntry2Dist || '2') / 100; e2 = side === 'LONG' ? p * (1 - d2) : p * (1 + d2); }
-    if (st.cxEntry2on && st.cxEntry3on) { const d3 = parseFloat(st.cxEntry3Dist || '4') / 100; e3 = side === 'LONG' ? p * (1 - d3) : p * (1 + d3); }
   }
   const L = [`#${pair}`, 'Exchanges: Binance Futures', `Signal Type: Regular (${side === 'LONG' ? 'Long' : 'Short'})`,
     `Leverage: ${st.cxMargin} (${st.cxLev}X)`, `Amount: ${st.cxAmt}`, '', 'Entry Targets:', '1) Market'];
-  if (e2) L.push(`2) ${fp(e2)}${st.cxEntry2Amt ? ` (${st.cxEntry2Amt}%)` : ''}`);
-  if (e3) L.push(`3) ${fp(e3)}${st.cxEntry3Amt ? ` (${st.cxEntry3Amt}%)` : ''}`);
+  // كورنكس يتجاهل "1) Market" ويعتمد البند ٢ كدخول أول فعلي، والبند ٣ كدخول ثاني فعلي
+  const nearAmt = st.cxEntry2on ? (100 - (parseFloat(st.cxEntry2Amt) || 0)) : 100;
+  L.push(`2) ${fp(eNear)} (${nearAmt}%)`);
+  if (st.cxEntry2on) L.push(`3) ${fp(e2)}${st.cxEntry2Amt ? ` (${st.cxEntry2Amt}%)` : ''}`);
   L.push('', 'Take-Profit Targets:');
   if (st.cxTP2on) { L.push(`1) ${fp(tp1)} (${st.cxTP1Amt}%)`); L.push(`2) ${fp(tp2)} (${st.cxTP2Amt}%)`); }
   else L.push(`1) ${fp(tp1)}`);
-  L.push('');
-  if (st.cxSLon) L.push('Stop Targets:', `1) ${fp(sll)}`, '');
+  // بند وقف الخسارة لازم يكون موجود دائماً (كورنكس يرفض الرسائل بدونه)
+  L.push('', 'Stop Targets:', `1) ${fp(sll)}`, '');
   L.push('Trailing Configuration:', `Entry: Percentage (${st.cxEntryTrail})`);
   if (st.cxTrailTp === 'on') L.push(`Take-Profit: Percentage (${st.cxTrailPct}%)`);
   if (st.cxBEon) L.push('Stop: Breakeven - Trigger: Target (1)');
+  return L.join('\n');
+}
+
+// تسميات عربية لعرض الإعدادات المعتمدة لعملة في رسالة قناة "الإعدادات المعتمدة"
+const SETTINGS_LABELS = {
+  interval: 'الفريم الزمني', mode: 'النمط', maPeriod: 'فترة المتوسط',
+  revMode: 'نمط الانعكاس', revCount: 'عدد الانعكاس', enableDiv: 'فلتر الدايفرجنس', dirFilter: 'فلتر الاتجاه',
+  trSon: 'تتبع قصير - تفعيل', trSstart: 'تتبع قصير - بداية', trSgap: 'تتبع قصير - فجوة',
+  trLon: 'تتبع طويل - تفعيل', trLstart: 'تتبع طويل - بداية', trLgap: 'تتبع طويل - فجوة',
+  ema200FilterOn: 'فلتر EMA200', stFilterOn: 'فلتر السوبرترند',
+  cxMargin: 'نوع الهامش', cxLev: 'الرافعة', cxAmt: 'حجم الصفقة',
+  cxSLon: 'وقف الخسارة - تفعيل', cxSL: 'وقف الخسارة %',
+  cxTP1: 'الهدف الأول %', cxTP1Amt: 'الهدف الأول - النسبة',
+  cxTP2on: 'الهدف الثاني - تفعيل', cxTP2: 'الهدف الثاني %', cxTP2Amt: 'الهدف الثاني - النسبة',
+  cxEntry2on: 'الدخول الثاني - تفعيل', cxEntry2Dist: 'الدخول الثاني - الفجوة %', cxEntry2Amt: 'الدخول الثاني - النسبة',
+  cxEntry3on: 'الدخول الثالث - تفعيل', cxEntry3Dist: 'الدخول الثالث - الفجوة %', cxEntry3Amt: 'الدخول الثالث - النسبة',
+  cxTrailTp: 'تتبع الهدف', cxTrailPct: 'نسبة التتبع %', cxBEon: 'نقطة التعادل',
+};
+
+// رسالة تعرض الإعدادات المعتمدة كاملة لعملة معينة — تُرسل لقناة الإعدادات عند توليد إشارة لعملة لها إعدادات خاصة
+function buildSettingsMsg(sym, st) {
+  const pair = sym.replace('USDT', '/USDT');
+  const L = [`⚙️ الإعدادات المعتمدة — #${pair}`, ''];
+  for (const k of SYMBOL_OVERRIDE_FIELDS) {
+    const v = st[k];
+    if (v === undefined) continue;
+    const label = SETTINGS_LABELS[k] || k;
+    L.push(`${label}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
+  }
   return L.join('\n');
 }
 
@@ -415,10 +468,7 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   if (!overridePrice && STATE.sentSigs[sym]) return;
   STATE.sentSigs[sym] = Date.now();
 
-  let lv = parseInt(st.cxLev) || 20;
-  const mx = await getMaxLev(sym);
-  let note = '';
-  if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد ${mx}X)`; }
+  const { lv, note } = await resolveLeverage(sym, st.cxLev);
   const origLev = st.cxLev; st.cxLev = String(lv);
   const origPrice = overridePrice ? livePrices[sym] : null;
   if (overridePrice) livePrices[sym] = overridePrice;
@@ -427,6 +477,12 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   if (origPrice !== null) livePrices[sym] = origPrice;
   st.cxLev = origLev;
   await tgSend(text, st.cxChat);
+
+  // إرسال الإعدادات المعتمدة كاملة لقناة الإعدادات — فقط للعملات التي لها إعدادات خاصة
+  if (STATE.settings.useSymbolSettings !== false && STATE.settings.cxChatSettings &&
+      STATE.symbolSettings[sym] && Object.keys(STATE.symbolSettings[sym]).length) {
+    await tgSend(buildSettingsMsg(sym, st), STATE.settings.cxChatSettings);
+  }
 }
 
 // ══════════════════════════════════════════════
@@ -727,7 +783,7 @@ async function scanSym(sym, candles) {
 
 async function fetchCandles(sym) {
   try {
-    const st = STATE.settings;
+    const st = settingsFor(sym);
     const d = await fetchBinance(`/fapi/v1/klines?symbol=${sym}&interval=${st.interval}&limit=200`);
     if (!Array.isArray(d) || d.length < RSI_P + 2) return false;
     candleCache[sym] = d.map(k => parseFloat(k[4]));
@@ -755,15 +811,31 @@ async function scanAll() {
 // ══════════════════════════════════════════════
 //  WEBSOCKET — Binance Live
 // ══════════════════════════════════════════════
-let binanceWs = null, binanceReconn = null;
+let binanceSockets = {}, binanceReconns = {}; // interval -> WebSocket / reconnect timeout
 
+// الفريم الزمني الفعّال لعملة معينة (إعدادها الخاص إن وُجد، وإلا الفريم العام)
+function symInterval(sym) {
+  return settingsFor(sym).interval || STATE.settings.interval;
+}
+
+// يجمع العملات حسب فريمها الفعّال، ويفتح اتصال WS مجمّع لكل فريم على حدة
 function startBinanceWS() {
   if (!STATE.symbols.length) return;
   stopBinanceWS();
-  const streams = STATE.symbols.map(s => `${s.toLowerCase()}@kline_${STATE.settings.interval}`).join('/');
-  binanceWs = new WebSocket(`${WS_BASE}?streams=${streams}`);
+  const groups = {};
+  for (const sym of STATE.symbols) {
+    const iv = symInterval(sym);
+    (groups[iv] = groups[iv] || []).push(sym);
+  }
+  for (const [interval, syms] of Object.entries(groups)) startBinanceWSGroup(interval, syms);
+}
+
+function startBinanceWSGroup(interval, syms) {
+  const streams = syms.map(s => `${s.toLowerCase()}@kline_${interval}`).join('/');
+  const binanceWs = new WebSocket(`${WS_BASE}?streams=${streams}`);
+  binanceSockets[interval] = binanceWs;
   binanceWs.on('open', () => {
-    console.log('✅ Binance WS connected');
+    console.log(`✅ Binance WS connected (${interval}, ${syms.length} عملة)`);
     broadcast({ type: 'wsStatus', data: 'connected' });
   });
   binanceWs.on('message', (data) => {
@@ -827,18 +899,31 @@ function startBinanceWS() {
       }
     } catch (e) {}
   });
-  binanceWs.on('close', () => { broadcast({ type: 'wsStatus', data: 'disconnected' }); scheduleReconn(); });
+  binanceWs.on('close', () => { broadcast({ type: 'wsStatus', data: 'disconnected' }); scheduleReconn(interval); });
   binanceWs.on('error', () => {});
 }
 
 function stopBinanceWS() {
-  if (binanceReconn) { clearTimeout(binanceReconn); binanceReconn = null; }
-  if (binanceWs) { try { binanceWs.terminate(); } catch (e) {} binanceWs = null; }
+  for (const iv of Object.keys(binanceReconns)) { clearTimeout(binanceReconns[iv]); delete binanceReconns[iv]; }
+  for (const iv of Object.keys(binanceSockets)) { try { binanceSockets[iv].terminate(); } catch (e) {} delete binanceSockets[iv]; }
 }
 
-function scheduleReconn() {
-  if (binanceReconn) return;
-  binanceReconn = setTimeout(() => { binanceReconn = null; startBinanceWS(); }, 3000);
+function scheduleReconn(interval) {
+  if (binanceReconns[interval]) return;
+  binanceReconns[interval] = setTimeout(() => {
+    delete binanceReconns[interval];
+    const syms = STATE.symbols.filter(s => symInterval(s) === interval);
+    if (syms.length) startBinanceWSGroup(interval, syms);
+  }, 3000);
+}
+
+// تُستخدم عند تغييرات تؤثر على بيانات الشموع (الفريم الزمني العام أو لعملة معينة):
+// تفريغ الكاش، إعادة تجميع اتصالات WS حسب الفريم الفعّال لكل عملة، وإعادة فحص شامل
+function rescanWithFreshCandles() {
+  Object.keys(candleCache).forEach(k => delete candleCache[k]);
+  startBinanceWS();
+  broadcast({ type: 'scanning', data: true });
+  scanAll().then(() => broadcast({ type: 'scanning', data: false }));
 }
 
 let throttleTimer = null, pendingPrices = {};
@@ -1287,6 +1372,7 @@ async function handleClientMsg(msg) {
   switch (msg.type) {
     case 'updateSettings': {
       const oldInterval = STATE.settings.interval;
+      const oldUseSym = STATE.settings.useSymbolSettings;
       if (msg.data.sigFilters) {
         msg.data.sigFilters = { ...STATE.settings.sigFilters, ...msg.data.sigFilters };
       }
@@ -1298,12 +1384,11 @@ async function handleClientMsg(msg) {
       broadcast({ type: 'settings', data: STATE.settings });
       if (msg.data.ema200TF !== undefined) updateEMA200();
       if (msg.data.stTF !== undefined || msg.data.stPeriod !== undefined || msg.data.stMult !== undefined) updateSuperTrend();
-      // إعادة تشغيل WS عند تغيير الفريم الزمني
-      if (msg.data.interval && msg.data.interval !== oldInterval) {
-        Object.keys(candleCache).forEach(k => delete candleCache[k]);
-        startBinanceWS();
-        broadcast({ type: 'scanning', data: true });
-        scanAll().then(() => broadcast({ type: 'scanning', data: false }));
+      // إعادة تشغيل WS عند تغيير الفريم الزمني العام، أو تفعيل/تعطيل استخدام إعدادات العملات
+      // (يؤثر على الفريم الفعّال لكل العملات ذات الإعدادات الخاصة)
+      if ((msg.data.interval && msg.data.interval !== oldInterval) ||
+          (msg.data.useSymbolSettings !== undefined && msg.data.useSymbolSettings !== oldUseSym)) {
+        rescanWithFreshCandles();
       }
       break;
     }
@@ -1319,6 +1404,7 @@ async function handleClientMsg(msg) {
       STATE.symbolSettings[symbol] = clean;
       db.saveSymbolSettings(STATE.symbolSettings);
       broadcast({ type: 'symbolSettings', data: STATE.symbolSettings });
+      rescanWithFreshCandles();
       break;
     }
 
@@ -1337,6 +1423,7 @@ async function handleClientMsg(msg) {
       }
       db.saveSymbolSettings(STATE.symbolSettings);
       broadcast({ type: 'symbolSettings', data: STATE.symbolSettings });
+      rescanWithFreshCandles();
       break;
     }
 
@@ -1346,6 +1433,7 @@ async function handleClientMsg(msg) {
         delete STATE.symbolSettings[symbol];
         db.saveSymbolSettings(STATE.symbolSettings);
         broadcast({ type: 'symbolSettings', data: STATE.symbolSettings });
+        rescanWithFreshCandles();
       }
       break;
     }
@@ -1725,10 +1813,7 @@ async function handleClientMsg(msg) {
     }
 
     case 'forceRescan':
-      Object.keys(candleCache).forEach(k => delete candleCache[k]);
-      startBinanceWS();
-      broadcast({ type: 'scanning', data: true });
-      scanAll().then(() => broadcast({ type: 'scanning', data: false }));
+      rescanWithFreshCandles();
       break;
 
     case 'refreshAllAccounts': {
@@ -2170,15 +2255,16 @@ async function handleClientMsg(msg) {
 
     case 'sendSignalManual': {
       const { sym, side } = msg.data;
-      const st = STATE.settings;
-      let lv = parseInt(st.cxLev) || 20;
-      const mx = await getMaxLev(sym);
-      let note = '';
-      if (lv > mx) { lv = Math.min(10, mx); note = `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد ${mx}X)`; }
+      const st = settingsFor(sym);
+      const { lv, note } = await resolveLeverage(sym, st.cxLev);
       const origLev = st.cxLev; st.cxLev = String(lv);
-      const text = buildMsg(sym, side) + note;
+      const text = buildMsg(sym, side, st) + note;
       st.cxLev = origLev;
       await tgSend(text, st.cxChat);
+      if (STATE.settings.useSymbolSettings !== false && STATE.settings.cxChatSettings &&
+          STATE.symbolSettings[sym] && Object.keys(STATE.symbolSettings[sym]).length) {
+        await tgSend(buildSettingsMsg(sym, st), STATE.settings.cxChatSettings);
+      }
       break;
     }
   }
@@ -2282,6 +2368,7 @@ async function init() {
   if (process.env.TG_CHAT_CLOSE) STATE.settings.cxChatClose = process.env.TG_CHAT_CLOSE;
   if (process.env.TG_CHAT_BT) STATE.settings.cxChatBT = process.env.TG_CHAT_BT;
   if (!STATE.settings.cxChatBT) STATE.settings.cxChatBT = DEFAULT_SETTINGS.cxChatBT;
+  if (process.env.TG_CHAT_SETTINGS) STATE.settings.cxChatSettings = process.env.TG_CHAT_SETTINGS;
   db.saveSettings(STATE.settings);
 
   STATE.copyAccounts = db.loadAccounts();
@@ -2325,7 +2412,8 @@ async function init() {
     await scanAll();
     startBinanceWS();
     setInterval(async () => {
-      if (!binanceWs || binanceWs.readyState !== WebSocket.OPEN) await scanAll();
+      const sockets = Object.values(binanceSockets);
+      if (!sockets.length || sockets.some(ws => ws.readyState !== WebSocket.OPEN)) await scanAll();
     }, 120000);
     updateEMA200();
     setInterval(updateEMA200, 10 * 60 * 1000);
