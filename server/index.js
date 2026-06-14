@@ -1344,6 +1344,27 @@ async function handleClientMsg(msg) {
       })();
       break;
     }
+    case 'btUpdate': {
+      if (btState.busy) { broadcast({ type: 'btProgress', data: { phase: 'busy' } }); break; }
+      btState.busy = true; btState.cancel = false;
+      const baseSyms = (msg.data?.symbols?.length ? msg.data.symbols : STATE.symbols);
+      const syms = baseSyms.includes('BTCUSDT') ? baseSyms : ['BTCUSDT', ...baseSyms];
+      (async () => {
+        try {
+          await BT.updateData(syms, BT.ALLOWED_TF, p => {
+            if (btState.cancel) throw new Error('أُلغي التحديث');
+            broadcast({ type: 'btProgress', data: { ...p, kind: 'update' } });
+          });
+          broadcast({ type: 'btDownloadDone', data: { ok: true } });
+          tgSend('✅ انتهى تحديث بيانات الباك تيست', STATE.settings.cxChatBT);
+        } catch (e) {
+          broadcast({ type: 'btDownloadDone', data: { ok: false, error: e.message } });
+          tgSend('❌ فشل تحديث بيانات الباك تيست: ' + e.message, STATE.settings.cxChatBT);
+        }
+        finally { btState.busy = false; }
+      })();
+      break;
+    }
     case 'btRun': {
       try {
         const set = { ...STATE.settings, ...(msg.data?.settings || {}) };

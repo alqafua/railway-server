@@ -142,6 +142,43 @@ async function downloadData(symbols, intervals, fromMs, toMs, onProgress) {
   return { totalUnits, doneUnits };
 }
 
+// تحديث البيانات المخزّنة فقط (يجلب الشموع الجديدة منذ آخر شمعة محفوظة لكل رمز/فريم)
+//  أسرع بكثير من التنزيل الكامل — مناسب للتشغيل اليومي
+//  onProgress({ phase, doneUnits, totalUnits, sym, tf, candles })
+const UPDATE_FALLBACK_DAYS = 90; // لو لا توجد بيانات مخزّنة لرمز ما، نزّل له هذا العمق
+async function updateData(symbols, intervals, onProgress) {
+  const tfs = intervals.filter(t => ALLOWED_TF.includes(t));
+  const totalUnits = symbols.length * tfs.length;
+  let doneUnits = 0;
+  const toMs = Date.now();
+  for (const sym of symbols) {
+    for (const tf of tfs) {
+      try {
+        const existing = loadCandles(sym, tf) || [];
+        const step = TF_MS[tf];
+        const fromMs = existing.length ? existing[existing.length - 1][0] + step : toMs - UPDATE_FALLBACK_DAYS * 86400000;
+        let added = 0;
+        if (fromMs < toMs) {
+          const rows = await fetchKlinesRange(sym, tf, fromMs, toMs, w => {
+            onProgress && onProgress({ phase: 'wait', doneUnits, totalUnits, sym: w.sym, tf: w.tf, status: w.status, waitSec: w.waitSec, attempt: w.attempt });
+          });
+          if (rows.length) {
+            const merged = existing.length ? existing.concat(rows.filter(r => r[0] > existing[existing.length - 1][0])) : rows;
+            saveCandles(sym, tf, merged);
+            added = merged.length - existing.length;
+          }
+        }
+        doneUnits++;
+        onProgress && onProgress({ phase: 'download', doneUnits, totalUnits, sym, tf, candles: added });
+      } catch (e) {
+        doneUnits++;
+        onProgress && onProgress({ phase: 'download', doneUnits, totalUnits, sym, tf, error: e.message });
+      }
+    }
+  }
+  return { totalUnits, doneUnits };
+}
+
 // ── توليد الإشارات (شموع مغلقة) ────────────────────────────────────
 //  candles: [ [t,o,h,l,c], ... ]  (مغلقة)
 //  btcRegime: دالة (ts) → { ema200dir, stDir } للفلاتر العامة (BTC) — اختياري
@@ -553,7 +590,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 module.exports = {
   ALLOWED_TF, TF_MS, DATA_DIR,
   saveCandles, loadCandles, dataInfo,
-  fetchKlinesRange, downloadData,
+  fetchKlinesRange, downloadData, updateData,
   exportDataBundle, importDataBundle,
   generateSignals, generateRawSignals, filterSignals, simulateTrade, runSymbol, runSymbolDetailed, getChartData, computeMetrics, runBacktest,
   getSymbolChartData,
@@ -666,7 +703,7 @@ function buildSettings(sl, ch) {
 }
 function comboView(sl, ch) {
   const tr = sl.trail;
-  const trLbl = tr.m === 'off' ? '' : `+trail:${tr.m}(${tr.m==='S'?tr.ss+'/'+tr.sg:tr.m==='L'?tr.ls+'/'+tr.lg:tr.ss+'/'+tr.sg}…)`;
+  const trLbl = tr.m === 'off' ? '' : tr.m === 'both' ? `+trail:both(S:${tr.ss}/${tr.sg},L:${tr.ls}/${tr.lg})` : `+trail:${tr.m}(${tr.m==='S'?tr.ss+'/'+tr.sg:tr.ls+'/'+tr.lg})`;
   const types = [ch.ob && 'ob', ch.os && 'os', ch.conf && 'conf'].filter(Boolean).join('+') + trLbl || '—';
   const regime = ch.regimeMode === 'off' ? 'off' : `${ch.regimeMode}@${ch.filterTF}${ch.regimeMode!=='ema'?'('+ch.stP+','+ch.stM+')':''}`;
   return {
