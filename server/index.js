@@ -605,7 +605,7 @@ async function sendQueueItemNow(qItem, currentPrice) {
   STATE.waitQueue = STATE.waitQueue.filter(q => q.id !== qItem.id);
   broadcast({ type: 'waitQueue', data: queueWithReversals() });
   const label = qItem.emoji ? `${qItem.emoji} ${qItem.label}` : qItem.label || qItem.signalType || '';
-  await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol], true, label);
+  await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol], true, label, settingsFor(qItem.symbol));
 }
 
 function autoSendFromQueue() {
@@ -616,13 +616,6 @@ function autoSendFromQueue() {
   const scored = queueWithReversals();
   const top = scored[0];
   if (top) sendQueueItemNow(top, livePrices[top.symbol]);
-}
-
-function calcEMA(data, period) {
-  const k = 2 / (period + 1);
-  let ema = data[0];
-  for (let i = 1; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
-  return ema;
 }
 
 async function updateEMA200() {
@@ -905,7 +898,10 @@ function startBinanceWSGroup(interval, syms) {
 
 function stopBinanceWS() {
   for (const iv of Object.keys(binanceReconns)) { clearTimeout(binanceReconns[iv]); delete binanceReconns[iv]; }
-  for (const iv of Object.keys(binanceSockets)) { try { binanceSockets[iv].terminate(); } catch (e) {} delete binanceSockets[iv]; }
+  for (const iv of Object.keys(binanceSockets)) {
+    try { binanceSockets[iv].removeAllListeners(); binanceSockets[iv].terminate(); } catch (e) {}
+    delete binanceSockets[iv];
+  }
 }
 
 function scheduleReconn(interval) {
@@ -2414,7 +2410,7 @@ async function init() {
     startBinanceWS();
     setInterval(async () => {
       const sockets = Object.values(binanceSockets);
-      if (!sockets.length || sockets.some(ws => ws.readyState !== WebSocket.OPEN)) await scanAll();
+      if (!sockets.length || sockets.every(ws => ws.readyState !== WebSocket.OPEN)) await scanAll();
     }, 120000);
     updateEMA200();
     setInterval(updateEMA200, 10 * 60 * 1000);
