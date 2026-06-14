@@ -1238,6 +1238,7 @@ function getPublicState() {
     ema200: STATE.ema200,
     superTrend: STATE.superTrend,
     lastUpdate: nowStr(),
+    btBusy: btState.busy,
   };
 }
 
