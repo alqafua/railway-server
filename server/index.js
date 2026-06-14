@@ -404,8 +404,8 @@ function buildMsg(sym, side, st = STATE.settings) {
     const t1 = parseFloat(st.cxTP1) / 100;
     tp1 = side === 'LONG' ? p * (1 + t1) : p * (1 - t1);
     if (st.cxTP2on) { const t2 = parseFloat(st.cxTP2) / 100; tp2 = side === 'LONG' ? p * (1 + t2) : p * (1 - t2); }
-    // وقف الخسارة: حسب إعدادات العملة، وإن كان معطّلاً نضع ٢٠٠٠٪ (قيمة شكلية غير قابلة للوصول لإرضاء شرط كورنكس)
-    const s = st.cxSLon ? parseFloat(st.cxSL) / 100 : 20;
+    // وقف الخسارة: حسب إعدادات العملة، وإن كان معطّلاً نضع ٥٠٪ (قيمة ثابتة لإرضاء شرط كورنكس)
+    const s = st.cxSLon ? parseFloat(st.cxSL) / 100 : 0.5;
     sll = side === 'LONG' ? Math.max(p * (1 - s), p * 0.0001) : p * (1 + s);
     // الدخول "القريب من السعر" — كورنكس يعتمد الدخول الثاني كدخول أول فعلي، فهذا يمثّل نية الدخول بسعر السوق
     eNear = side === 'LONG' ? p * (1 - NEAR_ENTRY_GAP) : p * (1 + NEAR_ENTRY_GAP);
