@@ -416,11 +416,17 @@ async function tgSend(text, chat) {
   const st = STATE.settings;
   if (!st.cxToken || !chat) return;
   try {
-    await fetch(`https://api.telegram.org/bot${st.cxToken}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${st.cxToken}/sendMessage`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chat, text })
     });
-  } catch (e) {}
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      reportError('تلغرام', `فشل الإرسال (${res.status}): ${body.slice(0, 200)}`);
+    }
+  } catch (e) {
+    reportError('تلغرام', `فشل الإرسال: ${e.message}`);
+  }
 }
 
 // إرسال ملف (نتائج فحص/باك تيست بصيغة JSON) كمستند تلغرام
@@ -1408,7 +1414,7 @@ wss.on('connection', (ws, req) => {
   clients.add(ws);
   ws.send(JSON.stringify({ type: 'init', data: getPublicState() }));
   ws.on('message', async (raw) => {
-    try { await handleClientMsg(JSON.parse(raw)); } catch (e) {}
+    try { await handleClientMsg(JSON.parse(raw)); } catch (e) { reportError('handleClientMsg', e.message); }
   });
   ws.on('close', () => clients.delete(ws));
   ws.on('error', () => clients.delete(ws));
