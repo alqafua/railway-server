@@ -4,7 +4,9 @@ const fs = require('fs');
 
 const DATA_DIR = process.env.DB_PATH
   ? path.dirname(process.env.DB_PATH)
-  : path.join(__dirname, '../data');
+  : process.env.RAILWAY_VOLUME_MOUNT_PATH
+    ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'data')
+    : path.join(__dirname, '../data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 function fpath(name) { return path.join(DATA_DIR, name + '.json'); }

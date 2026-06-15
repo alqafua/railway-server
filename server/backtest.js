@@ -14,7 +14,8 @@ let fetch;
 try { fetch = require('node-fetch'); } catch (e) { fetch = global.fetch; }
 
 const BASE = 'https://fapi.binance.com';
-const DATA_DIR = process.env.BT_DATA_DIR || path.join(__dirname, '../data/backtest');
+const DATA_DIR = process.env.BT_DATA_DIR
+  || (process.env.RAILWAY_VOLUME_MOUNT_PATH ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'data/backtest') : path.join(__dirname, '../data/backtest'));
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // الفريمات المسموحة فقط (حسب طلبك) — الساعة و4 ساعات فقط
