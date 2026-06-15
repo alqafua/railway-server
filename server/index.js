@@ -42,14 +42,13 @@ const DEFAULT_SETTINGS = {
   cxMargin: 'Cross', cxLev: '20', cxAmt: '1%',
   cxSLon: false, cxSL: '2',
   cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
-  cxTrailTp: 'on', cxTrailPct: '0.5', cxEntryTrail: '0.5%',
+  cxTrailTp: 'on', cxTrailPct: '0.5', cxEntryTrail: '0.2%',
   cxToken: process.env.TG_TOKEN || '',
   cxChat: process.env.TG_CHAT || '',
   cxChatClose: process.env.TG_CHAT_CLOSE || '',
   cxChatBT: process.env.TG_CHAT_BT || '-1003974976122',
   cxChatSettings: process.env.TG_CHAT_SETTINGS || '-1004495709499',
   cxEntry2on: true, cxEntry2Dist: '0.2', cxEntry2Amt: '50',
-  cxEntry3on: false, cxEntry3Dist: '4', cxEntry3Amt: '50',
   cxBEon: false,
   trSon: false, trSstart: 75, trSgap: 3,
   trLon: false, trLstart: 25, trLgap: 3,
@@ -107,7 +106,6 @@ const SYMBOL_OVERRIDE_FIELDS = [
   'cxSLon', 'cxSL',
   'cxTP1', 'cxTP1Amt', 'cxTP2on', 'cxTP2', 'cxTP2Amt',
   'cxEntry2on', 'cxEntry2Dist', 'cxEntry2Amt',
-  'cxEntry3on', 'cxEntry3Dist', 'cxEntry3Amt',
   'cxTrailTp', 'cxTrailPct', 'cxBEon',
 ];
 
@@ -117,7 +115,7 @@ const LOCK_FIELD_GROUPS = {
   lev: ['cxLev'],
   sl: ['cxSLon', 'cxSL'],
   targets: ['cxTP1', 'cxTP1Amt', 'cxTP2on', 'cxTP2', 'cxTP2Amt'],
-  entries: ['cxEntry2on', 'cxEntry2Dist', 'cxEntry2Amt', 'cxEntry3on', 'cxEntry3Dist', 'cxEntry3Amt'],
+  entries: ['cxEntry2on', 'cxEntry2Dist', 'cxEntry2Amt'],
 };
 
 // يفرض على `merged` قيم الإعدادات العامة للمجموعات المُثبَّتة في lockFields، بحيث لا
@@ -289,19 +287,35 @@ async function fetchBinance(p) {
 }
 
 const maxLevCache = {};
+let levBracketsLoaded = false;
+
+// يجلب جميع حدود الرافعة دفعة واحدة من واجهة Binance العامة (لا تتطلب مفاتيح API) — احتياطي
+async function fetchPublicLevBrackets() {
+  const res = await fetch('https://www.binance.com/bapi/futures/v1/public/future/leverage-bracket');
+  const d = await res.json();
+  if (!Array.isArray(d?.data)) throw new Error('bad response');
+  for (const item of d.data) {
+    const l = item.brackets?.[0]?.initialLeverage;
+    if (l) maxLevCache[item.symbol] = l;
+  }
+  levBracketsLoaded = true;
+}
+
 async function getMaxLev(sym) {
   if (maxLevCache[sym]) return maxLevCache[sym];
-  try {
-    const master = STATE.copyAccounts?.find(a => a.isMaster);
-    let d;
-    if (master?.apiKey && master?.apiSecret) {
-      d = await bFetch(master.apiKey, master.apiSecret, 'GET', '/fapi/v1/leverageBracket', { symbol: sym });
-    } else {
-      d = await fetchBinance(`/fapi/v1/leverageBracket?symbol=${sym}`);
-    }
-    const l = (Array.isArray(d) ? d[0] : d)?.brackets?.[0]?.initialLeverage || 20;
-    maxLevCache[sym] = l; return l;
-  } catch (e) { return 20; }
+  // أي حساب لديه مفاتيح API صالحة يكفي لجلب حدود الرافعة (/fapi/v1/leverageBracket مُوثَّق ولا يتطلب أن يكون الحساب "ماستر")
+  const withKeys = STATE.copyAccounts?.find(a => a.apiKey && a.apiSecret);
+  if (withKeys) {
+    try {
+      const d = await bFetch(withKeys.apiKey, withKeys.apiSecret, 'GET', '/fapi/v1/leverageBracket', { symbol: sym });
+      const l = (Array.isArray(d) ? d[0] : d)?.brackets?.[0]?.initialLeverage;
+      if (l) { maxLevCache[sym] = l; return l; }
+    } catch (e) {}
+  }
+  if (!levBracketsLoaded) {
+    try { await fetchPublicLevBrackets(); } catch (e) {}
+  }
+  return maxLevCache[sym] || 20;
 }
 
 // يضبط الرافعة المطلوبة بحيث لا تتجاوز الحد الأقصى المسموح للعملة — بالتدرّج (-10) في كل مرة
@@ -428,33 +442,27 @@ function buildMsg(sym, side, st = STATE.settings) {
   return L.join('\n');
 }
 
-// تسميات عربية لعرض الإعدادات المعتمدة لعملة في رسالة قناة "الإعدادات المعتمدة"
-const SETTINGS_LABELS = {
-  interval: 'الفريم الزمني', mode: 'النمط', maPeriod: 'فترة المتوسط',
-  revMode: 'نمط الانعكاس', revCount: 'عدد الانعكاس', enableDiv: 'فلتر الدايفرجنس', dirFilter: 'فلتر الاتجاه',
-  trSon: 'تتبع قصير - تفعيل', trSstart: 'تتبع قصير - بداية', trSgap: 'تتبع قصير - فجوة',
-  trLon: 'تتبع طويل - تفعيل', trLstart: 'تتبع طويل - بداية', trLgap: 'تتبع طويل - فجوة',
-  ema200FilterOn: 'فلتر EMA200', stFilterOn: 'فلتر السوبرترند',
-  cxMargin: 'نوع الهامش', cxLev: 'الرافعة', cxAmt: 'حجم الصفقة',
-  cxSLon: 'وقف الخسارة - تفعيل', cxSL: 'وقف الخسارة %',
-  cxTP1: 'الهدف الأول %', cxTP1Amt: 'الهدف الأول - النسبة',
-  cxTP2on: 'الهدف الثاني - تفعيل', cxTP2: 'الهدف الثاني %', cxTP2Amt: 'الهدف الثاني - النسبة',
-  cxEntry2on: 'الدخول الثاني - تفعيل', cxEntry2Dist: 'الدخول الثاني - الفجوة %', cxEntry2Amt: 'الدخول الثاني - النسبة',
-  cxEntry3on: 'الدخول الثالث - تفعيل', cxEntry3Dist: 'الدخول الثالث - الفجوة %', cxEntry3Amt: 'الدخول الثالث - النسبة',
-  cxTrailTp: 'تتبع الهدف', cxTrailPct: 'نسبة التتبع %', cxBEon: 'نقطة التعادل',
-};
-
-// رسالة تعرض الإعدادات المعتمدة كاملة لعملة معينة — تُرسل لقناة الإعدادات عند توليد إشارة لعملة لها إعدادات خاصة
-function buildSettingsMsg(sym, st) {
+// رسالة مبسّطة بأهم إعدادات الصفقة — تُرسل لقناة "إعدادات الصفقات" مع كل إشارة
+function buildSettingsMsg(sym, side, st, lv) {
   const pair = sym.replace('USDT', '/USDT');
-  const L = [`⚙️ الإعدادات المعتمدة — #${pair}`, ''];
-  for (const k of SYMBOL_OVERRIDE_FIELDS) {
-    const v = st[k];
-    if (v === undefined) continue;
-    const label = SETTINGS_LABELS[k] || k;
-    L.push(`${label}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
-  }
-  return L.join('\n');
+  const entryDists = [`السوق ${(NEAR_ENTRY_GAP * 100).toFixed(2)}%`];
+  if (st.cxEntry2on) entryDists.push(`${st.cxEntry2Dist}%`);
+  const tpDists = [`${st.cxTP1}%`];
+  if (st.cxTP2on) tpDists.push(`${st.cxTP2}%`);
+  return [
+    `⚙️ إعدادات الصفقة — #${pair}`,
+    '',
+    `الفريم الزمني: ${st.interval}`,
+    `الاتجاه: ${side === 'LONG' ? 'لونج 🟢' : 'شورت 🔴'}`,
+    `الدخولات (المسافة): ${entryDists.join(' / ')}`,
+    `الأهداف (المسافة): ${tpDists.join(' / ')}`,
+    `وقف الخسارة: ${st.cxSLon ? `${st.cxSL}%` : '50% (افتراضي - الإعداد معطّل)'}`,
+    `Entry Trailing: ${st.cxEntryTrail}`,
+    `Take-Profit Trailing: ${st.cxTrailTp === 'on' ? `${st.cxTrailPct}%` : 'معطّل'}`,
+    `Break Even: ${st.cxBEon ? 'مفعّل' : 'معطّل'}`,
+    `الرافعة: ${lv}X`,
+    `حجم الصفقة: ${st.cxAmt}`,
+  ].join('\n');
 }
 
 async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabel = '', st = STATE.settings) {
@@ -478,10 +486,9 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   st.cxLev = origLev;
   await tgSend(text, st.cxChat);
 
-  // إرسال الإعدادات المعتمدة كاملة لقناة الإعدادات — فقط للعملات التي لها إعدادات خاصة
-  if (STATE.settings.useSymbolSettings !== false && STATE.settings.cxChatSettings &&
-      STATE.symbolSettings[sym] && Object.keys(STATE.symbolSettings[sym]).length) {
-    await tgSend(buildSettingsMsg(sym, st), STATE.settings.cxChatSettings);
+  // إرسال ملخص إعدادات الصفقة لقناة "إعدادات الصفقات" — لكل الصفقات
+  if (STATE.settings.cxChatSettings) {
+    await tgSend(buildSettingsMsg(sym, side, st, lv), STATE.settings.cxChatSettings);
   }
 }
 
@@ -2257,9 +2264,8 @@ async function handleClientMsg(msg) {
       const text = buildMsg(sym, side, st) + note;
       st.cxLev = origLev;
       await tgSend(text, st.cxChat);
-      if (STATE.settings.useSymbolSettings !== false && STATE.settings.cxChatSettings &&
-          STATE.symbolSettings[sym] && Object.keys(STATE.symbolSettings[sym]).length) {
-        await tgSend(buildSettingsMsg(sym, st), STATE.settings.cxChatSettings);
+      if (STATE.settings.cxChatSettings) {
+        await tgSend(buildSettingsMsg(sym, side, st, lv), STATE.settings.cxChatSettings);
       }
       break;
     }
@@ -2366,6 +2372,8 @@ async function init() {
   if (!STATE.settings.cxChatBT) STATE.settings.cxChatBT = DEFAULT_SETTINGS.cxChatBT;
   if (process.env.TG_CHAT_SETTINGS) STATE.settings.cxChatSettings = process.env.TG_CHAT_SETTINGS;
   if (!STATE.settings.cxChatSettings) STATE.settings.cxChatSettings = DEFAULT_SETTINGS.cxChatSettings;
+  // ترقية القيمة الافتراضية القديمة لـ Entry Trailing (٠.٥٪ → ٠.٢٪) لمن لم يغيّرها يدوياً
+  if (STATE.settings.cxEntryTrail === '0.5%') STATE.settings.cxEntryTrail = DEFAULT_SETTINGS.cxEntryTrail;
   db.saveSettings(STATE.settings);
 
   STATE.copyAccounts = db.loadAccounts();

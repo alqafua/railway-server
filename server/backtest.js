@@ -282,15 +282,14 @@ function simulateTrade(candles, sigIndex, side, settings) {
   const entry1Px = candles[entryIdx][1];                 // فتح الشمعة التالية
 
   // أوزان الدخولات (تُطبَّع لتساوي 1)
-  const e2on = !!settings.cxEntry2on, e3on = e2on && !!settings.cxEntry3on;
-  let w1 = 100, w2 = e2on ? (parseFloat(settings.cxEntry2Amt) || 0) : 0, w3 = e3on ? (parseFloat(settings.cxEntry3Amt) || 0) : 0;
-  if (e2on) w1 = Math.max(0, 100 - w2 - w3);
-  const wSum = w1 + w2 + w3 || 1;
-  w1 /= wSum; w2 /= wSum; w3 /= wSum;
+  const e2on = !!settings.cxEntry2on;
+  let w1 = 100, w2 = e2on ? (parseFloat(settings.cxEntry2Amt) || 0) : 0;
+  if (e2on) w1 = Math.max(0, 100 - w2);
+  const wSum = w1 + w2 || 1;
+  w1 /= wSum; w2 /= wSum;
 
   // أسعار الدخولات الإضافية (مسافة % عكسية عن سعر الإشارة)
   const e2Px = e2on ? refPrice * (1 - sign * (parseFloat(settings.cxEntry2Dist) || 0) / 100) : null;
-  const e3Px = e3on ? refPrice * (1 - sign * (parseFloat(settings.cxEntry3Dist) || 0) / 100) : null;
 
   // مستويات الأهداف/الوقف من سعر الإشارة (نِسَب)
   const tp1Px = refPrice * (1 + sign * (parseFloat(settings.cxTP1) || 0) / 100);
@@ -308,7 +307,7 @@ function simulateTrade(candles, sigIndex, side, settings) {
   // الحالة
   const fills = [{ px: entry1Px, w: w1 }];   // الدخول 1 مملوء فوراً
   let filledW = w1;
-  let e2done = false, e3done = false;
+  let e2done = false;
   let remaining = 1;                          // نسبة الصفقة المفتوحة (من المملوء)
   let tp1hit = false;
   let realized = 0;                           // PnL تراكمي (نسبة سعرية موزونة)
@@ -327,9 +326,6 @@ function simulateTrade(candles, sigIndex, side, settings) {
     // 1) تعبئة دخولات إضافية إذا لمس السعر مستواها
     if (e2on && !e2done && ((isLong && lo <= e2Px) || (!isLong && hi >= e2Px))) {
       fills.push({ px: e2Px, w: w2 }); filledW += w2; e2done = true; entryNotionalFee += FEE_RATE * w2 * lev;
-    }
-    if (e3on && !e3done && ((isLong && lo <= e3Px) || (!isLong && hi >= e3Px))) {
-      fills.push({ px: e3Px, w: w3 }); filledW += w3; e3done = true; entryNotionalFee += FEE_RATE * w3 * lev;
     }
 
     const ent = avgEntry();
@@ -696,7 +692,7 @@ function buildSettings(sl, ch) {
     cxTP1: ch.tp1, cxTP1Amt: ch.tp1Amt,
     cxSLon: ch.sl[0] === 'on', cxSL: ch.sl[1],
     cxTP2on: ch.tp2[0] === 'on', cxTP2: ch.tp2[1], cxTP2Amt: 50,
-    cxEntry2on: ch.entry2[0] === 'on', cxEntry2Dist: ch.entry2[1], cxEntry2Amt: 50, cxEntry3on: false,
+    cxEntry2on: ch.entry2[0] === 'on', cxEntry2Dist: ch.entry2[1], cxEntry2Amt: 50,
     cxTrailTp: ch.trailExit[0], cxTrailPct: ch.trailExit[1], cxBEon: ch.be,
     cxLev: ch.lev, cxAmt: '1%',
   };
@@ -1175,7 +1171,7 @@ async function optimizeManagement(datasetByTf, btcByTf, bySymbolRecipes, opts = 
     }
     const mgmtOut = bestMgmt
       ? { recipe: r, settings: bestMgmt.settings, combo: bestMgmt.combo, metrics: bestMgmt.metrics, score: bestMgmt.score }
-      : { recipe: r, settings: { ...buildSettings(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.5%' }, combo: { ...comboView(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.5%' }, metrics: null, score: null };
+      : { recipe: r, settings: { ...buildSettings(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.2%' }, combo: { ...comboView(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.2%' }, metrics: null, score: null };
     bySymbol[sym] = { ...mgmtOut, short: bySymbolRecipes[sym].short || null, long: bySymbolRecipes[sym].long || null };
     done++;
     const elapsedMs = Date.now() - t0;
