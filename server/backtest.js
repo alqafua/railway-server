@@ -1171,7 +1171,7 @@ async function optimizeManagement(datasetByTf, btcByTf, bySymbolRecipes, opts = 
     }
     const mgmtOut = bestMgmt
       ? { recipe: r, settings: bestMgmt.settings, combo: bestMgmt.combo, metrics: bestMgmt.metrics, score: bestMgmt.score }
-      : { recipe: r, settings: { ...buildSettings(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.2%' }, combo: { ...comboView(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.2%' }, metrics: null, score: null };
+      : { recipe: r, settings: { ...buildSettings(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.5%' }, combo: { ...comboView(sl, RAW_DEFAULTS), cxAmt: '1%', cxEntryTrail: '0.5%' }, metrics: null, score: null };
     bySymbol[sym] = { ...mgmtOut, short: bySymbolRecipes[sym].short || null, long: bySymbolRecipes[sym].long || null };
     done++;
     const elapsedMs = Date.now() - t0;
