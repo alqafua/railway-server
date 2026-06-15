@@ -66,7 +66,7 @@ const DEFAULT_SETTINGS = {
   stFilterOn: false,
   dirFilter: 'all',
   useSymbolSettings: true,
-  lockFields: { amt: false, lev: false, sl: false, targets: false, entries: false },
+  lockFields: { amt: false, lev: false, sl: false, targets: false, entries: false, trailing: false, be: false },
 };
 
 const STATE = {
@@ -106,7 +106,7 @@ const SYMBOL_OVERRIDE_FIELDS = [
   'cxSLon', 'cxSL',
   'cxTP1', 'cxTP1Amt', 'cxTP2on', 'cxTP2', 'cxTP2Amt',
   'cxEntry2on', 'cxEntry2Dist', 'cxEntry2Amt',
-  'cxTrailTp', 'cxTrailPct', 'cxBEon', 'cxBEonAuto',
+  'cxTrailTp', 'cxTrailPct', 'cxEntryTrail', 'cxBEon', 'cxBEonAuto',
 ];
 
 // مجموعات الحقول التي يمكن "تثبيتها" على القيم العامة دائمًا عبر STATE.settings.lockFields
@@ -116,6 +116,8 @@ const LOCK_FIELD_GROUPS = {
   sl: ['cxSLon', 'cxSL'],
   targets: ['cxTP1', 'cxTP1Amt', 'cxTP2on', 'cxTP2', 'cxTP2Amt'],
   entries: ['cxEntry2on', 'cxEntry2Dist', 'cxEntry2Amt'],
+  trailing: ['cxEntryTrail', 'cxTrailPct'],
+  be: ['cxBEon'],
 };
 
 // يفرض على `merged` قيم الإعدادات العامة للمجموعات المُثبَّتة في lockFields، بحيث لا
