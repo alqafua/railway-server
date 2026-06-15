@@ -2308,6 +2308,10 @@ async function handleClientMsg(msg) {
     case 'sendSignalManual': {
       const { sym, side } = msg.data;
       const st = settingsFor(sym);
+      if (!st.cxToken || !st.cxChat) {
+        reportError('تلغرام', !st.cxToken ? 'لم يتم ضبط توكن البوت (Token) في الإعدادات' : 'لم يتم ضبط Chat ID في الإعدادات');
+        break;
+      }
       const { lv, note } = await resolveLeverage(sym, st.cxLev);
       const origLev = st.cxLev; st.cxLev = String(lv);
       const text = buildMsg(sym, side, st) + note;
