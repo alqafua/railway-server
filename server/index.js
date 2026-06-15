@@ -356,12 +356,8 @@ async function getMaxLev(sym) {
 // (مثلاً: رافعة مطلوبة ٥٠ وحد العملة ٢٠ → ينزل ٤٠ ثم ٣٠ ثم ٢٠)
 async function resolveLeverage(sym, requestedLev) {
   const orig = parseInt(requestedLev) || 20;
-  let lv = orig;
   const mx = await getMaxLev(sym);
-  while (lv > mx) {
-    lv -= 10;
-    if (lv <= 0) { lv = mx; break; }
-  }
+  const lv = Math.min(orig, mx);
   const note = lv !== orig ? `\n⚠️ رافعة عُدّلت إلى ${lv}X (الحد ${mx}X)` : '';
   return { lv, note };
 }
