@@ -442,6 +442,14 @@ async function tgSendDocument(buf, filename, caption, chat) {
 // فجوة الدخول "القريب من السعر" — يعتمده كورنكس كدخول أول فعلي (راجع buildMsg)
 const NEAR_ENTRY_GAP = 0.002; // 0.2%
 
+// يحوّل قيمة "تريلنج الدخول" (مهما كانت صيغتها: مع % أو بدونها، بمسافات، أو بأرقام عربية)
+// إلى نسبة نظيفة بصيغة "N%" — لضمان عدم خروج رسالة كورنكس بصيغة فاسدة أو فارغة لهذا البند
+function entryTrailPct(v) {
+  const ascii = String(v ?? '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
+  const n = parseFloat(ascii);
+  return (isNaN(n) ? 0 : n) + '%';
+}
+
 function buildMsg(sym, side, st = STATE.settings) {
   const p = livePrices[sym], pair = sym.replace('USDT', '/USDT');
   const star = hasSymOverride(sym) ? ' ⭐' : '';
@@ -469,7 +477,7 @@ function buildMsg(sym, side, st = STATE.settings) {
   else L.push(`1) ${fp(tp1)}`);
   // بند وقف الخسارة لازم يكون موجود دائماً (كورنكس يرفض الرسائل بدونه)
   L.push('', 'Stop Targets:', `1) ${fp(sll)}`, '');
-  L.push('Trailing Configuration:', `Entry: Percentage (${st.cxEntryTrail})`);
+  L.push('Trailing Configuration:', `Entry: Percentage (${entryTrailPct(st.cxEntryTrail)})`);
   if (st.cxTrailTp === 'on') L.push(`Take-Profit: Percentage (${st.cxTrailPct}%)`);
   if (st.cxBEon) L.push('Stop: Breakeven - Trigger: Target (1)');
   return L.join('\n');
@@ -490,7 +498,7 @@ function buildSettingsMsg(sym, side, st, lv) {
     `الدخولات (المسافة): ${entryDists.join(' / ')}`,
     `الأهداف (المسافة): ${tpDists.join(' / ')}`,
     `وقف الخسارة: ${st.cxSLon ? `${st.cxSL}%` : '50% (افتراضي - الإعداد معطّل)'}`,
-    `Entry Trailing: ${st.cxEntryTrail}`,
+    `Entry Trailing: ${entryTrailPct(st.cxEntryTrail)}`,
     `Take-Profit Trailing: ${st.cxTrailTp === 'on' ? `${st.cxTrailPct}%` : 'معطّل'}`,
     `Break Even: ${st.cxBEon ? 'مفعّل' : 'معطّل'}`,
     `الرافعة: ${lv}X`,
