@@ -102,12 +102,11 @@ const SYMBOL_OVERRIDE_FIELDS = [
   'sigQueueFilters', 'sigFilters',
   'trSon', 'trSstart', 'trSgap', 'trLon', 'trLstart', 'trLgap',
   'ema200FilterOn', 'stFilterOn',
-  'cxMargin', 'cxLev', 'cxAmt', 'cxAmtAuto',
-  'cxSLon', 'cxSL', 'cxSLAuto',
+  'cxMargin', 'cxLev', 'cxAmt',
+  'cxSLon', 'cxSL',
   'cxTP1', 'cxTP1Amt', 'cxTP2on', 'cxTP2', 'cxTP2Amt',
   'cxEntry2on', 'cxEntry2Dist', 'cxEntry2Amt',
-  'cxTrailTp', 'cxTrailPct', 'cxTrailPctAuto', 'cxBEon', 'cxBEonAuto',
-  'cxEntryTrail', 'cxEntryTrailAuto',
+  'cxTrailTp', 'cxTrailPct', 'cxBEon', 'cxBEonAuto',
 ];
 
 // مجموعات الحقول التي يمكن "تثبيتها" على القيم العامة دائمًا عبر STATE.settings.lockFields
@@ -149,13 +148,9 @@ function settingsFor(sym) {
   const merged = { ...STATE.settings, ...ov };
   if (ov.sigQueueFilters) merged.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...ov.sigQueueFilters };
   if (ov.sigFilters) merged.sigFilters = { ...STATE.settings.sigFilters, ...ov.sigFilters };
-  // الحقول التي عندها تشيك بوكس "استخدام الإعداد العام": إن فُعّلت لهذه العملة، تتبع
-  // القيمة العامة الحالية دائماً (حتى لو غُيّرت لاحقاً)، متجاهلة القيمة المحفوظة للعملة
+  // البريك ايفن: إن فعّل المستخدم "استخدام الإعداد العام" لهذه العملة، يتبع البريك ايفن
+  // القيمة العامة الحالية دائماً (حتى لو غُيّرت لاحقاً)، متجاهلاً قيمة cxBEon المحفوظة للعملة
   if (ov.cxBEonAuto) merged.cxBEon = STATE.settings.cxBEon;
-  if (ov.cxAmtAuto) merged.cxAmt = STATE.settings.cxAmt;
-  if (ov.cxSLAuto) merged.cxSL = STATE.settings.cxSL;
-  if (ov.cxEntryTrailAuto) merged.cxEntryTrail = STATE.settings.cxEntryTrail;
-  if (ov.cxTrailPctAuto) merged.cxTrailPct = STATE.settings.cxTrailPct;
   // الحد الأقصى العام لحجم الصفقة ووقف الخسارة: يُقصّ عليه أي قيمة (خاصة بالعملة أو عامة) تتجاوزه
   merged.cxAmt = capNumeric(merged.cxAmt, STATE.settings.cxAmtMax);
   merged.cxSL = capNumeric(merged.cxSL, STATE.settings.cxSLMax);
