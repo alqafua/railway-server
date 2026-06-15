@@ -1,6 +1,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
+const pg = require('./pgstore');
 
 const DATA_DIR = process.env.DB_PATH
   ? path.dirname(process.env.DB_PATH)
@@ -17,8 +18,25 @@ function readJSON(name, def) {
 }
 
 function writeJSON(name, data) {
-  try { fs.writeFileSync(fpath(name), JSON.stringify(data, null, 2)); }
+  const json = JSON.stringify(data, null, 2);
+  try { fs.writeFileSync(fpath(name), json); }
   catch (e) { console.error('DB write error:', name, e.message); }
+  pg.putBlob('db:' + name, Buffer.from(json));
+}
+
+// استعادة ملفات البيانات من PostgreSQL (إن وُجدت) عند بدء التشغيل —
+// تعالج فقدان الـ filesystem المحلي بعد كل redeploy على Railway.
+const DB_FILES = ['settings', 'accounts', 'open_trades', 'closed_trades', 'dca_orders', 'alerts', 'symbol_settings'];
+async function restoreFromPg() {
+  if (!pg.enabled) return;
+  for (const name of DB_FILES) {
+    if (fs.existsSync(fpath(name))) continue;
+    const buf = await pg.getBlob('db:' + name);
+    if (buf) {
+      try { fs.writeFileSync(fpath(name), buf); console.log(`📥 DB restored from Postgres: ${name}.json`); }
+      catch (e) { console.error('DB restore error:', name, e.message); }
+    }
+  }
 }
 
 function getEncKey() {
@@ -104,4 +122,5 @@ module.exports = {
   saveDcaOrders, loadDcaOrders,
   saveAlert, loadAlerts,
   saveSymbolSettings, loadSymbolSettings,
+  restoreFromPg,
 };

@@ -2364,6 +2364,10 @@ app.get('*', (req, res) => {
 async function init() {
   console.log('🚀 RSI Scanner Pro v3.1 starting...');
 
+  // استعادة البيانات المحفوظة على PostgreSQL (إن وُجدت) قبل أي تحميل محلي
+  await db.restoreFromPg();
+  await BT.restoreCandlesFromPg();
+
   // تحميل الحالة من قاعدة البيانات
   STATE.settings = db.loadSettings(DEFAULT_SETTINGS);
   STATE.symbolSettings = db.loadSymbolSettings();

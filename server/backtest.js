@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const S = require('./signals');
+const pg = require('./pgstore');
 
 // node-fetch v2 (نفس اعتماد المشروع)
 let fetch;
@@ -32,6 +33,7 @@ function fpath(sym, tf) { return path.join(DATA_DIR, `${sym}_${tf}.json.gz`); }
 function saveCandles(sym, tf, rows) {
   const buf = zlib.gzipSync(JSON.stringify(rows));
   fs.writeFileSync(fpath(sym, tf), buf);
+  pg.putBlob(`candles:${sym}_${tf}`, buf);
 }
 
 function loadCandles(sym, tf) {
@@ -39,6 +41,25 @@ function loadCandles(sym, tf) {
     const buf = fs.readFileSync(fpath(sym, tf));
     return JSON.parse(zlib.gunzipSync(buf).toString('utf8'));
   } catch (e) { return null; }
+}
+
+// استعادة ملفات الشموع المخبأة من PostgreSQL (إن وُجدت) عند بدء التشغيل —
+// تعالج فقدان الـ filesystem المحلي بعد كل redeploy على Railway.
+async function restoreCandlesFromPg() {
+  if (!pg.enabled) return;
+  const keys = await pg.listKeys('candles:');
+  let restored = 0;
+  for (const key of keys) {
+    const fname = key.slice('candles:'.length) + '.json.gz';
+    const dest = path.join(DATA_DIR, fname);
+    if (fs.existsSync(dest)) continue;
+    const buf = await pg.getBlob(key);
+    if (buf) {
+      try { fs.writeFileSync(dest, buf); restored++; }
+      catch (e) { console.error('Candle restore error:', fname, e.message); }
+    }
+  }
+  if (restored) console.log(`📥 Candles restored from Postgres: ${restored} ملف`);
 }
 
 function dataInfo(sym, tf) {
@@ -586,7 +607,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 module.exports = {
   ALLOWED_TF, TF_MS, DATA_DIR,
-  saveCandles, loadCandles, dataInfo,
+  saveCandles, loadCandles, dataInfo, restoreCandlesFromPg,
   fetchKlinesRange, downloadData, updateData,
   exportDataBundle, importDataBundle,
   generateSignals, generateRawSignals, filterSignals, simulateTrade, runSymbol, runSymbolDetailed, getChartData, computeMetrics, runBacktest,
