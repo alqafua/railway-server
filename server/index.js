@@ -150,6 +150,11 @@ function capGlobal(settings) {
   return { ...settings, cxAmt, cxSL };
 }
 
+// هل لهذه العملة إعدادات خاصة محفوظة في تبويب "لكل العملات"؟ — تُستخدم لإظهار ⭐
+function hasSymOverride(sym) {
+  return !!(STATE.symbolSettings[sym] && Object.keys(STATE.symbolSettings[sym]).length);
+}
+
 // يدمج إعدادات العملة الخاصة (إن وُجدت) فوق الإعدادات العامة — يُرجع STATE.settings
 // كما هي (بنفس المرجع) إذا لم تكن للعملة إعدادات خاصة، لضمان عدم تغيير السلوك الحالي
 function settingsFor(sym) {
@@ -439,6 +444,7 @@ const NEAR_ENTRY_GAP = 0.002; // 0.2%
 
 function buildMsg(sym, side, st = STATE.settings) {
   const p = livePrices[sym], pair = sym.replace('USDT', '/USDT');
+  const star = hasSymOverride(sym) ? ' ⭐' : '';
   const fp = n => { if (!n && n !== 0) return 'N/A'; if (n >= 100) return n.toFixed(2); if (n >= 1) return n.toFixed(3); if (n >= 0.1) return n.toFixed(4); return n.toFixed(6); };
   let tp1 = null, tp2 = null, sll = null, eNear = null, e2 = null;
   if (p) {
@@ -452,7 +458,7 @@ function buildMsg(sym, side, st = STATE.settings) {
     eNear = side === 'LONG' ? p * (1 - NEAR_ENTRY_GAP) : p * (1 + NEAR_ENTRY_GAP);
     if (st.cxEntry2on) { const d2 = parseFloat(st.cxEntry2Dist || '2') / 100; e2 = side === 'LONG' ? p * (1 - d2) : p * (1 + d2); }
   }
-  const L = [`#${pair}`, 'Exchanges: Binance Futures', `Signal Type: Regular (${side === 'LONG' ? 'Long' : 'Short'})`,
+  const L = [`#${pair}${star}`, 'Exchanges: Binance Futures', `Signal Type: Regular (${side === 'LONG' ? 'Long' : 'Short'})`,
     `Leverage: ${st.cxMargin} (${st.cxLev}X)`, `Amount: ${st.cxAmt}`, '', 'Entry Targets:', '1) Market'];
   // كورنكس يتجاهل "1) Market" ويعتمد البند ٢ كدخول أول فعلي، والبند ٣ كدخول ثاني فعلي
   const nearAmt = st.cxEntry2on ? (100 - (parseFloat(st.cxEntry2Amt) || 0)) : 100;
@@ -477,7 +483,7 @@ function buildSettingsMsg(sym, side, st, lv) {
   const tpDists = [`${st.cxTP1}%`];
   if (st.cxTP2on) tpDists.push(`${st.cxTP2}%`);
   return [
-    `⚙️ إعدادات الصفقة — #${pair}`,
+    `⚙️ إعدادات الصفقة — #${pair}${hasSymOverride(sym) ? ' ⭐' : ''}`,
     '',
     `الفريم الزمني: ${st.interval}`,
     `الاتجاه: ${side === 'LONG' ? 'لونج 🟢' : 'شورت 🔴'}`,
@@ -2181,7 +2187,7 @@ async function handleClientMsg(msg) {
         db.saveClosedTrade(closed);
         db.saveOpenTrades(STATE.openTrades);
         const dur = Math.round((Date.now() - t.openTs) / 60000);
-        tgSend(`${pct >= 0 ? '✅' : '❌'} ${t.symbol.replace('USDT', '/USDT')}\n${t.side === 'LONG' ? '🟢' : '🔴'} ${t.side}\nالنتيجة: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%\nالمدة: ${dur}m`, STATE.settings.cxChatClose || STATE.settings.cxChat);
+        tgSend(`${pct >= 0 ? '✅' : '❌'} ${hasSymOverride(t.symbol) ? '⭐ ' : ''}${t.symbol.replace('USDT', '/USDT')}\n${t.side === 'LONG' ? '🟢' : '🔴'} ${t.side}\nالنتيجة: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%\nالمدة: ${dur}m`, STATE.settings.cxChatClose || STATE.settings.cxChat);
         broadcast({ type: 'trades', data: STATE.openTrades });
         broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
         setTimeout(autoSendFromQueue, 1000);
