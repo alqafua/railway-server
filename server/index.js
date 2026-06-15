@@ -39,8 +39,8 @@ const DEFAULT_SETTINGS = {
   mode: 'SMA', maPeriod: 14, interval: '1h',
   autoSend: false, enableDiv: true, blockOpen: true,
   sigFilters: { ob: true, os: true, conf: true, trail: true },
-  cxMargin: 'Cross', cxLev: '20', cxAmt: '1%',
-  cxSLon: false, cxSL: '2',
+  cxMargin: 'Cross', cxLev: '20', cxAmt: '1%', cxAmtMax: '0',
+  cxSLon: false, cxSL: '2', cxSLMax: '0',
   cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
   cxTrailTp: 'on', cxTrailPct: '0.5', cxEntryTrail: '0.5%',
   cxToken: process.env.TG_TOKEN || '',
@@ -102,11 +102,12 @@ const SYMBOL_OVERRIDE_FIELDS = [
   'sigQueueFilters', 'sigFilters',
   'trSon', 'trSstart', 'trSgap', 'trLon', 'trLstart', 'trLgap',
   'ema200FilterOn', 'stFilterOn',
-  'cxMargin', 'cxLev', 'cxAmt',
-  'cxSLon', 'cxSL',
+  'cxMargin', 'cxLev', 'cxAmt', 'cxAmtAuto',
+  'cxSLon', 'cxSL', 'cxSLAuto',
   'cxTP1', 'cxTP1Amt', 'cxTP2on', 'cxTP2', 'cxTP2Amt',
   'cxEntry2on', 'cxEntry2Dist', 'cxEntry2Amt',
-  'cxTrailTp', 'cxTrailPct', 'cxBEon', 'cxBEonAuto',
+  'cxTrailTp', 'cxTrailPct', 'cxTrailPctAuto', 'cxBEon', 'cxBEonAuto',
+  'cxEntryTrail', 'cxEntryTrailAuto',
 ];
 
 // مجموعات الحقول التي يمكن "تثبيتها" على القيم العامة دائمًا عبر STATE.settings.lockFields
@@ -129,6 +130,16 @@ function applyLockFields(merged) {
   return merged;
 }
 
+// يُرجع valStr كما هي إن لم يكن هناك حد أقصى (maxStr فاضي/٠) أو لم تتجاوزه،
+// وإلا يُرجع الحد الأقصى نفسه (بنفس صيغة valStr — مع % أو بدونها)
+function capNumeric(valStr, maxStr) {
+  const max = parseFloat(maxStr);
+  if (!max || max <= 0) return valStr;
+  const num = parseFloat(valStr);
+  if (isNaN(num) || num <= max) return valStr;
+  return (typeof valStr === 'string' && valStr.includes('%')) ? (max + '%') : String(max);
+}
+
 // يدمج إعدادات العملة الخاصة (إن وُجدت) فوق الإعدادات العامة — يُرجع STATE.settings
 // كما هي (بنفس المرجع) إذا لم تكن للعملة إعدادات خاصة، لضمان عدم تغيير السلوك الحالي
 function settingsFor(sym) {
@@ -138,9 +149,16 @@ function settingsFor(sym) {
   const merged = { ...STATE.settings, ...ov };
   if (ov.sigQueueFilters) merged.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...ov.sigQueueFilters };
   if (ov.sigFilters) merged.sigFilters = { ...STATE.settings.sigFilters, ...ov.sigFilters };
-  // البريك ايفن: إن فعّل المستخدم "استخدام الإعداد العام" لهذه العملة، يتبع البريك ايفن
-  // القيمة العامة الحالية دائماً (حتى لو غُيّرت لاحقاً)، متجاهلاً قيمة cxBEon المحفوظة للعملة
+  // الحقول التي عندها تشيك بوكس "استخدام الإعداد العام": إن فُعّلت لهذه العملة، تتبع
+  // القيمة العامة الحالية دائماً (حتى لو غُيّرت لاحقاً)، متجاهلة القيمة المحفوظة للعملة
   if (ov.cxBEonAuto) merged.cxBEon = STATE.settings.cxBEon;
+  if (ov.cxAmtAuto) merged.cxAmt = STATE.settings.cxAmt;
+  if (ov.cxSLAuto) merged.cxSL = STATE.settings.cxSL;
+  if (ov.cxEntryTrailAuto) merged.cxEntryTrail = STATE.settings.cxEntryTrail;
+  if (ov.cxTrailPctAuto) merged.cxTrailPct = STATE.settings.cxTrailPct;
+  // الحد الأقصى العام لحجم الصفقة ووقف الخسارة: يُقصّ عليه أي قيمة (خاصة بالعملة أو عامة) تتجاوزه
+  merged.cxAmt = capNumeric(merged.cxAmt, STATE.settings.cxAmtMax);
+  merged.cxSL = capNumeric(merged.cxSL, STATE.settings.cxSLMax);
   return applyLockFields(merged);
 }
 
