@@ -66,6 +66,8 @@ const DEFAULT_SETTINGS = {
   stFilterOn: false,
   dirFilter: 'all',
   useSymbolSettings: true,
+  // فلتر إرسال إشارات التلغرام حسب وجود إعدادات خاصة للعملة: all = الكل، star = العملات ⭐ فقط، other = الباقي فقط
+  tgStarFilter: 'all',
   lockFields: { amt: false, lev: false, sl: false, targets: false, entries: false, trailing: false, be: false },
 };
 
@@ -514,6 +516,10 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   } else {
     if (!st.autoSend || !st.cxToken || !st.cxChat) return;
   }
+  // فلتر إرسال التلغرام حسب وجود إعدادات خاصة للعملة (⭐) — لا يؤثر على السجل أو القائمة أو الصفقة، فقط على إرسال التلغرام
+  const tgFilter = STATE.settings.tgStarFilter;
+  if (tgFilter === 'star' && !hasSymOverride(sym)) return;
+  if (tgFilter === 'other' && hasSymOverride(sym)) return;
   if (!overridePrice && STATE.sentSigs[sym]) return;
   STATE.sentSigs[sym] = Date.now();
 
