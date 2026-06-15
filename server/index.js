@@ -410,44 +410,33 @@ async function tgSendDocument(buf, filename, caption, chat) {
   } catch (e) {}
 }
 
-// فجوة الدخول "القريب من السعر" — أحد بندي الدخول (راجع entryDistList/buildMsg)
+// فجوة الدخول "القريب من السعر" — يعتمده كورنكس كدخول أول فعلي (راجع buildMsg)
 const NEAR_ENTRY_GAP = 0.002; // 0.2%
-
-// يبني قائمة بندي الدخول مرتّبة تصاعدياً حسب المسافة من السعر — الأقرب يكون "البند ٢"
-// (كورنكس يعتمده كدخول أول فعلي) والأبعد "البند ٣" (دخول ثاني/DCA)، بغض النظر عن
-// أي إعداد ينتج أي مسافة — لضمان ترتيب صحيح دائماً
-function entryDistList(st) {
-  const e2Amt = st.cxEntry2on ? (parseFloat(st.cxEntry2Amt) || 0) : 0;
-  const list = [{ dist: NEAR_ENTRY_GAP, amt: 100 - e2Amt, near: true, label: `${(NEAR_ENTRY_GAP * 100).toFixed(2)}%` }];
-  if (st.cxEntry2on) list.push({ dist: parseFloat(st.cxEntry2Dist || '2') / 100, amt: e2Amt, near: false, label: `${st.cxEntry2Dist}%` });
-  return list.sort((a, b) => a.dist - b.dist);
-}
-
-// يبني قائمة بندي الأهداف مرتّبة تصاعدياً حسب المسافة — الأقرب "البند ١" والأبعد "البند ٢"
-function tpDistList(st) {
-  const list = [{ dist: parseFloat(st.cxTP1) / 100, amt: st.cxTP1Amt, label: `${st.cxTP1}%` }];
-  if (st.cxTP2on) list.push({ dist: parseFloat(st.cxTP2) / 100, amt: st.cxTP2Amt, label: `${st.cxTP2}%` });
-  return list.sort((a, b) => a.dist - b.dist);
-}
 
 function buildMsg(sym, side, st = STATE.settings) {
   const p = livePrices[sym], pair = sym.replace('USDT', '/USDT');
   const fp = n => { if (!n && n !== 0) return 'N/A'; if (n >= 100) return n.toFixed(2); if (n >= 1) return n.toFixed(3); if (n >= 0.1) return n.toFixed(4); return n.toFixed(6); };
-  const entries = entryDistList(st).map(e => ({ price: p ? (side === 'LONG' ? p * (1 - e.dist) : p * (1 + e.dist)) : null, amt: e.amt }));
-  const targets = tpDistList(st).map(t => ({ price: p ? (side === 'LONG' ? p * (1 + t.dist) : p * (1 - t.dist)) : null, amt: t.amt }));
-  let sll = null;
+  let tp1 = null, tp2 = null, sll = null, eNear = null, e2 = null;
   if (p) {
+    const t1 = parseFloat(st.cxTP1) / 100;
+    tp1 = side === 'LONG' ? p * (1 + t1) : p * (1 - t1);
+    if (st.cxTP2on) { const t2 = parseFloat(st.cxTP2) / 100; tp2 = side === 'LONG' ? p * (1 + t2) : p * (1 - t2); }
     // وقف الخسارة: حسب إعدادات العملة، وإن كان معطّلاً نضع ٥٠٪ (قيمة ثابتة لإرضاء شرط كورنكس)
     const s = st.cxSLon ? parseFloat(st.cxSL) / 100 : 0.5;
     sll = side === 'LONG' ? Math.max(p * (1 - s), p * 0.0001) : p * (1 + s);
+    // الدخول "القريب من السعر" — كورنكس يعتمد الدخول الثاني كدخول أول فعلي، فهذا يمثّل نية الدخول بسعر السوق
+    eNear = side === 'LONG' ? p * (1 - NEAR_ENTRY_GAP) : p * (1 + NEAR_ENTRY_GAP);
+    if (st.cxEntry2on) { const d2 = parseFloat(st.cxEntry2Dist || '2') / 100; e2 = side === 'LONG' ? p * (1 - d2) : p * (1 + d2); }
   }
   const L = [`#${pair}`, 'Exchanges: Binance Futures', `Signal Type: Regular (${side === 'LONG' ? 'Long' : 'Short'})`,
     `Leverage: ${st.cxMargin} (${st.cxLev}X)`, `Amount: ${st.cxAmt}`, '', 'Entry Targets:', '1) Market'];
   // كورنكس يتجاهل "1) Market" ويعتمد البند ٢ كدخول أول فعلي، والبند ٣ كدخول ثاني فعلي
-  entries.forEach((e, i) => L.push(`${i + 2}) ${fp(e.price)} (${e.amt}%)`));
+  const nearAmt = st.cxEntry2on ? (100 - (parseFloat(st.cxEntry2Amt) || 0)) : 100;
+  L.push(`2) ${fp(eNear)} (${nearAmt}%)`);
+  if (st.cxEntry2on) L.push(`3) ${fp(e2)}${st.cxEntry2Amt ? ` (${st.cxEntry2Amt}%)` : ''}`);
   L.push('', 'Take-Profit Targets:');
-  if (targets.length > 1) targets.forEach((t, i) => L.push(`${i + 1}) ${fp(t.price)} (${t.amt}%)`));
-  else L.push(`1) ${fp(targets[0].price)}`);
+  if (st.cxTP2on) { L.push(`1) ${fp(tp1)} (${st.cxTP1Amt}%)`); L.push(`2) ${fp(tp2)} (${st.cxTP2Amt}%)`); }
+  else L.push(`1) ${fp(tp1)}`);
   // بند وقف الخسارة لازم يكون موجود دائماً (كورنكس يرفض الرسائل بدونه)
   L.push('', 'Stop Targets:', `1) ${fp(sll)}`, '');
   L.push('Trailing Configuration:', `Entry: Percentage (${st.cxEntryTrail})`);
@@ -459,8 +448,10 @@ function buildMsg(sym, side, st = STATE.settings) {
 // رسالة مبسّطة بأهم إعدادات الصفقة — تُرسل لقناة "إعدادات الصفقات" مع كل إشارة
 function buildSettingsMsg(sym, side, st, lv) {
   const pair = sym.replace('USDT', '/USDT');
-  const entryDists = entryDistList(st).map(e => (e.near ? 'السوق ' : '') + e.label);
-  const tpDists = tpDistList(st).map(t => t.label);
+  const entryDists = [`السوق ${(NEAR_ENTRY_GAP * 100).toFixed(2)}%`];
+  if (st.cxEntry2on) entryDists.push(`${st.cxEntry2Dist}%`);
+  const tpDists = [`${st.cxTP1}%`];
+  if (st.cxTP2on) tpDists.push(`${st.cxTP2}%`);
   return [
     `⚙️ إعدادات الصفقة — #${pair}`,
     '',
