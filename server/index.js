@@ -139,12 +139,21 @@ function capNumeric(valStr, maxStr) {
   return (typeof valStr === 'string' && valStr.includes('%')) ? (max + '%') : String(max);
 }
 
+// يطبّق الحد الأقصى العام (cxAmtMax/cxSLMax) على الإعدادات العامة نفسها — يُرجع
+// STATE.settings كما هي (بنفس المرجع) إن لم يكن هناك حد أقصى أو لم تتجاوزه القيم الحالية
+function capGlobal(settings) {
+  const cxAmt = capNumeric(settings.cxAmt, settings.cxAmtMax);
+  const cxSL = capNumeric(settings.cxSL, settings.cxSLMax);
+  if (cxAmt === settings.cxAmt && cxSL === settings.cxSL) return settings;
+  return { ...settings, cxAmt, cxSL };
+}
+
 // يدمج إعدادات العملة الخاصة (إن وُجدت) فوق الإعدادات العامة — يُرجع STATE.settings
 // كما هي (بنفس المرجع) إذا لم تكن للعملة إعدادات خاصة، لضمان عدم تغيير السلوك الحالي
 function settingsFor(sym) {
-  if (STATE.settings.useSymbolSettings === false) return STATE.settings;
+  if (STATE.settings.useSymbolSettings === false) return capGlobal(STATE.settings);
   const ov = STATE.symbolSettings[sym];
-  if (!ov || !Object.keys(ov).length) return STATE.settings;
+  if (!ov || !Object.keys(ov).length) return capGlobal(STATE.settings);
   const merged = { ...STATE.settings, ...ov };
   if (ov.sigQueueFilters) merged.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...ov.sigQueueFilters };
   if (ov.sigFilters) merged.sigFilters = { ...STATE.settings.sigFilters, ...ov.sigFilters };
