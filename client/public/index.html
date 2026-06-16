@@ -313,9 +313,11 @@ function handleServerMsg(msg) {
       C.alerts = [msg.data, ...C.alerts].slice(0,200);
       C.toast = msg.data;
       clearTimeout(toastRef);
-      toastRef = setTimeout(()=>{C.toast=null;render();},6000);
+      toastRef = setTimeout(()=>{C.toast=null;schedRender();},6000);
       if(C.settings.soundEnabled) playSound(msg.data.color==='confirmed'?'conf':msg.data.color==='purple'?'trail':'n');
       break;
+    case 'symbolData':
+      C.symbolData = msg.data; break;
     case 'priceUpdates':
       Object.entries(msg.data).forEach(([sym,d])=>{
         if(C.symbolData[sym]) {
@@ -358,11 +360,11 @@ function handleServerMsg(msg) {
       else alert(`❌ فشل الاتصال: ${msg.data.error}`);
       break;
   }
-  render();
+  schedRender();
 }
 
 function schedRender() { if(!rPend){rPend=true;requestAnimationFrame(()=>{rPend=false;render();});} }
-function sendSettings(patch) { Object.assign(C.settings, patch); send('updateSettings', C.settings); render(); }
+function sendSettings(patch) { Object.assign(C.settings, patch); send('updateSettings', C.settings); schedRender(); }
 
 // ═══════════════════════════════════════════════
 //  AUTH

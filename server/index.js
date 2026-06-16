@@ -2474,9 +2474,8 @@ async function init() {
     await scanAll();
     startBinanceWS();
     setInterval(async () => {
-      const sockets = Object.values(binanceSockets);
-      if (!sockets.length || sockets.every(ws => ws.readyState !== WebSocket.OPEN)) await scanAll();
-    }, 120000);
+      await scanAll();
+    }, 300000);
     updateEMA200();
     setInterval(updateEMA200, 10 * 60 * 1000);
     updateSuperTrend();
