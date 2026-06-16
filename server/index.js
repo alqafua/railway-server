@@ -763,6 +763,7 @@ async function scanSym(sym, candles) {
     const oldZone = old.zone || 'neutral';
     if (oldZone !== 'neutral' && zone === 'neutral') {
       Object.keys(STATE.cooldowns).forEach(k => { if (k.startsWith(sym + '_')) delete STATE.cooldowns[k]; });
+      delete STATE.sentSigs[sym];
     }
     const fSig = trail || sig;
     STATE.symbolData[sym] = { rsi: cu, prevRsi: pv, signal: fSig, conf, zone, error: false, trailActive: !!trail };
@@ -917,9 +918,10 @@ function startBinanceWSGroup(interval, syms) {
             const newZone = cu >= 70 ? 'ob' : cu <= 30 ? 'os' : 'neutral';
             STATE.symbolData[sym].zone = newZone;
 
-            // مسح cooldown عند الخروج من المنطقة
+            // مسح cooldown و sentSigs عند الخروج من المنطقة
             if (oldZone !== 'neutral' && newZone === 'neutral') {
               Object.keys(STATE.cooldowns).forEach(ck => { if (ck.startsWith(sym + '_')) delete STATE.cooldowns[ck]; });
+              delete STATE.sentSigs[sym];
             }
 
             // كشف الإشارات على الشمعة الحية
