@@ -64,6 +64,8 @@ const DEFAULT_SETTINGS = {
   stPeriod: 10,
   stMult: 3,
   stFilterOn: false,
+  respectFilterOn: false,
+  respectMin: 50,
   dirFilter: 'all',
   useSymbolSettings: true,
   // فلتر إرسال إشارات التلغرام حسب وجود إعدادات خاصة للعملة: all = الكل، star = العملات ⭐ فقط، other = الباقي فقط
@@ -91,6 +93,7 @@ const STATE = {
   waitQueue: [],
   ema200: { value: null, direction: null, btcPrice: null, updatedAt: null },
   superTrend: { value: null, direction: null, btcPrice: null, updatedAt: null },
+  respectData: {},
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
   sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
   symbolSettings: {},    // إعدادات خاصة لكل عملة — تُدمج فوق STATE.settings عند توليد إشاراتها
@@ -247,6 +250,52 @@ function computeIndSeries(cls, mode, ma) {
   if (mode === 'SMA') { for (let i = ma; i <= rs.length; i++) out.push(rs.slice(i - ma, i).reduce((a, b) => a + b, 0) / ma); }
   else { if (rs.length >= ma) { const k = 2 / (ma + 1); let e = rs[0]; out.push(e); for (let i = 1; i < rs.length; i++) { e = rs[i] * k + e * (1 - k); if (i >= ma - 1) out.push(e); } } }
   return out;
+}
+
+function calcRespect(cls, mode, ma) {
+  if (!cls || cls.length < 30) return null;
+  const series = computeIndSeries(cls, mode, ma);
+  if (!series || series.length < 20) return null;
+  const offset = cls.length - series.length;
+  const lookAhead = 5;
+  let total = 0, respected = 0;
+  for (let i = 1; i < series.length - lookAhead; i++) {
+    const pv = series[i - 1], cu = series[i];
+    let side = null;
+    if (pv <= 70 && cu > 70) side = 'SHORT';
+    else if (pv >= 70 && cu < 70) side = 'SHORT';
+    else if (pv >= 30 && cu < 30) side = 'LONG';
+    else if (pv <= 30 && cu > 30) side = 'LONG';
+    else if (pv <= 30 && cu > pv && cu <= 30) side = 'LONG';
+    else if (pv >= 70 && cu < pv && cu >= 70) side = 'SHORT';
+    if (!side) continue;
+    total++;
+    const entry = cls[offset + i];
+    const future = cls[offset + i + lookAhead];
+    if (side === 'LONG' && future > entry) respected++;
+    else if (side === 'SHORT' && future < entry) respected++;
+  }
+  if (total < 3) return null;
+  return { rate: Math.round((respected / total) * 100), total, respected };
+}
+
+async function updateRespect() {
+  if (!STATE.settings.respectFilterOn) return;
+  for (let i = 0; i < STATE.symbols.length; i += BATCH) {
+    const batch = STATE.symbols.slice(i, i + BATCH);
+    await Promise.all(batch.map(async sym => {
+      try {
+        const st = settingsFor(sym);
+        const d = await fetchBinance(`/fapi/v1/klines?symbol=${sym}&interval=${st.interval}&limit=1500`);
+        if (!Array.isArray(d) || d.length < 30) return;
+        const cls = d.map(k => parseFloat(k[4]));
+        const r = calcRespect(cls, st.mode, st.maPeriod);
+        if (r) STATE.respectData[sym] = r;
+      } catch (e) {}
+    }));
+    if (i + BATCH < STATE.symbols.length) await new Promise(r => setTimeout(r, BDEL));
+  }
+  broadcast({ type: 'respectData', data: STATE.respectData });
 }
 
 function checkDiv(cls, ind, type) {
@@ -622,6 +671,12 @@ function triggerAlert(sym, sig, val, st = STATE.settings) {
       }
       if (!pass) return;
     }
+  }
+
+  // فلتر احترام المؤشر — يؤثر على القائمة والإرسال لكن ليس السجل
+  if (st.respectFilterOn) {
+    const rd = STATE.respectData[sym];
+    if (rd && rd.rate < (parseInt(st.respectMin) || 50)) return;
   }
 
   // فحص حد الصفقات — إضافة للقائمة إذا وصل الحد
@@ -1401,6 +1456,7 @@ function getPublicState() {
     sysStatus: STATE.sysStatus,
     ema200: STATE.ema200,
     superTrend: STATE.superTrend,
+    respectData: STATE.respectData,
     lastUpdate: nowStr(),
     btBusy: btState.busy,
   };
@@ -2482,6 +2538,8 @@ async function init() {
     setInterval(updateEMA200, 10 * 60 * 1000);
     updateSuperTrend();
     setInterval(updateSuperTrend, 10 * 60 * 1000);
+    updateRespect();
+    setInterval(updateRespect, 10 * 60 * 1000);
   } catch (e) {
     console.error('❌ Init failed:', e.message);
   }

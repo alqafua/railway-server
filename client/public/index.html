@@ -320,6 +320,8 @@ function handleServerMsg(msg) {
       C.symbolData = msg.data; break;
     case 'waitQueue':
       C.waitQueue = msg.data; break;
+    case 'respectData':
+      C.respectData = msg.data; break;
     case 'priceUpdates':
       Object.entries(msg.data).forEach(([sym,d])=>{
         if(C.symbolData[sym]) {
@@ -528,6 +530,7 @@ function rDashHdr(st){
   r2.appendChild(mt);
   if(C.settings.mode!=='RSI'){const pw=el('div',{style:{display:'flex',alignItems:'center',gap:'5px',fontSize:'11px',color:'var(--text2)'}});pw.appendChild(document.createTextNode('فترة MA'));const pi=el('input',{type:'number',className:'ninp',value:String(C.settings.maPeriod),min:'2',max:'50'});pi.onchange=()=>sendSettings({maPeriod:Math.max(2,Math.min(50,parseInt(pi.value)||14))});pw.appendChild(pi);r2.appendChild(pw);}
   const dl=el('label',{className:'chkr'});const dc=el('input',{type:'checkbox',checked:C.settings.enableDiv});dc.onchange=()=>sendSettings({enableDiv:dc.checked});dl.appendChild(dc);dl.appendChild(document.createTextNode('دايفرجنس'));r2.appendChild(dl);
+  const rl=el('label',{className:'chkr'});const rc=el('input',{type:'checkbox',checked:C.settings.respectFilterOn});rc.onchange=()=>sendSettings({respectFilterOn:rc.checked});rl.appendChild(rc);rl.appendChild(document.createTextNode('احترام المؤشر'));r2.appendChild(rl);
   const bl=el('label',{className:'chkr'});const bc=el('input',{type:'checkbox',checked:C.settings.blockOpen});bc.onchange=()=>sendSettings({blockOpen:bc.checked});bl.appendChild(bc);bl.appendChild(document.createTextNode('حجب الصفقات المفتوحة'));r2.appendChild(bl);
   hdr.appendChild(r2);
   const r3=el('div',{className:'dr'});
@@ -585,6 +588,7 @@ function rCard(sym){
   else if(d.signal)card.appendChild(el('div',{className:`sbdg s-${d.signal.color}`},`${d.signal.emoji} ${d.signal.label}`));
   else card.appendChild(el('div',{style:{height:'22px'}}));
   const m=C.symbolMeta[sym];if(m?.vol)card.appendChild(el('div',{className:'volm'},`💧 ${fU(m.vol)}$`));
+  if(C.settings.respectFilterOn&&C.respectData&&C.respectData[sym]){const rd=C.respectData[sym];const rc=rd.rate>=(C.settings.respectMin||50)?'var(--green)':'var(--red)';card.appendChild(el('div',{style:{fontSize:'9px',textAlign:'center',color:rc,marginTop:'2px'}},`📊 احترام ${rd.rate}% (${rd.respected}/${rd.total})`));}
   return card;
 }
 
