@@ -652,7 +652,8 @@ function triggerAlert(sym, sig, val, st = STATE.settings) {
 function queueWithReversals() {
   return STATE.waitQueue.map(q => {
     const cur = livePrices[q.symbol] || q.signalPrice;
-    const rev = q.signalPrice > 0 ? Math.abs((cur - q.signalPrice) / q.signalPrice) * 100 : 0;
+    const diff = q.signalPrice > 0 ? ((cur - q.signalPrice) / q.signalPrice) * 100 : 0;
+    const rev = q.side === 'LONG' ? -diff : diff;
     return { ...q, reversalPct: parseFloat(rev.toFixed(3)) };
   }).sort((a, b) => b.reversalPct - a.reversalPct);
 }
