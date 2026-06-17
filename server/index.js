@@ -198,10 +198,6 @@ function authMiddleware(req, res, next) {
 //  MIDDLEWARE
 // ══════════════════════════════════════════════
 app.use(express.json());
-app.use((req, res, next) => {
-  if (req.path.endsWith('.html') || req.path === '/') res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  next();
-});
 app.use(express.static(path.join(__dirname, '../client/public')));
 
 // ══════════════════════════════════════════════
