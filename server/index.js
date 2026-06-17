@@ -279,7 +279,6 @@ function calcRespect(cls, mode, ma) {
 }
 
 async function updateRespect() {
-  if (!STATE.settings.respectFilterOn) return;
   for (let i = 0; i < STATE.symbols.length; i += BATCH) {
     const batch = STATE.symbols.slice(i, i + BATCH);
     await Promise.all(batch.map(async sym => {
