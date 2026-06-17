@@ -318,6 +318,8 @@ function handleServerMsg(msg) {
       break;
     case 'symbolData':
       C.symbolData = msg.data; break;
+    case 'waitQueue':
+      C.waitQueue = msg.data; break;
     case 'priceUpdates':
       Object.entries(msg.data).forEach(([sym,d])=>{
         if(C.symbolData[sym]) {
@@ -725,6 +727,38 @@ function rSubPage(){
   csw.appendChild(txt);page.appendChild(csw);
 
   if(C.copyOn){const em=el('button',{className:'em-btn',onClick:()=>{if(confirm('🚨 إغلاق كل الصفقات؟'))send('emergencyStop');}});em.innerHTML='🚨 إيقاف طارئ — إغلاق كل الصفقات فوراً';page.appendChild(em);}
+
+  // قائمة الانتظار
+  if(C.waitQueue&&C.waitQueue.length){
+    const qs=el('div',{style:{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'12px',padding:'14px',marginBottom:'16px'}});
+    const qh=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'10px'}});
+    qh.appendChild(el('span',{style:{fontWeight:'700',fontSize:'14px'}},`⏳ قائمة الانتظار (${C.waitQueue.length})`));
+    qh.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'3px 8px',background:'rgba(255,71,87,.1)',borderColor:'var(--red)',color:'var(--red)'},onClick:()=>send('clearQueue')},'✕ مسح الكل'));
+    qs.appendChild(qh);
+    C.waitQueue.forEach(q=>{
+      const isL=q.side==='LONG';
+      const row=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px',background:'var(--bg1)',borderRadius:'8px',marginBottom:'6px',border:'1px solid var(--border)'}});
+      const left=el('div',{style:{display:'flex',flexDirection:'column',gap:'4px'}});
+      const sym=el('div',{style:{display:'flex',alignItems:'center',gap:'6px'}});
+      sym.appendChild(el('span',{style:{fontWeight:'700',fontSize:'13px'}},q.symbol.replace('USDT','')));
+      sym.appendChild(el('span',{style:{fontSize:'10px',color:isL?'var(--green)':'var(--red)'}},isL?'🟢 LONG':'🔴 SHORT'));
+      if(q.label)sym.appendChild(el('span',{style:{fontSize:'10px',color:'var(--text2)'}},`← ${q.label}`));
+      left.appendChild(sym);
+      const info=el('div',{style:{display:'flex',gap:'8px',fontSize:'10px',color:'var(--text2)'}});
+      if(q.signalPrice)info.appendChild(el('span',{},`سعر: ${q.signalPrice.toFixed(q.signalPrice<1?6:2)}`));
+      if(q.addedTime)info.appendChild(el('span',{},q.addedTime));
+      left.appendChild(info);
+      const revColor=q.reversalPct>0?'var(--green)':'var(--orange)';
+      left.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'700',color:revColor}},q.reversalLabel||`${q.reversalPct.toFixed(2)}%`));
+      row.appendChild(left);
+      const btns=el('div',{style:{display:'flex',gap:'6px'}});
+      btns.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'4px 10px',background:'rgba(46,213,115,.1)',borderColor:'var(--green)',color:'var(--green)'},onClick:()=>send('sendQueueItem',{id:q.id})},'📤 إرسال'));
+      btns.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'4px 8px',background:'rgba(255,71,87,.1)',borderColor:'var(--red)',color:'var(--red)'},onClick:()=>send('removeQueueItem',{id:q.id})},'✕'));
+      row.appendChild(btns);
+      qs.appendChild(row);
+    });
+    page.appendChild(qs);
+  }
 
   // فورم الإضافة
   if(showForm)page.appendChild(rAddForm());
