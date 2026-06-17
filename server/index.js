@@ -654,7 +654,8 @@ function queueWithReversals() {
     const cur = livePrices[q.symbol] || q.signalPrice;
     const diff = q.signalPrice > 0 ? ((cur - q.signalPrice) / q.signalPrice) * 100 : 0;
     const rev = q.side === 'LONG' ? -diff : diff;
-    return { ...q, reversalPct: parseFloat(rev.toFixed(3)) };
+    const reversalLabel = rev > 0 ? `انعكاس ${rev.toFixed(2)}%` : `مع الإشارة ${Math.abs(rev).toFixed(2)}%`;
+    return { ...q, reversalPct: parseFloat(rev.toFixed(3)), reversalLabel };
   }).sort((a, b) => b.reversalPct - a.reversalPct);
 }
 
