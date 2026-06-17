@@ -1038,9 +1038,7 @@ if(C.waitQueue&&C.waitQueue.length){
   wqHdr.appendChild(clrBtn);wqSec.appendChild(wqHdr);
   // احسب نسبة الانعكاس وافرز
   const sorted=[...C.waitQueue].map(q=>{
-    const sp=q.signalPrice||0;
-    const rev=sp>0&&(q.reversalPct||0)>0?q.reversalPct:0;
-    return{...q,reversalPct:rev};
+    return{...q,reversalPct:q.reversalPct||0};
   }).sort((a,b)=>b.reversalPct-a.reversalPct);
   sorted.forEach(q=>{
     const typeLabel={ob:'🔴 OB',os:'🔵 OS',conf:'⚡ أكيدة',trail:'🟣 Trail'}[q.signalType]||'';
@@ -1048,7 +1046,9 @@ if(C.waitQueue&&C.waitQueue.length){
     const info=el('div',{style:{flex:'1',minWidth:'120px'}});
     info.appendChild(el('div',{style:{fontWeight:'800',fontSize:'12px',color:q.side==='LONG'?'var(--green)':'var(--red)'}},(q.side==='LONG'?'🟢':'🔴')+' '+symStar(q.symbol)+q.symbol.replace('USDT','')+' — '+typeLabel));
     info.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'2px'}},`سعر الإشارة: $${q.signalPrice?.toFixed?.(4)||'—'} • ${q.addedTime}`));
-    if(q.reversalPct>0)info.appendChild(el('div',{style:{fontSize:'10px',color:'var(--orange)',fontWeight:'700',marginTop:'1px'}},'📉 انعكاس: '+q.reversalPct.toFixed(2)+'%'));
+    if(q.reversalPct>0)info.appendChild(el('div',{style:{fontSize:'10px',color:'var(--orange)',fontWeight:'700',marginTop:'1px'}},'📉 انعكاس '+q.reversalPct.toFixed(2)+'%'));
+    else if(q.reversalPct<0)info.appendChild(el('div',{style:{fontSize:'10px',color:'var(--green)',fontWeight:'700',marginTop:'1px'}},'📈 مع الإشارة '+Math.abs(q.reversalPct).toFixed(2)+'%'));
+    else info.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',fontWeight:'700',marginTop:'1px'}},'⏸ ثابت 0.00%'));
     row.appendChild(info);
     const rowBtns=el('div',{style:{display:'flex',gap:'5px'}});
     const sndBtn=el('button',{style:{padding:'4px 12px',background:'rgba(0,229,255,.1)',border:'1px solid var(--accent)',color:'var(--accent)',borderRadius:'8px',fontSize:'11px',cursor:'pointer',fontWeight:'700'}});
@@ -3328,6 +3328,7 @@ if(C.waitQueue&&C.waitQueue.length){
     chip.appendChild(el('span',{style:{color:q.side==='LONG'?'var(--green)':'var(--red)'}},q.side==='LONG'?'🟢':'🔴'));
     chip.appendChild(el('span',{style:{color:'var(--text)'}},symStar(q.symbol)+q.symbol.replace('USDT','')));
     if(q.reversalPct>0)chip.appendChild(el('span',{style:{color:'var(--orange)'}},'+'+q.reversalPct.toFixed(1)+'%'));
+    else if(q.reversalPct<0)chip.appendChild(el('span',{style:{color:'var(--green)'}},Math.abs(q.reversalPct).toFixed(1)+'%↑'));
     wqBar.appendChild(chip);
   });
   if(sorted.length>5)wqBar.appendChild(el('span',{style:{fontSize:'11px',color:'var(--text2)',flexShrink:'0'}},'+'+(sorted.length-5)+' أكثر'));
