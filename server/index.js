@@ -66,6 +66,10 @@ const DEFAULT_SETTINGS = {
   stFilterOn: false,
   respectFilterOn: false,
   respectMin: 50,
+  perSymSTon: false,
+  perSymSTtf: '4h',
+  perSymSigTF: '5m',
+  perSymSigMode: 'RSI',
   dirFilter: 'all',
   useSymbolSettings: true,
   // فلتر إرسال إشارات التلغرام حسب وجود إعدادات خاصة للعملة: all = الكل، star = العملات ⭐ فقط، other = الباقي فقط
@@ -94,6 +98,7 @@ const STATE = {
   ema200: { value: null, direction: null, btcPrice: null, updatedAt: null },
   superTrend: { value: null, direction: null, btcPrice: null, updatedAt: null },
   respectData: {},
+  perSymST: {},
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
   sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
   symbolSettings: {},    // إعدادات خاصة لكل عملة — تُدمج فوق STATE.settings عند توليد إشاراتها
@@ -164,9 +169,13 @@ function hasSymOverride(sym) {
 // كما هي (بنفس المرجع) إذا لم تكن للعملة إعدادات خاصة، لضمان عدم تغيير السلوك الحالي
 function settingsFor(sym) {
   if (STATE.settings.useSymbolSettings === false) return capGlobal(STATE.settings);
+  let base = STATE.settings;
+  if (base.perSymSTon) {
+    base = { ...base, mode: base.perSymSigMode || 'RSI', interval: base.perSymSigTF || '5m' };
+  }
   const ov = STATE.symbolSettings[sym];
-  if (!ov || !Object.keys(ov).length) return capGlobal(STATE.settings);
-  const merged = { ...STATE.settings, ...ov };
+  if (!ov || !Object.keys(ov).length) return capGlobal(base);
+  const merged = { ...base, ...ov };
   if (ov.sigQueueFilters) merged.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...ov.sigQueueFilters };
   if (ov.sigFilters) merged.sigFilters = { ...STATE.settings.sigFilters, ...ov.sigFilters };
   // البريك ايفن: إن فعّل المستخدم "استخدام الإعداد العام" لهذه العملة، يتبع البريك ايفن
@@ -676,6 +685,15 @@ function triggerAlert(sym, sig, val, st = STATE.settings) {
     }
   }
 
+  // فلتر سوبر تريند العملة — يحجب الإشارات العكسية لاتجاه العملة نفسها
+  if (st.perSymSTon) {
+    const pst = STATE.perSymST[sym];
+    if (pst?.direction) {
+      if (sig.side === 'LONG' && pst.direction !== 'up') return;
+      if (sig.side === 'SHORT' && pst.direction !== 'down') return;
+    }
+  }
+
   // فلتر احترام المؤشر — يؤثر على القائمة والإرسال لكن ليس السجل
   if (st.respectFilterOn) {
     const rd = STATE.respectData[sym];
@@ -804,6 +822,31 @@ async function updateSuperTrend() {
     };
     broadcast({ type: 'superTrend', data: STATE.superTrend });
   } catch (e) {}
+}
+
+async function updatePerSymST() {
+  const total = STATE.symbols.length;
+  if (!total) return;
+  const tf = STATE.settings.perSymSTtf || '4h';
+  const period = parseInt(STATE.settings.stPeriod) || 10;
+  const mult = parseFloat(STATE.settings.stMult) || 3;
+  const limit = Math.max(100, period * 4);
+  broadcast({ type: 'perSymSTProgress', data: { current: 0, total, done: false } });
+  for (let i = 0; i < total; i += 3) {
+    const batch = STATE.symbols.slice(i, i + 3);
+    await Promise.all(batch.map(async sym => {
+      try {
+        const klines = await fetchBinance(`/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=${limit}`);
+        if (!Array.isArray(klines) || klines.length < period + 2) return;
+        const result = calcSuperTrend(klines, period, mult);
+        if (result) STATE.perSymST[sym] = result;
+      } catch (e) {}
+    }));
+    broadcast({ type: 'perSymSTProgress', data: { current: Math.min(i + 3, total), total, done: false } });
+    if (i + 3 < total) await new Promise(r => setTimeout(r, 1500));
+  }
+  broadcast({ type: 'perSymST', data: STATE.perSymST });
+  broadcast({ type: 'perSymSTProgress', data: { current: total, total, done: true } });
 }
 
 async function scanSym(sym, candles) {
@@ -1460,6 +1503,7 @@ function getPublicState() {
     ema200: STATE.ema200,
     superTrend: STATE.superTrend,
     respectData: STATE.respectData,
+    perSymST: STATE.perSymST,
     lastUpdate: nowStr(),
     btBusy: btState.busy,
   };
@@ -1499,10 +1543,14 @@ async function handleClientMsg(msg) {
       broadcast({ type: 'settings', data: STATE.settings });
       if (msg.data.ema200TF !== undefined) updateEMA200();
       if (msg.data.stTF !== undefined || msg.data.stPeriod !== undefined || msg.data.stMult !== undefined) updateSuperTrend();
+      if (msg.data.perSymSTon !== undefined || msg.data.perSymSTtf !== undefined) {
+        if (STATE.settings.perSymSTon) updatePerSymST();
+      }
       // إعادة تشغيل WS عند تغيير الفريم الزمني العام، أو تفعيل/تعطيل استخدام إعدادات العملات
       // (يؤثر على الفريم الفعّال لكل العملات ذات الإعدادات الخاصة)
       if ((msg.data.interval && msg.data.interval !== oldInterval) ||
-          (msg.data.useSymbolSettings !== undefined && msg.data.useSymbolSettings !== oldUseSym)) {
+          (msg.data.useSymbolSettings !== undefined && msg.data.useSymbolSettings !== oldUseSym) ||
+          msg.data.perSymSTon !== undefined || msg.data.perSymSigTF !== undefined || msg.data.perSymSigMode !== undefined) {
         rescanWithFreshCandles();
       }
       break;
@@ -2558,6 +2606,8 @@ async function init() {
     setInterval(updateSuperTrend, 10 * 60 * 1000);
     updateRespect();
     setInterval(updateRespect, 24 * 60 * 60 * 1000);
+    if (STATE.settings.perSymSTon) updatePerSymST();
+    setInterval(() => { if (STATE.settings.perSymSTon) updatePerSymST(); }, 30 * 60 * 1000);
   } catch (e) {
     console.error('❌ Init failed:', e.message);
   }
