@@ -2098,6 +2098,21 @@ async function handleClientMsg(msg) {
       break;
     }
 
+    case 'addToQueue': {
+      const { sym, side, label, emoji, color, signalType } = msg.data || {};
+      if (!sym || !side) break;
+      if (STATE.waitQueue.some(q => q.symbol === sym)) break;
+      const typeKey = ['a70','b70'].includes(signalType) ? 'ob' : ['b30','a30'].includes(signalType) ? 'os' : ['cl','cs'].includes(signalType) ? 'conf' : 'trail';
+      STATE.waitQueue.push({
+        id: Date.now() + Math.random(), symbol: sym, side,
+        signalType: typeKey, signalPrice: livePrices[sym] || 0,
+        addedTs: Date.now(), addedTime: nowStr(),
+        label: label || '', emoji: emoji || '', color: color || ''
+      });
+      broadcast({ type: 'waitQueue', data: queueWithReversals() });
+      break;
+    }
+
     case 'closeOnePosition': {
       const { accId, symbol, posAmt } = msg.data;
       const acc = STATE.copyAccounts.find(a => a.id === accId);

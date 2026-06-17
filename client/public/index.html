@@ -626,10 +626,13 @@ function rAlerts(body){
     bot.appendChild(el('span',{style:{fontSize:'11px',fontWeight:'700'},className:`c-${a.color}`},`${a.emoji} ${a.label}`));
     bot.appendChild(el('span',{style:{fontSize:'16px',fontWeight:'700'},className:`c-${a.color}`},a.rsi));item.appendChild(bot);
     if(sent){const sb=el('div',{style:{marginTop:'4px',display:'flex',gap:'6px',alignItems:'center'}});sb.appendChild(el('span',{className:'blkbdg'},'🔒 محجوبة'));sb.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'2px 8px'},onClick:()=>send('unlockSym',{sym:a.symbol})},'🔓 إلغاء'));item.appendChild(sb);}
+    const rd=C.respectData&&C.respectData[a.symbol];
+    if(rd){const low=rd.rate<(C.settings.respectMin||50);item.appendChild(el('div',{style:{marginTop:'4px',fontSize:'10px',fontWeight:'700',color:low?'var(--red)':'var(--green)'}},`📊 احترام ${rd.rate}% (${rd.respected}/${rd.total})${low?' — لم تحترم':''}`))}
     const btns=el('div',{style:{marginTop:'6px',display:'flex',gap:'5px',flexWrap:'wrap'}});
     btns.appendChild(el('span',{style:{fontSize:'9px',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:'5px',padding:'2px 6px',color:'var(--text2)'}},`📊 ${a.mode}`));
     btns.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'2px 8px',marginRight:'auto',background:'rgba(0,229,255,.1)',borderColor:'var(--confirmed)',color:'var(--confirmed)'},onClick:()=>send('confirmTrade',a)},'✅ تأكيد'));
     btns.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'2px 8px',background:'rgba(61,159,255,.1)',borderColor:'var(--blue)',color:'var(--blue)'},onClick:()=>send('sendSignalManual',{sym:a.symbol,side:a.side})},'📤 إرسال'));
+    btns.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'2px 8px',background:'rgba(255,165,0,.1)',borderColor:'var(--orange)',color:'var(--orange)'},onClick:()=>send('addToQueue',{sym:a.symbol,side:a.side,label:a.label,emoji:a.emoji,color:a.color,signalType:a.type})},'⏳ القائمة'));
     item.appendChild(btns);body.appendChild(item);
   });
 }
