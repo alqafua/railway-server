@@ -331,7 +331,8 @@ function handleServerMsg(msg){
       break;
     case 'dcaError':showNotif('❌ '+msg.data);break;
     case 'waitQueue':C.waitQueue=msg.data||[];needRender=true;break;
-    case 'respectData':C.respectData=msg.data||{};needRender=true;break;
+    case 'respectData':C.respectData=msg.data||{};C.respectProgress=null;needRender=true;break;
+    case 'respectProgress':C.respectProgress=msg.data;needRender=true;break;
     case 'reportSent':showNotif('✅ تم إرسال التقرير على تلغرام');break;
     case 'exportData':saveBackupData(msg.data);break;
     case 'importDone':showNotif('✅ تمت الاستعادة — ستُحدَّث البيانات');break;
@@ -3319,6 +3320,7 @@ if(C.page==='symbols'){root.appendChild(rSymbolsPage());const t=rToast();if(t)ro
 if(C.page==='results'){root.appendChild(rResultsPage());const t=rToast();if(t)root.appendChild(t);return;}
 const st=getStats();root.appendChild(rDashHdr(st));
 const asb=el('div',{className:'as-bar '+(C.settings.autoSend?'on':'off'),onClick:()=>sendSettings({autoSend:!C.settings.autoSend})});asb.appendChild(el('span',{className:'asdot '+(C.settings.autoSend?'on':'off')}));asb.appendChild(document.createTextNode(C.settings.autoSend?'🟢 الإرسال التلقائي: تشغيل':'🔴 الإرسال متوقف'));root.appendChild(asb);
+if(C.respectProgress&&!C.respectProgress.done){const rp=C.respectProgress;const pct=Math.round((rp.current/rp.total)*100);const rpBar=el('div',{style:{padding:'6px 14px',background:'rgba(46,213,115,.06)',borderBottom:'1px solid rgba(46,213,115,.2)',display:'flex',alignItems:'center',gap:'10px'}});rpBar.appendChild(el('span',{style:{fontSize:'11px',fontWeight:'700',color:'var(--green)',flexShrink:'0'}},'📊 فحص الاحترام: '+rp.current+'/'+rp.total));const track=el('div',{style:{flex:'1',height:'6px',background:'var(--bg3)',borderRadius:'3px',overflow:'hidden'}});const fill=el('div',{style:{width:pct+'%',height:'100%',background:'var(--green)',borderRadius:'3px',transition:'width .3s'}});track.appendChild(fill);rpBar.appendChild(track);rpBar.appendChild(el('span',{style:{fontSize:'11px',color:'var(--text2)',flexShrink:'0'}},pct+'%'));root.appendChild(rpBar);}
 if(C.waitQueue&&C.waitQueue.length){
   const wqBar=el('div',{style:{display:'flex',alignItems:'center',gap:'8px',padding:'7px 14px',background:'rgba(255,165,2,.06)',borderBottom:'1px solid rgba(255,165,2,.2)',overflowX:'auto',cursor:'pointer'},onClick:()=>{C.page='subscribers';render();}});
   wqBar.appendChild(el('span',{style:{fontSize:'12px',fontWeight:'800',color:'var(--orange)',flexShrink:'0'}},'⏳ انتظار ('+C.waitQueue.length+'):'));

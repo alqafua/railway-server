@@ -279,8 +279,11 @@ function calcRespect(cls, mode, ma) {
 }
 
 async function updateRespect() {
-  for (let i = 0; i < STATE.symbols.length; i += BATCH) {
-    const batch = STATE.symbols.slice(i, i + BATCH);
+  const total = STATE.symbols.length;
+  if (!total) return;
+  broadcast({ type: 'respectProgress', data: { current: 0, total, done: false } });
+  for (let i = 0; i < total; i += 3) {
+    const batch = STATE.symbols.slice(i, i + 3);
     await Promise.all(batch.map(async sym => {
       try {
         const st = settingsFor(sym);
@@ -291,9 +294,11 @@ async function updateRespect() {
         if (r) STATE.respectData[sym] = r;
       } catch (e) {}
     }));
-    if (i + BATCH < STATE.symbols.length) await new Promise(r => setTimeout(r, BDEL));
+    broadcast({ type: 'respectProgress', data: { current: Math.min(i + 3, total), total, done: false } });
+    if (i + 3 < total) await new Promise(r => setTimeout(r, 1500));
   }
   broadcast({ type: 'respectData', data: STATE.respectData });
+  broadcast({ type: 'respectProgress', data: { current: total, total, done: true } });
 }
 
 function checkDiv(cls, ind, type) {
@@ -2552,7 +2557,7 @@ async function init() {
     updateSuperTrend();
     setInterval(updateSuperTrend, 10 * 60 * 1000);
     updateRespect();
-    setInterval(updateRespect, 10 * 60 * 1000);
+    setInterval(updateRespect, 24 * 60 * 60 * 1000);
   } catch (e) {
     console.error('❌ Init failed:', e.message);
   }
