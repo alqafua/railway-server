@@ -715,12 +715,22 @@ function triggerAlert(sym, sig, val, st = STATE.settings) {
     return;
   }
 
-  // sigFilters يتحكم فقط بالإرسال المباشر للتلغرام (بدون قائمة)
+  // sigFilters يتحكم فقط بالإرسال المباشر للتلغرام — المحجوبة تروح القائمة
   const sigFilters = { ob: true, os: true, conf: true, trail: true, ...st.sigFilters };
-  if (isOB && !sigFilters.ob) return;
-  if (isOS && !sigFilters.os) return;
-  if (isConf && !sigFilters.conf) return;
-  if (isTrail && !sigFilters.trail) return;
+  const blocked = (isOB && !sigFilters.ob) || (isOS && !sigFilters.os) || (isConf && !sigFilters.conf) || (isTrail && !sigFilters.trail);
+  if (blocked) {
+    if (typeKey && !STATE.waitQueue.some(q => q.symbol === sym)) {
+      STATE.waitQueue.push({
+        id: Date.now() + Math.random(), symbol: sym, side: sig.side,
+        signalType: typeKey, signalPrice: livePrices[sym] || 0,
+        addedTs: Date.now(), addedTime: nowStr(),
+        label: sig.label, emoji: sig.emoji, color: sig.color
+      });
+      broadcast({ type: 'waitQueue', data: queueWithReversals() });
+      setTimeout(() => autoSendFromQueue(), 1000);
+    }
+    return;
+  }
 
   sendSignal(sym, sig.side, null, false, '', st);
 }
