@@ -36,7 +36,7 @@ app.options('*', cors());
 //  STATE
 // ══════════════════════════════════════════════
 const DEFAULT_SETTINGS = {
-  mode: 'SMA', maPeriod: 14, interval: '1h',
+  mode: 'SMA', maPeriod: 14, interval: '1h', extraIntervals: [],
   autoSend: false, enableDiv: true, blockOpen: true,
   sigFilters: { ob: true, os: true, conf: true, trail: true },
   cxMargin: 'Cross', cxLev: '20', cxAmt: '1%', cxAmtMax: '0',
@@ -631,13 +631,16 @@ function countOpenPositions() {
   return new Set([...STATE.openTrades.map(t => t.symbol), ...liveSyms]).size;
 }
 
-function triggerAlert(sym, sig, val, st = STATE.settings) {
-  const key = `${sym}_${sig.type}`, now = Date.now();
-  if (STATE.cooldowns[key]) return;
+function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
+  const tf = tfOverride || st.interval;
+  const coolKey = tfOverride ? `${sym}_${sig.type}_${tf}` : `${sym}_${sig.type}`;
+  const sentKey = tfOverride ? `${sym}_${tf}` : sym;
+  const now = Date.now();
+  if (STATE.cooldowns[coolKey]) return;
   const master = STATE.copyAccounts.find(a => a.isMaster);
   const hasLivePos = master?.livePositions?.some(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   if (st.blockOpen && (STATE.openTrades.some(t => t.symbol === sym) || hasLivePos)) return;
-  if (STATE.sentSigs[sym]) return;
+  if (STATE.sentSigs[sentKey]) return;
   if (!isLiquid(sym)) return;
 
   const isOB = ['a70', 'b70'].includes(sig.type);
@@ -656,12 +659,12 @@ function triggerAlert(sym, sig, val, st = STATE.settings) {
   const sqFilters = { ob: true, os: true, conf: true, trail: true, ...(st.sigQueueFilters || {}) };
   if (typeKey && !sqFilters[typeKey]) return;
 
-  STATE.cooldowns[key] = now;
+  STATE.cooldowns[coolKey] = now;
   alertId++;
   const item = {
     id: alertId, symbol: sym, type: sig.type, label: sig.label,
     color: sig.color, emoji: sig.emoji, rsi: val.toFixed(2),
-    time: nowStr(), mode: `${st.mode}(${st.mode === 'RSI' ? RSI_P : st.maPeriod}) ${st.interval}`, side: sig.side
+    time: nowStr(), mode: `${st.mode}(${st.mode === 'RSI' ? RSI_P : st.maPeriod})`, tf, side: sig.side
   };
   STATE.alerts = [item, ...STATE.alerts].slice(0, 200);
   db.saveAlert(item);
@@ -969,7 +972,56 @@ async function scanAll() {
   broadcast({ type: 'scanning', data: false });
   broadcast({ type: 'symbolData', data: STATE.symbolData });
   scanRunning = false;
+  // فحص الفريمات الإضافية
+  const extras = STATE.settings.extraIntervals || [];
+  for (const tf of extras) {
+    if (tf === STATE.settings.interval) continue;
+    await scanAllForInterval(tf);
+  }
 }
+
+async function scanAllForInterval(tf) {
+  for (let i = 0; i < STATE.symbols.length; i += BATCH) {
+    const batch = STATE.symbols.slice(i, i + BATCH);
+    await Promise.all(batch.map(async sym => {
+      try {
+        const d = await fetchBinance(`/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=200`);
+        if (!Array.isArray(d) || d.length < RSI_P + 2) return;
+        const cls = d.map(k => parseFloat(k[4]));
+        livePrices[sym] = cls[cls.length - 1];
+        const st = settingsFor(sym);
+        const cu = computeInd(cls, st.mode, st.maPeriod);
+        const pv = computeInd(cls.slice(0, -1), st.mode, st.maPeriod);
+        const id = computeIndSeries(cls, st.mode, st.maPeriod);
+        const sig = detectSignal(pv, cu, cls, id, st.enableDiv, st);
+        const conf = detectConf(pv, cu, cls, id, st.enableDiv);
+        const trail = detectTrail(sym + '_' + tf, cu, cls, id, st.enableDiv, st);
+        const fSig = trail || sig;
+        const oldKey = sym + '_' + tf;
+        const old = extraSymData[oldKey] || {};
+        const zone = cu >= 70 ? 'ob' : cu <= 30 ? 'os' : 'neutral';
+        const oldZone = old.zone || 'neutral';
+        if (oldZone !== 'neutral' && zone === 'neutral') {
+          Object.keys(STATE.cooldowns).forEach(k => { if (k.startsWith(oldKey + '_')) delete STATE.cooldowns[k]; });
+          delete STATE.sentSigs[oldKey];
+        }
+        extraSymData[oldKey] = { zone };
+        const stOverride = { ...st, interval: tf };
+        if (fSig && (!old.lastSigType || old.lastSigType !== (fSig.type + fSig.side))) {
+          extraSymData[oldKey].lastSigType = fSig.type + fSig.side;
+          triggerAlert(sym, fSig, cu, stOverride, tf);
+        }
+        if (conf && (!old.lastConfType || old.lastConfType !== conf.type)) {
+          extraSymData[oldKey].lastConfType = conf.type;
+          triggerAlert(sym, conf, cu, stOverride, tf);
+        }
+      } catch (e) {}
+    }));
+    if (i + BATCH < STATE.symbols.length) await new Promise(r => setTimeout(r, BDEL));
+  }
+}
+
+const extraSymData = {};
 
 // ══════════════════════════════════════════════
 //  WEBSOCKET — Binance Live
