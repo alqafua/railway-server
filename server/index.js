@@ -106,6 +106,7 @@ const STATE = {
   superTrend: { value: null, direction: null, btcPrice: null, updatedAt: null },
   respectData: {},
   perSymST: {},
+  simTrades: [],
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
   sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
   symbolSettings: {},    // إعدادات خاصة لكل عملة — تُدمج فوق STATE.settings عند توليد إشاراتها
@@ -755,22 +756,69 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
     return;
   }
 
-  // محاكاة سوبر تريند — لو الفلتر مطفي بس فيه قناة محاكاة
+  // محاكاة سوبر تريند — صفقات وهمية كاملة مع أهداف وستوب
   if (!st.perSymSTon && STATE.settings.cxChatSTSim) {
     try {
       const pst = await checkSymST(sym);
       if (pst?.direction) {
         const wouldPass = (sig.side === 'LONG' && pst.direction === 'up') || (sig.side === 'SHORT' && pst.direction === 'down');
-        const dirTxt = pst.direction === 'up' ? '🟢 صاعد' : '🔴 نازل';
         const price = livePrices[sym] || 0;
-        const dist = price && pst.value ? ((Math.abs(price - pst.value) / price) * 100).toFixed(2) : '—';
-        const slPct = price && pst.value ? ((Math.abs(price - pst.value) / price) * 100).toFixed(2) : '—';
-        const lev = parseInt(st.cxLev) || 20;
-        const slWithLev = slPct !== '—' ? (parseFloat(slPct) * lev).toFixed(1) : '—';
-        let msg = wouldPass
-          ? `✅ صفقة محاكاة\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\n💰 دخول: ${price}\n🛡️ ستوب (ST): ${pst.value}\n📏 مسافة SL: ${slPct}% (${slWithLev}% x${lev})\nسوبر: ${dirTxt}`
-          : `❌ محجوبة\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\nسوبر: ${dirTxt} ⛔ عكس الإشارة\n💰 سعر: ${price} | ST: ${pst.value}`;
-        tgSend(msg, STATE.settings.cxChatSTSim);
+        const dirTxt = pst.direction === 'up' ? '🟢 صاعد' : '🔴 نازل';
+        if (wouldPass && price > 0) {
+          if (STATE.simTrades.some(t => t.symbol === sym && !t.closed)) {
+            // عملة مفتوحة بالفعل
+          } else {
+            const lev = parseInt(st.cxLev) || 20;
+            const isLong = sig.side === 'LONG';
+            const sl = pst.value;
+            const slPct = Math.abs((price - sl) / price) * 100;
+            const tp1Pct = parseFloat(st.cxTP1) || 3;
+            const tp1 = isLong ? price * (1 + tp1Pct / 100) : price * (1 - tp1Pct / 100);
+            const tp2on = st.cxTP2on;
+            const tp2Pct = parseFloat(st.cxTP2) || 6;
+            const tp2 = tp2on ? (isLong ? price * (1 + tp2Pct / 100) : price * (1 - tp2Pct / 100)) : null;
+            const simT = {
+              id: Date.now() + Math.random(),
+              symbol: sym, side: sig.side, tf,
+              entry: price, sl, tp1, tp2,
+              tp1Hit: false, closed: false,
+              beSl: st.cxBEon ? price : null,
+              lev, stValue: pst.value,
+              openTime: nowStr(), openTs: Date.now(),
+            };
+            STATE.simTrades.push(simT);
+            const dec = countDecimals(price);
+            const amt = st.cxAmt || '2%';
+            const entry2 = st.cxEntry2on ? price * (isLong ? (1 - parseFloat(st.cxEntry2Dist || 0.2) / 100) : (1 + parseFloat(st.cxEntry2Dist || 0.2) / 100)) : null;
+            const trailEntry = st.cxEntryTrail || '0.5%';
+            const trailTp = st.cxTrailTp === 'on' ? st.cxTrailPct || '0.5' : null;
+            const tp1Amt = st.cxTP1Amt || '50';
+            const tp2Amt = st.cxTP2Amt || '50';
+            tgSend(
+              `#${sym.replace('USDT', '/USDT')}\n` +
+              `Exchanges: Binance Futures\n` +
+              `Signal Type: Regular (${isLong ? 'Long' : 'Short'})\n` +
+              `Leverage: ${st.cxMargin || 'Cross'} (${lev}X)\n` +
+              `Amount: ${amt}\n\n` +
+              `Entry Targets:\n1) Market` +
+              (entry2 ? `\n2) ${entry2.toFixed(dec)} (100%)` : '') +
+              `\n\nTake-Profit Targets:\n1) ${tp1.toFixed(dec)} (${tp1Amt}%)` +
+              (tp2 ? `\n2) ${tp2.toFixed(dec)} (${tp2Amt}%)` : '') +
+              `\n\nStop Targets:\n1) ${sl.toFixed(dec)}\n\n` +
+              `Trailing Configuration:\n` +
+              `Entry: Percentage (${trailEntry})\n` +
+              `Take-Profit: ${trailTp ? 'Percentage (' + trailTp + '%)' : 'Off'}\n` +
+              `Stop: ${st.cxBEon ? 'Breakeven - Trigger: Target (1)' : 'Off'}\n\n` +
+              `📊 محاكاة ST | سوبر: ${dirTxt}`,
+              STATE.settings.cxChatSTSim
+            );
+          }
+        } else if (!wouldPass) {
+          tgSend(
+            `❌ محجوبة\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\nسوبر: ${dirTxt} ⛔ عكس الإشارة\n💰 سعر: ${price} | ST: ${pst.value}`,
+            STATE.settings.cxChatSTSim
+          );
+        }
       }
     } catch (e) {}
   }
@@ -967,6 +1015,85 @@ function countDecimals(num) {
   const s = String(num);
   const dot = s.indexOf('.');
   return dot === -1 ? 2 : s.length - dot - 1;
+}
+
+function checkSimTrades() {
+  if (!STATE.settings.cxChatSTSim || !STATE.simTrades.length) return;
+  const chatId = STATE.settings.cxChatSTSim;
+  for (const t of STATE.simTrades) {
+    if (t.closed) continue;
+    const price = livePrices[t.symbol];
+    if (!price) continue;
+    const isLong = t.side === 'LONG';
+    const dec = countDecimals(t.entry);
+    const rawPct = isLong ? ((price - t.entry) / t.entry) * 100 : ((t.entry - price) / t.entry) * 100;
+    const pctLev = rawPct * t.lev;
+
+    // فحص ستوب لوز
+    const slHit = isLong ? price <= t.sl : price >= t.sl;
+    if (slHit) {
+      t.closed = true; t.closePrice = price; t.closeTs = Date.now(); t.result = 'sl';
+      tgSend(
+        `🔴 محاكاة — ستوب لوز\n#${t.symbol.replace('USDT', '/USDT')} ${t.tf}\n${isLong ? '🟢 LONG' : '🔴 SHORT'} x${t.lev}\n` +
+        `💰 دخول: ${t.entry} → خروج: ${price.toFixed(dec)}\n` +
+        `📉 النتيجة: ${rawPct.toFixed(2)}% (${pctLev.toFixed(1)}% بالرافعة)\n` +
+        `⏱ المدة: ${formatDuration(Date.now() - t.openTs)}`,
+        chatId
+      );
+      continue;
+    }
+
+    // فحص الهدف الأول
+    if (!t.tp1Hit) {
+      const tp1Hit = isLong ? price >= t.tp1 : price <= t.tp1;
+      if (tp1Hit) {
+        t.tp1Hit = true;
+        if (t.beSl !== null) t.sl = t.entry;
+        const tp1Pct = isLong ? ((t.tp1 - t.entry) / t.entry) * 100 : ((t.entry - t.tp1) / t.entry) * 100;
+        tgSend(
+          `🟡 محاكاة — TP1 ✅\n#${t.symbol.replace('USDT', '/USDT')} ${t.tf}\n${isLong ? '🟢 LONG' : '🔴 SHORT'} x${t.lev}\n` +
+          `💰 دخول: ${t.entry} → TP1: ${t.tp1.toFixed(dec)}\n` +
+          `📈 +${tp1Pct.toFixed(2)}% (+${(tp1Pct * t.lev).toFixed(1)}%)` +
+          (t.beSl !== null ? '\n🔄 SL → بريك إيفن' : '') +
+          (!t.tp2 ? '\n✅ الصفقة مقفلة بالكامل' : ''),
+          chatId
+        );
+        if (!t.tp2) {
+          t.closed = true; t.closePrice = t.tp1; t.closeTs = Date.now(); t.result = 'tp1';
+        }
+        continue;
+      }
+    }
+
+    // فحص الهدف الثاني
+    if (t.tp1Hit && t.tp2) {
+      const tp2Hit = isLong ? price >= t.tp2 : price <= t.tp2;
+      if (tp2Hit) {
+        t.closed = true; t.closePrice = price; t.closeTs = Date.now(); t.result = 'tp2';
+        const tp2Pct = isLong ? ((price - t.entry) / t.entry) * 100 : ((t.entry - price) / t.entry) * 100;
+        tgSend(
+          `🟢 محاكاة — TP2 ✅✅\n#${t.symbol.replace('USDT', '/USDT')} ${t.tf}\n${isLong ? '🟢 LONG' : '🔴 SHORT'} x${t.lev}\n` +
+          `💰 دخول: ${t.entry} → TP2: ${price.toFixed(dec)}\n` +
+          `📈 +${tp2Pct.toFixed(2)}% (+${(tp2Pct * t.lev).toFixed(1)}%)\n` +
+          `⏱ المدة: ${formatDuration(Date.now() - t.openTs)}\n` +
+          `✅ الصفقة مقفلة بالكامل`,
+          chatId
+        );
+        continue;
+      }
+    }
+  }
+  // تنظيف الصفقات المقفلة القديمة (أكثر من يوم)
+  STATE.simTrades = STATE.simTrades.filter(t => !t.closed || (Date.now() - t.closeTs) < 86400000);
+}
+
+function formatDuration(ms) {
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return m + ' دقيقة';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + ' ساعة ' + (m % 60) + ' د';
+  const d = Math.floor(h / 24);
+  return d + ' يوم ' + (h % 24) + ' س';
 }
 
 async function placeOrUpdateSTSL(acc, sym, pos, slPrice) {
@@ -2814,10 +2941,11 @@ async function init() {
     console.log(`💓 ${new Date().toISOString()} | Symbols:${STATE.symbols.length} | Clients:${clients.size} | Accounts:${STATE.copyAccounts.length}`);
   }, 300000);
 
-  // تحديث نسب الانعكاس في قائمة الانتظار كل 10 ثوانٍ
+  // تحديث نسب الانعكاس في قائمة الانتظار + مراقبة صفقات المحاكاة كل 10 ثوانٍ
   setInterval(() => {
     if (STATE.waitQueue.length && clients.size)
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
+    checkSimTrades();
   }, 10000);
 
   // تحديث مراكز الماستر كل 30 ثانية حتى لو النسخ متوقف
