@@ -178,9 +178,6 @@ function hasSymOverride(sym) {
 function settingsFor(sym) {
   if (STATE.settings.useSymbolSettings === false) return capGlobal(STATE.settings);
   let base = STATE.settings;
-  if (base.perSymSTon) {
-    base = { ...base, mode: base.perSymSigMode || 'RSI', interval: base.perSymSigTF || '5m' };
-  }
   const ov = STATE.symbolSettings[sym];
   if (!ov || !Object.keys(ov).length) return capGlobal(base);
   const merged = { ...base, ...ov };
@@ -688,14 +685,19 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
   const sqFilters = { ob: true, os: true, conf: true, trail: true, ...(st.sigQueueFilters || {}) };
   if (typeKey && !sqFilters[typeKey]) return;
 
+  // فحص سوبر تريند العملة مبكراً — لإضافة العلامة على الإشارة
+  let stCheckResult = null;
+  if (st.perSymSTon) {
+    stCheckResult = await checkSymST(sym);
+  }
+
   STATE.cooldowns[coolKey] = now;
   alertId++;
-  const pstCached = STATE.perSymST[sym];
   const item = {
     id: alertId, symbol: sym, type: sig.type, label: sig.label,
     color: sig.color, emoji: sig.emoji, rsi: val.toFixed(2),
     time: nowStr(), mode: `${st.mode}(${st.mode === 'RSI' ? RSI_P : st.maPeriod})`, tf, side: sig.side,
-    stDir: st.perSymSTon && pstCached?.direction ? pstCached.direction : null
+    stDir: stCheckResult?.direction || null
   };
   STATE.alerts = [item, ...STATE.alerts].slice(0, 200);
   db.saveAlert(item);
@@ -720,24 +722,33 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
   }
 
   // فلتر سوبر تريند العملة — فحص فوري للعملة عند وصول الإشارة
-  if (st.perSymSTon) {
-    const pst = await checkSymST(sym);
-    if (pst?.direction) {
-      // منطقة ميتة — السعر قريب من خط السوبر تريند
-      if (st.deadZoneOn) {
-        const price = livePrices[sym] || 0;
-        const dist = price && pst.value ? Math.abs((price - pst.value) / price) * 100 : 999;
-        if (dist < parseFloat(st.deadZonePct || 1)) {
-          if (st.deadZoneMode === 'wait') return;
-          if (st.deadZoneMode === 'reverse') {
-            if (sig.side === 'LONG' && pst.direction === 'up') return;
-            if (sig.side === 'SHORT' && pst.direction === 'down') return;
-            // السماح بالعكس فقط
-          } else return;
+  if (st.perSymSTon && stCheckResult?.direction) {
+    const pst = stCheckResult;
+    const price = livePrices[sym] || 0;
+    const dirTxt = pst.direction === 'up' ? '🟢 صاعد' : '🔴 نازل';
+    // منطقة ميتة — السعر قريب من خط السوبر تريند
+    if (st.deadZoneOn) {
+      const dist = price && pst.value ? Math.abs((price - pst.value) / price) * 100 : 999;
+      if (dist < parseFloat(st.deadZonePct || 1)) {
+        if (STATE.settings.cxChatSTSim) {
+          tgSend(`⚠️ منطقة ميتة\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\nسوبر: ${dirTxt}\nمسافة: ${dist.toFixed(2)}% < ${st.deadZonePct}%`, STATE.settings.cxChatSTSim);
         }
+        if (st.deadZoneMode === 'wait') return;
+        if (st.deadZoneMode === 'reverse') {
+          if (sig.side === 'LONG' && pst.direction === 'up') return;
+          if (sig.side === 'SHORT' && pst.direction === 'down') return;
+        } else return;
       }
-      if (sig.side === 'LONG' && pst.direction !== 'up') return;
-      if (sig.side === 'SHORT' && pst.direction !== 'down') return;
+    }
+    const blocked = (sig.side === 'LONG' && pst.direction !== 'up') || (sig.side === 'SHORT' && pst.direction !== 'down');
+    if (blocked) {
+      if (STATE.settings.cxChatSTSim) {
+        tgSend(`❌ حُجبت\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\nسوبر: ${dirTxt} ⛔ عكس الإشارة\n💰 سعر: ${price} | ST: ${pst.value}`, STATE.settings.cxChatSTSim);
+      }
+      return;
+    }
+    if (STATE.settings.cxChatSTSim) {
+      tgSend(`✅ مرّت\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\nسوبر: ${dirTxt}\n💰 سعر: ${price} | ST: ${pst.value}`, STATE.settings.cxChatSTSim);
     }
   }
 
