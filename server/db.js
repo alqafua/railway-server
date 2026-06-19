@@ -26,7 +26,7 @@ function writeJSON(name, data) {
 
 // استعادة ملفات البيانات من PostgreSQL (إن وُجدت) عند بدء التشغيل —
 // تعالج فقدان الـ filesystem المحلي بعد كل redeploy على Railway.
-const DB_FILES = ['settings', 'accounts', 'open_trades', 'closed_trades', 'dca_orders', 'alerts', 'symbol_settings'];
+const DB_FILES = ['settings', 'accounts', 'open_trades', 'closed_trades', 'dca_orders', 'alerts', 'symbol_settings', 'respect_data', 'wait_queue', 'pending_orders', 'sim_trades', 'copy_log', 'sent_sigs'];
 async function restoreFromPg() {
   if (!pg.enabled) return;
   for (const name of DB_FILES) {
@@ -114,6 +114,24 @@ function loadAlerts() { return readJSON('alerts', []); }
 function saveSymbolSettings(map) { writeJSON('symbol_settings', map); }
 function loadSymbolSettings() { return readJSON('symbol_settings', {}); }
 
+function saveRespectData(data) { writeJSON('respect_data', data); }
+function loadRespectData() { return readJSON('respect_data', {}); }
+
+function saveWaitQueue(queue) { writeJSON('wait_queue', queue); }
+function loadWaitQueue() { return readJSON('wait_queue', []); }
+
+function savePendingOrders(orders) { writeJSON('pending_orders', orders); }
+function loadPendingOrders() { return readJSON('pending_orders', []); }
+
+function saveSimTrades(trades) { writeJSON('sim_trades', trades); }
+function loadSimTrades() { return readJSON('sim_trades', []); }
+
+function saveCopyLog(log) { writeJSON('copy_log', log); }
+function loadCopyLog() { return readJSON('copy_log', []); }
+
+function saveSentSigs(sigs) { writeJSON('sent_sigs', sigs); }
+function loadSentSigs() { return readJSON('sent_sigs', {}); }
+
 module.exports = {
   saveSettings, loadSettings,
   saveAccounts, loadAccounts,
@@ -122,5 +140,11 @@ module.exports = {
   saveDcaOrders, loadDcaOrders,
   saveAlert, loadAlerts,
   saveSymbolSettings, loadSymbolSettings,
+  saveRespectData, loadRespectData,
+  saveWaitQueue, loadWaitQueue,
+  savePendingOrders, loadPendingOrders,
+  saveSimTrades, loadSimTrades,
+  saveCopyLog, loadCopyLog,
+  saveSentSigs, loadSentSigs,
   restoreFromPg,
 };

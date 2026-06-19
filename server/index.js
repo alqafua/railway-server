@@ -311,6 +311,7 @@ async function updateRespect() {
     broadcast({ type: 'respectProgress', data: { current: Math.min(i + 3, total), total, done: false } });
     if (i + 3 < total) await new Promise(r => setTimeout(r, 1500));
   }
+  db.saveRespectData(STATE.respectData);
   broadcast({ type: 'respectData', data: STATE.respectData });
   broadcast({ type: 'respectProgress', data: { current: total, total, done: true } });
 }
@@ -610,6 +611,7 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   if (tgFilter === 'other' && hasSymOverride(sym)) return;
   if (!overridePrice && STATE.sentSigs[sym]) return;
   STATE.sentSigs[sym] = Date.now();
+  saveSentSigsDebounced();
   if (STATE.settings.stSLon && STATE._stslTracked) STATE._stslTracked[sym] = true;
 
   const { lv, note } = await resolveLeverage(sym, st.cxLev);
@@ -768,6 +770,7 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
         addedTs: Date.now(), addedTime: nowStr(),
         label: sig.label, emoji: sig.emoji, color: sig.color
       });
+      db.saveWaitQueue(STATE.waitQueue);
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
     }
     return;
@@ -784,6 +787,7 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
         addedTs: Date.now(), addedTime: nowStr(),
         label: sig.label, emoji: sig.emoji, color: sig.color
       });
+      db.saveWaitQueue(STATE.waitQueue);
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
       setTimeout(() => autoSendFromQueue(), 1000);
     }
@@ -821,6 +825,7 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
               openTime: nowStr(), openTs: Date.now(),
             };
             STATE.simTrades.push(simT);
+            db.saveSimTrades(STATE.simTrades);
             const dec = countDecimals(price);
             const amt = st.cxAmt || '2%';
             const entry2 = st.cxEntry2on ? price * (isLong ? (1 - parseFloat(st.cxEntry2Dist || 0.2) / 100) : (1 + parseFloat(st.cxEntry2Dist || 0.2) / 100)) : null;
@@ -872,6 +877,7 @@ function queueWithReversals() {
 
 async function sendQueueItemNow(qItem, currentPrice) {
   STATE.waitQueue = STATE.waitQueue.filter(q => q.id !== qItem.id);
+  db.saveWaitQueue(STATE.waitQueue);
   broadcast({ type: 'waitQueue', data: queueWithReversals() });
   const label = qItem.emoji ? `${qItem.emoji} ${qItem.label}` : qItem.label || qItem.signalType || '';
   await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol], true, label, settingsFor(qItem.symbol));
@@ -1127,6 +1133,7 @@ function checkSimTrades() {
   }
   // تنظيف الصفقات المقفلة القديمة (أكثر من يوم)
   STATE.simTrades = STATE.simTrades.filter(t => !t.closed || (Date.now() - t.closeTs) < 86400000);
+  db.saveSimTrades(STATE.simTrades);
 }
 
 function formatDuration(ms) {
@@ -1187,7 +1194,7 @@ async function scanSym(sym, candles) {
     const oldZone = old.zone || 'neutral';
     if (oldZone !== 'neutral' && zone === 'neutral') {
       Object.keys(STATE.cooldowns).forEach(k => { if (k.startsWith(sym + '_')) delete STATE.cooldowns[k]; });
-      delete STATE.sentSigs[sym];
+      delete STATE.sentSigs[sym]; saveSentSigsDebounced();
     }
     const fSig = trail || sig;
     STATE.symbolData[sym] = { rsi: cu, prevRsi: pv, signal: fSig, conf, zone, error: false, trailActive: !!trail };
@@ -1311,7 +1318,7 @@ async function scanAllForInterval(tf) {
         const oldZone = old.zone || 'neutral';
         if (oldZone !== 'neutral' && zone === 'neutral') {
           Object.keys(STATE.cooldowns).forEach(k => { if (k.startsWith(oldKey + '_')) delete STATE.cooldowns[k]; });
-          delete STATE.sentSigs[oldKey];
+          delete STATE.sentSigs[oldKey]; saveSentSigsDebounced();
         }
         extraSymData[oldKey] = { zone };
         const stOverride = { ...st, interval: tf };
@@ -1394,7 +1401,7 @@ function startBinanceWSGroup(interval, syms) {
             // مسح cooldown و sentSigs عند الخروج من المنطقة
             if (oldZone !== 'neutral' && newZone === 'neutral') {
               Object.keys(STATE.cooldowns).forEach(ck => { if (ck.startsWith(sym + '_')) delete STATE.cooldowns[ck]; });
-              delete STATE.sentSigs[sym];
+              delete STATE.sentSigs[sym]; saveSentSigsDebounced();
             }
 
             // كشف الإشارات على الشمعة الحية
@@ -1475,9 +1482,15 @@ function broadcastThrottled(msg) {
 //  COPY TRADING
 // ══════════════════════════════════════════════
 let copyTimer = null;
+let sentSigsTimer = null;
+function saveSentSigsDebounced() {
+  if (sentSigsTimer) clearTimeout(sentSigsTimer);
+  sentSigsTimer = setTimeout(() => db.saveSentSigs(STATE.sentSigs), 2000);
+}
 
 function addCopyLog(type, text) {
   STATE.copyLog = [{ type, text, time: nowStr() }, ...STATE.copyLog].slice(0, 300);
+  db.saveCopyLog(STATE.copyLog);
   broadcast({ type: 'copyLog', data: STATE.copyLog[0] });
 }
 
@@ -1726,7 +1739,7 @@ async function syncCopy() {
 
       STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
       STATE.openTrades = STATE.openTrades.filter(x => x.symbol !== sym);
-      delete STATE.sentSigs[sym];
+      delete STATE.sentSigs[sym]; saveSentSigsDebounced();
       db.saveClosedTrade(closed);
       db.saveOpenTrades(STATE.openTrades);
 
@@ -2512,12 +2525,14 @@ async function handleClientMsg(msg, ws) {
 
     case 'removeQueueItem': {
       STATE.waitQueue = STATE.waitQueue.filter(x => x.id !== msg.data.id);
+      db.saveWaitQueue(STATE.waitQueue);
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
       break;
     }
 
     case 'clearQueue': {
       STATE.waitQueue = [];
+      db.saveWaitQueue(STATE.waitQueue);
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
       break;
     }
@@ -2533,6 +2548,7 @@ async function handleClientMsg(msg, ws) {
         addedTs: Date.now(), addedTime: nowStr(),
         label: label || '', emoji: emoji || '', color: color || ''
       });
+      db.saveWaitQueue(STATE.waitQueue);
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
       break;
     }
@@ -2596,6 +2612,7 @@ async function handleClientMsg(msg, ws) {
         if (orderParams.type !== 'MARKET') {
           const po = { id: result.orderId || Date.now(), sym, side, qty, type: orderParams.type, price: orderParams.price || orderParams.activationPrice, acc: acc.name, accId, lev: leverage, status: 'NEW', createdAt: nowStr(), source: 'manual' };
           STATE.pendingOrders = [po, ...STATE.pendingOrders].slice(0, 200);
+          db.savePendingOrders(STATE.pendingOrders);
           broadcast({ type: 'pendingOrders', data: STATE.pendingOrders });
         }
         [acc.livePositions, acc.liveBalance] = await Promise.all([getPositions(acc), getBalance(acc)]);
@@ -2698,7 +2715,7 @@ async function handleClientMsg(msg, ws) {
         const closed = { ...t, exitPrice: ep, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' };
         STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
         STATE.openTrades = STATE.openTrades.filter(x => x.id !== t.id);
-        delete STATE.sentSigs[t.symbol];
+        delete STATE.sentSigs[t.symbol]; saveSentSigsDebounced();
         db.saveClosedTrade(closed);
         db.saveOpenTrades(STATE.openTrades);
         const dur = Math.round((Date.now() - t.openTs) / 60000);
@@ -2768,7 +2785,7 @@ async function handleClientMsg(msg, ws) {
       break;
 
     case 'unlockSym':
-      delete STATE.sentSigs[msg.data.sym];
+      delete STATE.sentSigs[msg.data.sym]; saveSentSigsDebounced();
       break;
 
     case 'addDCA': {
@@ -2800,6 +2817,7 @@ async function handleClientMsg(msg, ws) {
         } catch (e) { addCopyLog('fail', `❌ إلغاء: ${e.message}`); }
       }
       STATE.pendingOrders = STATE.pendingOrders.filter(o => o.id !== orderId);
+      db.savePendingOrders(STATE.pendingOrders);
       broadcast({ type: 'pendingOrders', data: STATE.pendingOrders });
       break;
     }
@@ -2945,6 +2963,12 @@ async function init() {
   STATE.closedTrades = db.loadClosedTrades();
   STATE.dcaOrders = db.loadDcaOrders();
   STATE.alerts = db.loadAlerts();
+  STATE.respectData = db.loadRespectData();
+  STATE.waitQueue = db.loadWaitQueue();
+  STATE.pendingOrders = db.loadPendingOrders();
+  STATE.simTrades = db.loadSimTrades();
+  STATE.copyLog = db.loadCopyLog();
+  STATE.sentSigs = db.loadSentSigs();
   alertId = STATE.alerts.reduce((m, a) => Math.max(m, a.id || 0), 0);
   console.log(`📦 DB loaded: ${STATE.copyAccounts.length} accounts, ${STATE.openTrades.length} trades, ${STATE.dcaOrders.length} DCA orders`);
 
@@ -3034,7 +3058,7 @@ async function init() {
 
           STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
           STATE.openTrades = STATE.openTrades.filter(x => x.symbol !== sym);
-          delete STATE.sentSigs[sym];
+          delete STATE.sentSigs[sym]; saveSentSigsDebounced();
           db.saveClosedTrade(closed);
           db.saveOpenTrades(STATE.openTrades);
 
