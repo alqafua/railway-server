@@ -70,6 +70,12 @@ const DEFAULT_SETTINGS = {
   perSymSTtf: '4h',
   perSymSigTF: '5m',
   perSymSigMode: 'RSI',
+  deadZoneOn: false,
+  deadZoneMode: 'wait',
+  deadZonePct: 1,
+  stSLon: false,
+  stSLmode: 'flip',
+  stSLpct: 0.5,
   dirFilter: 'all',
   useSymbolSettings: true,
   // فلتر إرسال إشارات التلغرام حسب وجود إعدادات خاصة للعملة: all = الكل، star = العملات ⭐ فقط، other = الباقي فقط
@@ -631,7 +637,7 @@ function countOpenPositions() {
   return new Set([...STATE.openTrades.map(t => t.symbol), ...liveSyms]).size;
 }
 
-function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
+async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
   const tf = tfOverride || st.interval;
   const coolKey = tfOverride ? `${sym}_${sig.type}_${tf}` : `${sym}_${sig.type}`;
   const sentKey = tfOverride ? `${sym}_${tf}` : sym;
@@ -688,10 +694,23 @@ function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
     }
   }
 
-  // فلتر سوبر تريند العملة — يحجب الإشارات العكسية لاتجاه العملة نفسها
+  // فلتر سوبر تريند العملة — فحص فوري للعملة عند وصول الإشارة
   if (st.perSymSTon) {
-    const pst = STATE.perSymST[sym];
+    const pst = await checkSymST(sym);
     if (pst?.direction) {
+      // منطقة ميتة — السعر قريب من خط السوبر تريند
+      if (st.deadZoneOn) {
+        const price = livePrices[sym] || 0;
+        const dist = price && pst.value ? Math.abs((price - pst.value) / price) * 100 : 999;
+        if (dist < parseFloat(st.deadZonePct || 1)) {
+          if (st.deadZoneMode === 'wait') return;
+          if (st.deadZoneMode === 'reverse') {
+            if (sig.side === 'LONG' && pst.direction === 'up') return;
+            if (sig.side === 'SHORT' && pst.direction === 'down') return;
+            // السماح بالعكس فقط
+          } else return;
+        }
+      }
       if (sig.side === 'LONG' && pst.direction !== 'up') return;
       if (sig.side === 'SHORT' && pst.direction !== 'down') return;
     }
@@ -862,6 +881,105 @@ async function updatePerSymST() {
   broadcast({ type: 'perSymSTProgress', data: { current: total, total, done: true } });
 }
 
+async function checkSymST(sym) {
+  try {
+    const tf = STATE.settings.perSymSTtf || '4h';
+    const period = parseInt(STATE.settings.stPeriod) || 10;
+    const mult = parseFloat(STATE.settings.stMult) || 3;
+    const limit = Math.max(100, period * 4);
+    const klines = await fetchBinance(`/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=${limit}`);
+    if (!Array.isArray(klines) || klines.length < period + 2) return null;
+    const result = calcSuperTrend(klines, period, mult);
+    if (result) STATE.perSymST[sym] = result;
+    return result;
+  } catch (e) { return null; }
+}
+
+async function monitorSTSL() {
+  if (!STATE.settings.stSLon) return;
+  const master = STATE.copyAccounts.find(a => a.isMaster);
+  if (!master?.apiKey) return;
+  const positions = (master.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  if (!positions.length) return;
+
+  for (const pos of positions) {
+    const sym = pos.symbol;
+    const isLong = parseFloat(pos.positionAmt) > 0;
+    const entryPrice = parseFloat(pos.entryPrice) || 0;
+
+    try {
+      const pst = await checkSymST(sym);
+      if (!pst?.direction || !pst.value) continue;
+
+      const mode = STATE.settings.stSLmode || 'flip';
+      const pctBuf = parseFloat(STATE.settings.stSLpct || 0.5);
+
+      if (mode === 'flip') {
+        if ((isLong && pst.direction === 'down') || (!isLong && pst.direction === 'up')) {
+          addCopyLog('info', `🛑 ST SL: ${sym} سوبر تريند انقلب — إغلاق`);
+          const amt = parseFloat(pos.positionAmt);
+          await closeFollower(master, sym, amt);
+        }
+      } else if (mode === 'moving') {
+        const slPrice = isLong
+          ? parseFloat((pst.value * (1 + pctBuf / 100)).toFixed(countDecimals(entryPrice)))
+          : parseFloat((pst.value * (1 - pctBuf / 100)).toFixed(countDecimals(entryPrice)));
+        await placeOrUpdateSTSL(master, sym, pos, slPrice);
+      } else if (mode === 'fixed') {
+        const tradeKey = `stsl_${sym}`;
+        if (!STATE._stslPlaced) STATE._stslPlaced = {};
+        if (STATE._stslPlaced[tradeKey]) continue;
+        const slPrice = isLong
+          ? parseFloat((pst.value * (1 + pctBuf / 100)).toFixed(countDecimals(entryPrice)))
+          : parseFloat((pst.value * (1 - pctBuf / 100)).toFixed(countDecimals(entryPrice)));
+        await placeOrUpdateSTSL(master, sym, pos, slPrice);
+        STATE._stslPlaced[tradeKey] = true;
+      }
+    } catch (e) {
+      addCopyLog('fail', `❌ ST SL ${sym}: ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+}
+
+function countDecimals(num) {
+  const s = String(num);
+  const dot = s.indexOf('.');
+  return dot === -1 ? 2 : s.length - dot - 1;
+}
+
+async function placeOrUpdateSTSL(acc, sym, pos, slPrice) {
+  try {
+    const orders = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
+    if (Array.isArray(orders)) {
+      for (const o of orders) {
+        if (o.type === 'STOP_MARKET' && o.origType !== 'TRAILING_STOP_MARKET') {
+          const existingSL = parseFloat(o.stopPrice);
+          if (Math.abs(existingSL - slPrice) / slPrice < 0.001) return;
+          await bFetch(acc.apiKey, acc.apiSecret, 'DELETE', '/fapi/v1/order', { symbol: sym, orderId: o.orderId });
+          addCopyLog('info', `🔄 ST SL: ألغي أمر قديم ${sym} @ ${existingSL}`);
+        }
+      }
+    }
+    const isLong = parseFloat(pos.positionAmt) > 0;
+    const qty = roundQty(Math.abs(parseFloat(pos.positionAmt)), sym);
+    await ensureLotSize(sym);
+    const params = {
+      symbol: sym,
+      side: isLong ? 'SELL' : 'BUY',
+      type: 'STOP_MARKET',
+      stopPrice: String(slPrice),
+      quantity: qty,
+      positionSide: 'BOTH',
+      reduceOnly: 'true',
+    };
+    await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', params);
+    addCopyLog('success', `🛡️ ST SL: ${sym} وقف عند ${slPrice}`);
+  } catch (e) {
+    addCopyLog('fail', `❌ ST SL أمر ${sym}: ${e.message}`);
+  }
+}
+
 async function scanSym(sym, candles) {
   try {
     const cls = candles || candleCache[sym];
@@ -883,8 +1001,8 @@ async function scanSym(sym, candles) {
     }
     const fSig = trail || sig;
     STATE.symbolData[sym] = { rsi: cu, prevRsi: pv, signal: fSig, conf, zone, error: false, trailActive: !!trail };
-    if (fSig && (!old.signal || old.signal.type !== fSig.type)) triggerAlert(sym, fSig, cu, st);
-    if (conf && (!old.conf || old.conf.type !== conf.type)) triggerAlert(sym, conf, cu, st);
+    if (fSig && (!old.signal || old.signal.type !== fSig.type)) await triggerAlert(sym, fSig, cu, st);
+    if (conf && (!old.conf || old.conf.type !== conf.type)) await triggerAlert(sym, conf, cu, st);
 
     // فحص أوامر التعزيز
     const price = livePrices[sym];
@@ -1009,11 +1127,11 @@ async function scanAllForInterval(tf) {
         const stOverride = { ...st, interval: tf };
         if (fSig && (!old.lastSigType || old.lastSigType !== (fSig.type + fSig.side))) {
           extraSymData[oldKey].lastSigType = fSig.type + fSig.side;
-          triggerAlert(sym, fSig, cu, stOverride, tf);
+          await triggerAlert(sym, fSig, cu, stOverride, tf);
         }
         if (conf && (!old.lastConfType || old.lastConfType !== conf.type)) {
           extraSymData[oldKey].lastConfType = conf.type;
-          triggerAlert(sym, conf, cu, stOverride, tf);
+          await triggerAlert(sym, conf, cu, stOverride, tf);
         }
       } catch (e) {}
     }));
@@ -1053,7 +1171,7 @@ function startBinanceWSGroup(interval, syms) {
     console.log(`✅ Binance WS connected (${interval}, ${syms.length} عملة)`);
     broadcast({ type: 'wsStatus', data: 'connected' });
   });
-  binanceWs.on('message', (data) => {
+  binanceWs.on('message', async (data) => {
     try {
       const m = JSON.parse(data);
       if (!m.data?.k) return;
@@ -1099,11 +1217,11 @@ function startBinanceWSGroup(interval, syms) {
               STATE.symbolData[sym].trailActive = !!trail;
               if (fSig && (!old.signal || old.signal.type !== fSig.type)) {
                 STATE.symbolData[sym].signal = fSig;
-                triggerAlert(sym, fSig, cu, st);
+                await triggerAlert(sym, fSig, cu, st);
               }
               if (conf && (!old.conf || old.conf.type !== conf.type)) {
                 STATE.symbolData[sym].conf = conf;
-                triggerAlert(sym, conf, cu, st);
+                await triggerAlert(sym, conf, cu, st);
               }
             }
           }
@@ -1445,6 +1563,8 @@ async function syncCopy() {
     }
   }
 
+  if (STATE.settings.stSLon) await monitorSTSL();
+
   STATE.masterPositions = curr;
   db.saveAccounts(STATE.copyAccounts);
   broadcast({ type: 'accounts', data: getSafeAccounts() });
@@ -1605,9 +1725,6 @@ async function handleClientMsg(msg) {
       broadcast({ type: 'settings', data: STATE.settings });
       if (msg.data.ema200TF !== undefined) updateEMA200();
       if (msg.data.stTF !== undefined || msg.data.stPeriod !== undefined || msg.data.stMult !== undefined) updateSuperTrend();
-      if (msg.data.perSymSTon !== undefined || msg.data.perSymSTtf !== undefined) {
-        if (STATE.settings.perSymSTon) updatePerSymST();
-      }
       // إعادة تشغيل WS عند تغيير الفريم الزمني العام، أو تفعيل/تعطيل استخدام إعدادات العملات
       // (يؤثر على الفريم الفعّال لكل العملات ذات الإعدادات الخاصة)
       if ((msg.data.interval && msg.data.interval !== oldInterval) ||
@@ -2668,8 +2785,6 @@ async function init() {
     setInterval(updateSuperTrend, 10 * 60 * 1000);
     updateRespect();
     setInterval(updateRespect, 24 * 60 * 60 * 1000);
-    if (STATE.settings.perSymSTon) updatePerSymST();
-    setInterval(() => { if (STATE.settings.perSymSTon) updatePerSymST(); }, 30 * 60 * 1000);
   } catch (e) {
     console.error('❌ Init failed:', e.message);
   }
@@ -2687,9 +2802,9 @@ async function init() {
 
   // تحديث مراكز الماستر كل 30 ثانية حتى لو النسخ متوقف
   // يكتشف إغلاق صفقة → يرسل من القائمة تلقائياً
-  let prevMasterCount = -1;
+  let prevMasterPositions = {};
   setInterval(async () => {
-    if (STATE.copyOn) return; // syncCopy يتولى هذا عند تشغيل النسخ
+    if (STATE.copyOn) return;
     const master = STATE.copyAccounts.find(a => a.isMaster);
     if (!master?.apiKey || !master?.apiSecret) return;
     try {
@@ -2697,12 +2812,72 @@ async function init() {
       master.liveBalance = await getBalance(master);
       master.apiOk = true;
       broadcast({ type: 'accounts', data: getSafeAccounts() });
-      const openCount = master.livePositions.filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0).length;
-      if (prevMasterCount > 0 && openCount < prevMasterCount) {
-        // أُغلقت صفقة — حرّر خانة → أرسل من القائمة
+
+      const currPositions = {};
+      master.livePositions.filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0).forEach(p => { currPositions[p.symbol] = p; });
+
+      // كشف الصفقات المغلقة
+      for (const sym of Object.keys(prevMasterPositions)) {
+        if (!currPositions[sym]) {
+          const prevPos = prevMasterPositions[sym];
+          const isLongPos = parseFloat(prevPos.positionAmt) > 0;
+          const side = isLongPos ? 'LONG' : 'SHORT';
+          const entryPrice = parseFloat(prevPos.entryPrice) || 0;
+          const exitPrice = livePrices[sym] || entryPrice;
+          const lev = parseFloat(prevPos.leverage) || 1;
+          const rawPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+          const pct = parseFloat(((isLongPos ? rawPct : -rawPct) * lev).toFixed(2));
+
+          const t = STATE.openTrades.find(x => x.symbol === sym);
+          const closed = t
+            ? { ...t, exitPrice, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' }
+            : { id: Date.now() + Math.random(), symbol: sym, side, entryPrice, exitPrice,
+                pct, result: pct >= 0 ? 'win' : 'loss',
+                openTime: '', exitTime: nowStr(), openTs: 0, closeTs: Date.now(),
+                sl: '', tp1: '', leverage: String(prevPos.leverage || 20),
+                margin: prevPos.marginType || 'Cross', label: '📊 مراقبة', executed: true };
+
+          STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
+          STATE.openTrades = STATE.openTrades.filter(x => x.symbol !== sym);
+          delete STATE.sentSigs[sym];
+          db.saveClosedTrade(closed);
+          db.saveOpenTrades(STATE.openTrades);
+
+          if (!master.stats) master.stats = { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 };
+          master.stats.closes++;
+          if (pct >= 0) master.stats.wins++; else master.stats.losses++;
+          master.stats.tot = parseFloat(((master.stats.tot || 0) + pct).toFixed(2));
+          if (!master.closedTrades) master.closedTrades = [];
+          const posAmt = Math.abs(parseFloat(prevPos.positionAmt));
+          const pnlUsd = posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1);
+          master.closedTrades = [{ symbol: sym, side, entryPrice, exitPrice, pnl: pnlUsd, pct, closeTs: Date.now(), closeTime: nowStr() }, ...master.closedTrades].slice(0, 200);
+
+          broadcast({ type: 'trades', data: STATE.openTrades });
+          broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
+          db.saveAccounts(STATE.copyAccounts);
+
+          if (STATE._stslPlaced) delete STATE._stslPlaced[`stsl_${sym}`];
+
+          addCopyLog('info', `📊 أُغلقت ${sym} ${pct >= 0 ? '✅' : '❌'} ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`);
+          tgSend(`🔒 أُغلقت ${sym.replace('USDT', '/USDT')} ${pct >= 0 ? '✅' : '❌'} ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`, STATE.settings.cxChatClose || STATE.settings.cxChat);
+        }
+      }
+
+      // فحص أي صفقة جديدة فُتحت
+      for (const sym of Object.keys(currPositions)) {
+        if (!prevMasterPositions[sym]) {
+          if (STATE._stslPlaced) delete STATE._stslPlaced[`stsl_${sym}`];
+        }
+      }
+
+      const openCount = Object.keys(currPositions).length;
+      const prevCount = Object.keys(prevMasterPositions).length;
+      if (prevCount > 0 && openCount < prevCount) {
         setTimeout(autoSendFromQueue, 1000);
       }
-      prevMasterCount = openCount;
+      prevMasterPositions = currPositions;
+
+      if (STATE.settings.stSLon) await monitorSTSL();
     } catch {}
   }, 30000);
 
