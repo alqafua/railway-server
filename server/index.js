@@ -1881,13 +1881,13 @@ wss.on('connection', (ws, req) => {
   clients.add(ws);
   ws.send(JSON.stringify({ type: 'init', data: getPublicState() }));
   ws.on('message', async (raw) => {
-    try { await handleClientMsg(JSON.parse(raw)); } catch (e) { reportError('handleClientMsg', e.message); }
+    try { await handleClientMsg(JSON.parse(raw), ws); } catch (e) { reportError('handleClientMsg', e.message); }
   });
   ws.on('close', () => clients.delete(ws));
   ws.on('error', () => clients.delete(ws));
 });
 
-async function handleClientMsg(msg) {
+async function handleClientMsg(msg, ws) {
   switch (msg.type) {
     case 'updateSettings': {
       const oldInterval = STATE.settings.interval;
