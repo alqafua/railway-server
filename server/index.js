@@ -613,6 +613,7 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   if (tgFilter === 'other' && hasSymOverride(sym)) return;
   if (!overridePrice && STATE.sentSigs[sym]) return;
   STATE.sentSigs[sym] = Date.now();
+  if (STATE.settings.stSLon && STATE._stslTracked) STATE._stslTracked[sym] = true;
 
   const { lv, note } = await resolveLeverage(sym, st.cxLev);
   const origLev = st.cxLev; st.cxLev = String(lv);
@@ -986,6 +987,7 @@ async function checkSymST(sym) {
 
 async function monitorSTSL() {
   if (!STATE.settings.stSLon) return;
+  if (!STATE._stslEnabledAt) STATE._stslEnabledAt = Date.now();
   const master = STATE.copyAccounts.find(a => a.isMaster);
   if (!master?.apiKey) return;
   const positions = (master.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
@@ -995,6 +997,13 @@ async function monitorSTSL() {
     const sym = pos.symbol;
     const isLong = parseFloat(pos.positionAmt) > 0;
     const entryPrice = parseFloat(pos.entryPrice) || 0;
+
+    // حماية: لا تقفل صفقات كانت مفتوحة قبل تفعيل الخاصية
+    const trade = STATE.openTrades.find(t => t.symbol === sym);
+    const tradeOpenTs = trade?.openTs || 0;
+    if (tradeOpenTs > 0 && tradeOpenTs < STATE._stslEnabledAt) continue;
+    // لو ما فيه سجل بالصفقة، تحقق إنها فُتحت بعد التفعيل
+    if (!trade && !STATE._stslTracked?.[sym]) continue;
 
     try {
       const pst = await checkSymST(sym);
@@ -1665,6 +1674,7 @@ async function syncCopy() {
           label: '🪞 Copy', executed: true
         };
         STATE.openTrades = [newTrade, ...STATE.openTrades];
+        if (STATE.settings.stSLon && STATE._stslTracked) STATE._stslTracked[sym] = true;
         db.saveOpenTrades(STATE.openTrades);
         broadcast({ type: 'trades', data: STATE.openTrades });
       }
@@ -1887,6 +1897,10 @@ async function handleClientMsg(msg) {
       }
       if (msg.data.sigQueueFilters) {
         msg.data.sigQueueFilters = { ...STATE.settings.sigQueueFilters, ...msg.data.sigQueueFilters };
+      }
+      if (msg.data.stSLon === true && !STATE.settings.stSLon) {
+        STATE._stslEnabledAt = Date.now();
+        STATE._stslTracked = {};
       }
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
