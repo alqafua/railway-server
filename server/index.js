@@ -690,10 +690,12 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
 
   STATE.cooldowns[coolKey] = now;
   alertId++;
+  const pstCached = STATE.perSymST[sym];
   const item = {
     id: alertId, symbol: sym, type: sig.type, label: sig.label,
     color: sig.color, emoji: sig.emoji, rsi: val.toFixed(2),
-    time: nowStr(), mode: `${st.mode}(${st.mode === 'RSI' ? RSI_P : st.maPeriod})`, tf, side: sig.side
+    time: nowStr(), mode: `${st.mode}(${st.mode === 'RSI' ? RSI_P : st.maPeriod})`, tf, side: sig.side,
+    stDir: st.perSymSTon && pstCached?.direction ? pstCached.direction : null
   };
   STATE.alerts = [item, ...STATE.alerts].slice(0, 200);
   db.saveAlert(item);
