@@ -76,6 +76,7 @@ const DEFAULT_SETTINGS = {
   stSLon: false,
   stSLmode: 'flip',
   stSLpct: 0.5,
+  cxChatSTSim: '',
   dirFilter: 'all',
   useSymbolSettings: true,
   // فلتر إرسال إشارات التلغرام حسب وجود إعدادات خاصة للعملة: all = الكل، star = العملات ⭐ فقط، other = الباقي فقط
@@ -752,6 +753,20 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
       setTimeout(() => autoSendFromQueue(), 1000);
     }
     return;
+  }
+
+  // محاكاة سوبر تريند — لو الفلتر مطفي بس فيه قناة محاكاة
+  if (!st.perSymSTon && STATE.settings.cxChatSTSim) {
+    try {
+      const pst = await checkSymST(sym);
+      if (pst?.direction) {
+        const wouldPass = (sig.side === 'LONG' && pst.direction === 'up') || (sig.side === 'SHORT' && pst.direction === 'down');
+        const dirTxt = pst.direction === 'up' ? '🟢 صاعد' : '🔴 نازل';
+        const price = livePrices[sym] || 0;
+        const dist = price && pst.value ? ((Math.abs(price - pst.value) / price) * 100).toFixed(2) : '—';
+        tgSend(`${wouldPass ? '✅' : '❌'} محاكاة ST\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\nسوبر: ${dirTxt} (${pst.value})\nمسافة: ${dist}%\n${wouldPass ? '✅ ستمر' : '❌ ستُحجب'}`, STATE.settings.cxChatSTSim);
+      }
+    } catch (e) {}
   }
 
   sendSignal(sym, sig.side, null, false, '', st);
