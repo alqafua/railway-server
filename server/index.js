@@ -764,7 +764,13 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
         const dirTxt = pst.direction === 'up' ? '🟢 صاعد' : '🔴 نازل';
         const price = livePrices[sym] || 0;
         const dist = price && pst.value ? ((Math.abs(price - pst.value) / price) * 100).toFixed(2) : '—';
-        tgSend(`${wouldPass ? '✅' : '❌'} محاكاة ST\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\nسوبر: ${dirTxt} (${pst.value})\nمسافة: ${dist}%\n${wouldPass ? '✅ ستمر' : '❌ ستُحجب'}`, STATE.settings.cxChatSTSim);
+        const slPct = price && pst.value ? ((Math.abs(price - pst.value) / price) * 100).toFixed(2) : '—';
+        const lev = parseInt(st.cxLev) || 20;
+        const slWithLev = slPct !== '—' ? (parseFloat(slPct) * lev).toFixed(1) : '—';
+        let msg = wouldPass
+          ? `✅ صفقة محاكاة\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\n💰 دخول: ${price}\n🛡️ ستوب (ST): ${pst.value}\n📏 مسافة SL: ${slPct}% (${slWithLev}% x${lev})\nسوبر: ${dirTxt}`
+          : `❌ محجوبة\n#${sym.replace('USDT', '/USDT')} ${tf}\n${sig.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\nسوبر: ${dirTxt} ⛔ عكس الإشارة\n💰 سعر: ${price} | ST: ${pst.value}`;
+        tgSend(msg, STATE.settings.cxChatSTSim);
       }
     } catch (e) {}
   }
@@ -1743,8 +1749,7 @@ async function handleClientMsg(msg) {
       // إعادة تشغيل WS عند تغيير الفريم الزمني العام، أو تفعيل/تعطيل استخدام إعدادات العملات
       // (يؤثر على الفريم الفعّال لكل العملات ذات الإعدادات الخاصة)
       if ((msg.data.interval && msg.data.interval !== oldInterval) ||
-          (msg.data.useSymbolSettings !== undefined && msg.data.useSymbolSettings !== oldUseSym) ||
-          msg.data.perSymSTon !== undefined || msg.data.perSymSigTF !== undefined || msg.data.perSymSigMode !== undefined) {
+          (msg.data.useSymbolSettings !== undefined && msg.data.useSymbolSettings !== oldUseSym)) {
         rescanWithFreshCandles();
       }
       break;
