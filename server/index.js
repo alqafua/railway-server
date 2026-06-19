@@ -481,21 +481,41 @@ async function getPositions(acc) {
 // ══════════════════════════════════════════════
 //  TELEGRAM
 // ══════════════════════════════════════════════
+const tgQueue = [];
+let tgSending = false;
+
 async function tgSend(text, chat) {
   const st = STATE.settings;
   if (!st.cxToken || !chat) return;
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${st.cxToken}/sendMessage`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chat, text })
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      reportError('تلغرام', `فشل الإرسال (${res.status}): ${body.slice(0, 200)}`);
+  tgQueue.push({ text, chat, token: st.cxToken });
+  if (!tgSending) drainTgQueue();
+}
+
+async function drainTgQueue() {
+  tgSending = true;
+  while (tgQueue.length) {
+    const { text, chat, token } = tgQueue.shift();
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chat, text })
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        if (res.status === 429) {
+          const wait = parseInt(body.match(/"retry_after":(\d+)/)?.[1] || '5') * 1000;
+          tgQueue.unshift({ text, chat, token });
+          await new Promise(r => setTimeout(r, wait));
+        } else {
+          reportError('تلغرام', `فشل الإرسال (${res.status}): ${body.slice(0, 200)}`);
+        }
+      }
+    } catch (e) {
+      reportError('تلغرام', `فشل الإرسال: ${e.message}`);
     }
-  } catch (e) {
-    reportError('تلغرام', `فشل الإرسال: ${e.message}`);
+    if (tgQueue.length) await new Promise(r => setTimeout(r, 1000));
   }
+  tgSending = false;
 }
 
 // إرسال ملف (نتائج فحص/باك تيست بصيغة JSON) كمستند تلغرام
