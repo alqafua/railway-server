@@ -78,7 +78,7 @@ function saveAccounts(accounts) {
     ...a,
     apiKey: encrypt(a.apiKey || ''),
     apiSecret: encrypt(a.apiSecret || ''),
-    livePositions: undefined, liveBalance: undefined, apiOk: undefined, closedTrades: undefined,
+    livePositions: undefined, liveBalance: undefined, apiOk: undefined,
   })));
 }
 
@@ -87,7 +87,7 @@ function loadAccounts() {
     ...a,
     apiKey: decrypt(a.apiKey || ''),
     apiSecret: decrypt(a.apiSecret || ''),
-    livePositions: [], liveBalance: null, apiOk: undefined, closedTrades: [],
+    livePositions: [], liveBalance: null, apiOk: undefined, closedTrades: a.closedTrades || [],
   }));
 }
 
