@@ -724,7 +724,8 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
   }
 
   // فلتر سوبر تريند العملة — فحص فوري للعملة عند وصول الإشارة
-  if (st.perSymSTon && stCheckResult?.direction) {
+  if (st.perSymSTon) {
+    if (!stCheckResult?.direction) return;
     const pst = stCheckResult;
     const price = livePrices[sym] || 0;
     const dirTxt = pst.direction === 'up' ? '🟢 صاعد' : '🔴 نازل';
