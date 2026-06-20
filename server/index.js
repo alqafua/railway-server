@@ -1729,11 +1729,13 @@ async function syncCopy() {
       const pct = parseFloat(((isLongPos ? rawPct : -rawPct) * lev).toFixed(2));
 
       // ابحث في openTrades أو أنشئ سجل جديد
+      const posAmt = Math.abs(parseFloat(prevPos.positionAmt));
+      const pnlUsd = parseFloat((posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1)).toFixed(4));
       const t = STATE.openTrades.find(x => x.symbol === sym);
       const closed = t
-        ? { ...t, exitPrice, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' }
+        ? { ...t, exitPrice, exitTime: nowStr(), closeTs: Date.now(), pct, pnl: pnlUsd, result: pct >= 0 ? 'win' : 'loss' }
         : { id: Date.now() + Math.random(), symbol: sym, side, entryPrice, exitPrice,
-            pct, result: pct >= 0 ? 'win' : 'loss',
+            pct, pnl: pnlUsd, result: pct >= 0 ? 'win' : 'loss',
             openTime: '', exitTime: nowStr(), openTs: 0, closeTs: Date.now(),
             sl: '', tp1: '', leverage: String(prevPos.leverage || 20),
             margin: prevPos.marginType || 'Cross', label: '🪞 Binance', executed: true };
@@ -1749,10 +1751,7 @@ async function syncCopy() {
       master.stats.closes++;
       if (pct >= 0) master.stats.wins++; else master.stats.losses++;
       master.stats.tot = parseFloat(((master.stats.tot || 0) + pct).toFixed(2));
-      // تسجيل الصفقة في سجل الماستر المغلقة (مع USD PnL تقديري)
       if (!master.closedTrades) master.closedTrades = [];
-      const posAmt = Math.abs(parseFloat(prevPos.positionAmt));
-      const pnlUsd = posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1);
       master.closedTrades = [{ symbol: sym, side, entryPrice, exitPrice, pnl: pnlUsd, pct, closeTs: Date.now(), closeTime: nowStr() }, ...master.closedTrades].slice(0, 200);
 
       broadcast({ type: 'trades', data: STATE.openTrades });
@@ -2713,7 +2712,11 @@ async function handleClientMsg(msg, ws) {
       if (t) {
         const ep = livePrices[t.symbol] || t.entryPrice;
         const pct = t.side === 'LONG' ? ((ep - t.entryPrice) / t.entryPrice) * 100 : ((t.entryPrice - ep) / t.entryPrice) * 100;
-        const closed = { ...t, exitPrice: ep, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' };
+        const master = STATE.copyAccounts.find(a => a.isMaster);
+        const mPos = master?.livePositions?.find(p => p.symbol === t.symbol);
+        const posAmt = mPos ? Math.abs(parseFloat(mPos.positionAmt)) : 0;
+        const pnlUsd = mPos ? parseFloat(mPos.unRealizedProfit || 0) : parseFloat((posAmt * Math.abs(ep - t.entryPrice) * (t.side === 'LONG' ? (ep >= t.entryPrice ? 1 : -1) : (ep <= t.entryPrice ? 1 : -1))).toFixed(4));
+        const closed = { ...t, exitPrice: ep, exitTime: nowStr(), closeTs: Date.now(), pct, pnl: pnlUsd, result: pct >= 0 ? 'win' : 'loss' };
         STATE.closedTrades = [closed, ...STATE.closedTrades].slice(0, 500);
         STATE.openTrades = STATE.openTrades.filter(x => x.id !== t.id);
         delete STATE.sentSigs[t.symbol]; saveSentSigsDebounced();
@@ -3048,11 +3051,13 @@ async function init() {
           const rawPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
           const pct = parseFloat(((isLongPos ? rawPct : -rawPct) * lev).toFixed(2));
 
+          const posAmt = Math.abs(parseFloat(prevPos.positionAmt));
+          const pnlUsd = parseFloat((posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1)).toFixed(4));
           const t = STATE.openTrades.find(x => x.symbol === sym);
           const closed = t
-            ? { ...t, exitPrice, exitTime: nowStr(), closeTs: Date.now(), pct, result: pct >= 0 ? 'win' : 'loss' }
+            ? { ...t, exitPrice, exitTime: nowStr(), closeTs: Date.now(), pct, pnl: pnlUsd, result: pct >= 0 ? 'win' : 'loss' }
             : { id: Date.now() + Math.random(), symbol: sym, side, entryPrice, exitPrice,
-                pct, result: pct >= 0 ? 'win' : 'loss',
+                pct, pnl: pnlUsd, result: pct >= 0 ? 'win' : 'loss',
                 openTime: '', exitTime: nowStr(), openTs: 0, closeTs: Date.now(),
                 sl: '', tp1: '', leverage: String(prevPos.leverage || 20),
                 margin: prevPos.marginType || 'Cross', label: '📊 مراقبة', executed: true };
@@ -3068,8 +3073,6 @@ async function init() {
           if (pct >= 0) master.stats.wins++; else master.stats.losses++;
           master.stats.tot = parseFloat(((master.stats.tot || 0) + pct).toFixed(2));
           if (!master.closedTrades) master.closedTrades = [];
-          const posAmt = Math.abs(parseFloat(prevPos.positionAmt));
-          const pnlUsd = posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1);
           master.closedTrades = [{ symbol: sym, side, entryPrice, exitPrice, pnl: pnlUsd, pct, closeTs: Date.now(), closeTime: nowStr() }, ...master.closedTrades].slice(0, 200);
 
           broadcast({ type: 'trades', data: STATE.openTrades });
