@@ -1429,6 +1429,28 @@ function isManualPosition(sym) { return manualCheck(sym).manual; }
 // وضعان: رد على رسالة الإشارة بأمر تحديث، أو تعديل الرسالة الأصلية نفسها
 // بنفس صيغتها مع تغيير الأرقام فقط (كي يستطيع كورنكس قراءتها من جديد).
 
+// تلغرام لا يسمح للبوت بتعديل رسائله بعد ٤٨ ساعة
+const TG_EDIT_WINDOW_MS = 48 * HOUR_MS;
+
+// يقرأ سعر الوقف الحالي واتجاه الصفقة من نص الإشارة
+function parseSignalMsg(text) {
+  const stopM = text.match(/Stop Targets:[^\n]*\n\s*1\)\s*([\d.]+)/);
+  const sideM = text.match(/Signal Type:\s*Regular\s*\((Long|Short)\)/i);
+  const entryM = text.match(/Entry Targets:[\s\S]*?2\)\s*([\d.]+)/);
+  return {
+    stop: stopM ? parseFloat(stopM[1]) : null,
+    side: sideM ? sideM[1].toUpperCase() : null,
+    entry: entryM ? parseFloat(entryM[1]) : null,
+  };
+}
+
+// سعر وقف تجريبي منطقي: يزحزح الوقف الحالي ٢٪ باتجاه الدخول — تغيير واضح وغير عشوائي
+function suggestTestStop(text) {
+  const { stop, side } = parseSignalMsg(text);
+  if (!stop) return null;
+  return side === 'SHORT' ? stop * 0.98 : stop * 1.02;
+}
+
 // يستبدل سعر الوقف في نص إشارة كورنكس، مع الحفاظ على باقي الرسالة كما هي
 function replaceStopInMsg(text, newStop) {
   // "Stop Targets:" ثم سطر "1) <سعر>"
@@ -1449,6 +1471,10 @@ function replaceTrailInMsg(text, newPct) {
 async function cornixEditSignal(sym, { stop, trailPct } = {}) {
   const rec = STATE.sentMsgIds[sym];
   if (!rec?.id || !rec.text) return { ok: false, why: 'لا توجد رسالة إشارة محفوظة لهذا الرمز' };
+  const age = Date.now() - (rec.ts || 0);
+  if (age > TG_EDIT_WINDOW_MS) {
+    return { ok: false, why: `عمر الرسالة ${Math.floor(age / HOUR_MS)} ساعة — تلغرام يمنع تعديل رسائل البوت بعد ٤٨ ساعة` };
+  }
   let t = rec.text;
   const changes = [];
   if (stop != null) {
@@ -1465,6 +1491,24 @@ async function cornixEditSignal(sym, { stop, trailPct } = {}) {
   rec.text = t;                 // النص المحفوظ يبقى مطابقاً للرسالة المنشورة
   saveSentMsgIdsDebounced();
   return { ok: true, changes };
+}
+
+// قائمة الإشارات المحفوظة مع عمرها وقابليتها للتعديل
+function msgSymsList() {
+  const now = Date.now();
+  return Object.entries(STATE.sentMsgIds)
+    .filter(([, r]) => r?.id && r?.text)
+    .map(([sym, r]) => {
+      const age = now - (r.ts || 0);
+      const p = parseSignalMsg(r.text);
+      return {
+        sym, ts: r.ts, ageH: Math.floor(age / HOUR_MS),
+        editable: age < TG_EDIT_WINDOW_MS,
+        stop: p.stop, side: p.side,
+        suggest: p.stop ? parseFloat(fmtSignalPrice(suggestTestStop(r.text))) : null,
+      };
+    })
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 30);
 }
 
 // ينفّذ المزامنة حسب الوضع المختار — يُرجع وصفاً لما تم لعرضه في الإشعار
@@ -3345,28 +3389,42 @@ async function handleClientMsg(msg, ws) {
     // بدون لمس أي أمر على بايننس، لمعرفة هل يقرأ كورنكس التعديل
     case 'lockTestEdit': {
       const { sym, stop } = msg.data || {};
-      const s = String(sym || '').replace(/USDT$/i, '').toUpperCase() + 'USDT';
+      // بلا رمز → استخدم أحدث إشارة قابلة للتعديل تلقائياً
+      let s = sym ? String(sym).replace(/USDT$/i, '').toUpperCase() + 'USDT' : null;
+      if (!s) {
+        const cand = Object.entries(STATE.sentMsgIds)
+          .filter(([, r]) => r?.id && r?.text && Date.now() - (r.ts || 0) < TG_EDIT_WINDOW_MS)
+          .sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0))[0];
+        if (!cand) {
+          broadcast({ type: 'lockResult', data: { ok: false, error: 'لا توجد إشارة قابلة للتعديل (أحدث من ٤٨ ساعة). أرسل إشارة جديدة ثم جرّب.' } });
+          break;
+        }
+        s = cand[0];
+      }
       const rec = STATE.sentMsgIds[s];
       if (!rec?.id || !rec.text) {
         broadcast({ type: 'lockResult', data: { ok: false, error: `لا توجد رسالة إشارة محفوظة لـ ${s} — التعديل يعمل فقط على إشارات أرسلها البوت بعد آخر تحديث` } });
         break;
       }
-      const px = parseFloat(stop);
-      if (!isFinite(px) || px <= 0) { broadcast({ type: 'lockResult', data: { ok: false, error: 'أدخل سعر وقف صحيح' } }); break; }
+      // سعر تجريبي محسوب من الرسالة نفسها إن لم يُحدَّد
+      let px = parseFloat(stop);
+      if (!isFinite(px) || px <= 0) {
+        px = suggestTestStop(rec.text);
+        if (!px) { broadcast({ type: 'lockResult', data: { ok: false, error: `تعذّر قراءة سعر الوقف من رسالة ${s}` } }); break; }
+      }
+      const before = parseSignalMsg(rec.text).stop;
       const r = await cornixEditSignal(s, { stop: px });
       broadcast({ type: 'lockResult', data: r.ok
-        ? { ok: true, action: 'testEdit', done: [`${s}: ${r.changes.join(' · ')}`], skipped: [], failed: [] }
-        : { ok: false, error: `${s}: ${r.why}` } });
+        ? { ok: true, action: 'testEdit', done: [`${s.replace('USDT', '/USDT')}: الوقف ${before} → ${fmtSignalPrice(px)}`], skipped: [], failed: [] }
+        : { ok: false, error: `${s.replace('USDT', '/USDT')}: ${r.why}` } });
+      // حدّث القائمة (قد تكون رسائل انتهت صلاحيتها)
+      broadcast({ type: 'lockMsgSyms', data: msgSymsList() });
       break;
     }
 
     // الرموز التي لدينا رسالة إشارة محفوظة لها (لاختبار التعديل)
     case 'lockMsgSyms': {
-      const list = Object.entries(STATE.sentMsgIds)
-        .map(([sym, r]) => ({ sym, ts: r.ts, hasText: !!r.text }))
-        .filter(x => x.hasText)
-        .sort((a, b) => b.ts - a.ts).slice(0, 30);
-      broadcast({ type: 'lockMsgSyms', data: list });
+      broadcast({ type: 'lockMsgSyms', data: msgSymsList() });
       break;
     }
 

@@ -1318,28 +1318,39 @@ function rLockPage(){
       sN.appendChild(w2);
 
       // اختبار آمن — يعدّل الرسالة فقط بدون لمس أي أمر على بايننس
-      const tBox=el('div',{style:{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:'10px',padding:'10px 12px',marginBottom:'8px'}});
-      tBox.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'800',marginBottom:'6px'}},'🧪 اختبار التعديل (لا يلمس بايننس)'));
-      const tRow=el('div',{style:{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}});
       const syms=C.lockMsgSyms||[];
-      const sel=el('select',{className:'sel',style:{fontSize:'11px',minWidth:'130px'}});
-      if(!syms.length)sel.appendChild(el('option',{value:''},'— لا توجد رسائل محفوظة —'));
-      syms.forEach(x=>sel.appendChild(el('option',{value:x.sym},x.sym.replace('USDT','/USDT'))));
-      tRow.appendChild(sel);
-      const spI=el('input',{type:'number',className:'ninp',placeholder:'سعر الوقف',step:'0.000001',style:{width:'110px'}});
-      tRow.appendChild(spI);
-      const tBtn=el('button',{className:'btn',style:{fontSize:'11px',fontWeight:'800',borderColor:'var(--blue)',color:'var(--blue)',background:'transparent'}},'✏️ عدّل الرسالة');
-      tBtn.onclick=()=>{
-        if(!sel.value){showNotif('❌ اختر رمزاً — التعديل يعمل فقط على إشارات أُرسلت بعد آخر تحديث',4000);return;}
-        const v=parseFloat(spI.value);
-        if(!isFinite(v)||v<=0){showNotif('❌ أدخل سعر وقف',2500);return;}
-        tBtn.textContent='⏳...';tBtn.disabled=true;
-        send('lockTestEdit',{sym:sel.value,stop:v});
-      };
-      tRow.appendChild(tBtn);
-      tRow.appendChild(el('button',{className:'btn',style:{fontSize:'11px'},onClick:()=>send('lockMsgSyms',{})},'🔄'));
-      tBox.appendChild(tRow);
-      tBox.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'6px',lineHeight:'1.6'}},'بعد الضغط: افتح القناة وتأكد أن الرسالة تغيّرت، ثم افتح كورنكس وشوف هل تغيّر الوقف عنده — أو هل فتح صفقة جديدة.'));
+      const editable=syms.filter(x=>x.editable);
+      const newest=editable[0];
+      const tBox=el('div',{style:{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:'10px',padding:'10px 12px',marginBottom:'8px'}});
+      const tHdr=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px'}});
+      tHdr.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'800'}},'🧪 اختبار التعديل (لا يلمس بايننس)'));
+      tHdr.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'2px 8px'},onClick:()=>send('lockMsgSyms',{})},'🔄'));
+      tBox.appendChild(tHdr);
+      if(!editable.length){
+        tBox.appendChild(el('div',{style:{fontSize:'11px',color:'var(--orange)',lineHeight:'1.7'}},
+          syms.length?'⏳ كل الإشارات المحفوظة أقدم من ٤٨ ساعة — تلغرام يمنع تعديلها. أرسل إشارة جديدة ثم جرّب.'
+                     :'📭 لا توجد إشارات محفوظة بعد. التعديل يعمل على إشارات يرسلها البوت من الآن فصاعداً.'));
+      } else {
+        const p=el('div',{style:{fontSize:'11px',color:'var(--text2)',lineHeight:'1.8',marginBottom:'8px'}});
+        p.innerHTML='آخر إشارة: <b style="color:var(--text)">'+newest.sym.replace('USDT','/USDT')+'</b>'
+          +' · '+(newest.side==='SHORT'?'🔴 شورت':'🟢 لونج')
+          +' · عمرها '+newest.ageH+' ساعة<br>'
+          +'الوقف الحالي <b style="color:var(--text)">'+newest.stop+'</b> → سيُعدَّل إلى <b style="color:var(--blue)">'+newest.suggest+'</b>';
+        tBox.appendChild(p);
+        const tBtn=el('button',{className:'btn',style:{width:'100%',justifyContent:'center',fontSize:'12px',fontWeight:'800',borderColor:'var(--blue)',color:'var(--blue)',background:'rgba(61,159,255,.08)'}});
+        tBtn.textContent='✏️ جرّب التعديل على آخر إشارة';
+        tBtn.onclick=()=>{tBtn.textContent='⏳ يعدّل...';tBtn.disabled=true;send('lockTestEdit',{});};
+        tBox.appendChild(tBtn);
+        if(editable.length>1){
+          const other=el('div',{style:{marginTop:'8px',display:'flex',gap:'6px',alignItems:'center',flexWrap:'wrap'}});
+          other.appendChild(el('span',{style:{fontSize:'10px',color:'var(--text2)'}},'أو إشارة أخرى:'));
+          editable.slice(1,6).forEach(x=>{
+            other.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'3px 9px'},onClick:()=>send('lockTestEdit',{sym:x.sym})},x.sym.replace('USDT','')+' ('+x.ageH+'س)'));
+          });
+          tBox.appendChild(other);
+        }
+      }
+      tBox.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'8px',lineHeight:'1.6',paddingTop:'8px',borderTop:'1px solid var(--border)'}},'بعد الضغط: افتح القناة وتأكد أن الرسالة تغيّرت، ثم افتح كورنكس وشوف هل تغيّر الوقف عنده — أو هل فتح صفقة جديدة.'));
       sN.appendChild(tBox);
     }
 
