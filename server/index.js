@@ -3474,6 +3474,31 @@ async function handleClientMsg(msg, ws) {
       break;
     }
 
+    // فحص وجود رسالة الإشارة: نحاول تعديلها بنفس نصها تماماً.
+    // تلغرام يميّز بوضوح: "not modified" = موجودة ويملكها البوت،
+    // "not found" = غير موجودة (حُذفت أو أعاد كورنكس نشرها باسمه).
+    case 'lockProbeMsg': {
+      const entries = Object.entries(STATE.sentMsgIds).filter(([, r]) => r?.id && r?.text)
+        .sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0)).slice(0, 5);
+      if (!entries.length) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لا توجد رسائل محفوظة — أرسل إشارة أولاً' } }); break; }
+      const lines = [];
+      for (const [sym, rec] of entries) {
+        const chat = rec.chat || STATE.settings.cxChat;
+        const r = await tgEditDirect(chat, rec.id, rec.text);   // نفس النص = بلا تغيير فعلي
+        const err = String(r.error || '');
+        let verdict;
+        if (r.ok) verdict = '✅ موجودة ويملكها البوت (عُدِّلت)';
+        else if (/not modified/i.test(err)) verdict = '✅ موجودة ويملكها البوت';
+        else if (/not found/i.test(err)) verdict = '❌ غير موجودة — حُذفت أو أعاد كورنكس نشرها';
+        else if (/can't be edited|not enough rights/i.test(err)) verdict = '⛔ موجودة لكن البوت لا يملك حق تعديلها';
+        else verdict = '⚠️ ' + err.slice(0, 60);
+        lines.push(`${sym.replace('USDT', '/USDT')} (#${rec.id} · ${chat}): ${verdict}`);
+        await new Promise(r2 => setTimeout(r2, 400));
+      }
+      broadcast({ type: 'lockResult', data: { ok: true, action: 'probe', done: lines, skipped: [], failed: [], verbose: true } });
+      break;
+    }
+
     // اختبار الصلاحية: يرسل رسالة نصية بسيطة ثم يعدّلها فوراً —
     // يفصل "هل يقدر البوت يعدّل؟" عن "هل السجل المحفوظ صحيح؟"
     case 'lockTestPerm': {
