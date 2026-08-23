@@ -1326,6 +1326,13 @@ function rLockPage(){
       tHdr.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'800'}},'🧪 اختبار التعديل (لا يلمس بايننس)'));
       tHdr.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'2px 8px'},onClick:()=>send('lockMsgSyms',{})},'🔄'));
       tBox.appendChild(tHdr);
+      // اختبار ١ — هل يقدر البوت يعدّل رسائله أصلاً في هذه القناة؟
+      const permBtn=el('button',{className:'btn',style:{width:'100%',justifyContent:'center',fontSize:'11px',fontWeight:'700',marginBottom:'8px',borderColor:'var(--green)',color:'var(--green)',background:'rgba(46,213,115,.06)'}});
+      permBtn.textContent='① فحص الصلاحية — يرسل رسالة ويعدّلها';
+      permBtn.onclick=()=>{permBtn.textContent='⏳ يفحص...';permBtn.disabled=true;send('lockTestPerm',{});};
+      tBox.appendChild(permBtn);
+      tBox.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginBottom:'10px',lineHeight:'1.6'}},'يرسل «سطر ١» ثم يعدّلها إلى «سطر ٢». لو تغيّرت في القناة فالبوت يملك الصلاحية والمشكلة في سجل قديم. لو فشلت فالمشكلة في صلاحيات البوت.'));
+      tBox.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'700',marginBottom:'6px',paddingTop:'8px',borderTop:'1px solid var(--border)'}},'② اختبار على إشارة حقيقية'));
       if(!editable.length){
         tBox.appendChild(el('div',{style:{fontSize:'11px',color:'var(--orange)',lineHeight:'1.7'}},
           syms.length?'⏳ كل الإشارات المحفوظة أقدم من ٤٨ ساعة — تلغرام يمنع تعديلها. أرسل إشارة جديدة ثم جرّب.'

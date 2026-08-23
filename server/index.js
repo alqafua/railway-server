@@ -1432,6 +1432,25 @@ function isManualPosition(sym) { return manualCheck(sym).manual; }
 // تلغرام لا يسمح للبوت بتعديل رسائله بعد ٤٨ ساعة
 const TG_EDIT_WINDOW_MS = 48 * HOUR_MS;
 
+// تعديل مباشر (خارج الطابور) — يُرجع نتيجة تلغرام الحقيقية بدل ابتلاع الخطأ
+async function tgEditDirect(chat, messageId, text) {
+  const token = STATE.settings.cxToken;
+  if (!token) return { ok: false, error: 'لا يوجد توكن بوت' };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, message_id: messageId, text }),
+    });
+    const body = await res.text().catch(() => '');
+    if (res.ok) return { ok: true };
+    let desc = body;
+    try { desc = JSON.parse(body).description || body; } catch (e) {}
+    return { ok: false, error: desc, status: res.status };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 // يقرأ سعر الوقف الحالي واتجاه الصفقة من نص الإشارة
 function parseSignalMsg(text) {
   const stopM = text.match(/Stop Targets:[^\n]*\n\s*1\)\s*([\d.]+)/);
@@ -1487,7 +1506,18 @@ async function cornixEditSignal(sym, { stop, trailPct } = {}) {
   }
   if (!changes.length) return { ok: false, why: 'تعذّر إيجاد البند المطلوب في نص الرسالة' };
   if (t === rec.text) return { ok: false, why: 'لا تغيير' };
-  await tgSend(t, rec.chat || STATE.settings.cxChat, { editId: rec.id });
+  const chat = rec.chat || STATE.settings.cxChat;
+  const r = await tgEditDirect(chat, rec.id, t);
+  if (!r.ok) {
+    // تفاصيل تكفي للتشخيص بدل رسالة تلغرام المبهمة
+    const info = `رسالة#${rec.id} · قناة ${chat} · عمر ${Math.floor(age / 60000)}د`;
+    if (/message to edit not found/i.test(r.error || '')) {
+      delete STATE.sentMsgIds[sym];      // سجل قديم لا يطابق أي رسالة — أزله
+      saveSentMsgIdsDebounced();
+      return { ok: false, why: `تلغرام لا يجد الرسالة (${info}). غالباً حُذفت، أو أُرسلت بتوكن/قناة مختلفة قبل النقل. أُزيل السجل — أرسل إشارة جديدة وجرّب عليها.` };
+    }
+    return { ok: false, why: `${r.error} (${info})` };
+  }
   rec.text = t;                 // النص المحفوظ يبقى مطابقاً للرسالة المنشورة
   saveSentMsgIdsDebounced();
   return { ok: true, changes };
@@ -3419,6 +3449,36 @@ async function handleClientMsg(msg, ws) {
         : { ok: false, error: `${s.replace('USDT', '/USDT')}: ${r.why}` } });
       // حدّث القائمة (قد تكون رسائل انتهت صلاحيتها)
       broadcast({ type: 'lockMsgSyms', data: msgSymsList() });
+      break;
+    }
+
+    // اختبار الصلاحية: يرسل رسالة نصية بسيطة ثم يعدّلها فوراً —
+    // يفصل "هل يقدر البوت يعدّل؟" عن "هل السجل المحفوظ صحيح؟"
+    case 'lockTestPerm': {
+      const token = STATE.settings.cxToken;
+      const chat = STATE.settings.cxChat;
+      if (!token || !chat) { broadcast({ type: 'lockResult', data: { ok: false, error: 'التوكن أو Chat ID الأساسي غير مضبوط' } }); break; }
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chat, text: '🧪 اختبار صلاحية التعديل — سطر ١' }),
+        });
+        const body = await res.text().catch(() => '');
+        if (!res.ok) {
+          let d = body; try { d = JSON.parse(body).description || body; } catch (e) {}
+          broadcast({ type: 'lockResult', data: { ok: false, error: `فشل الإرسال أصلاً: ${d}` } });
+          break;
+        }
+        const mid = JSON.parse(body)?.result?.message_id;
+        if (!mid) { broadcast({ type: 'lockResult', data: { ok: false, error: 'أُرسلت الرسالة لكن تلغرام لم يُرجع message_id' } }); break; }
+        await new Promise(r => setTimeout(r, 1200));
+        const e = await tgEditDirect(chat, mid, '🧪 اختبار صلاحية التعديل — ✅ نجح التعديل (سطر ٢)');
+        broadcast({ type: 'lockResult', data: e.ok
+          ? { ok: true, action: 'perm', done: [`البوت يستطيع تعديل رسائله في القناة (رسالة#${mid})`], skipped: [], failed: [] }
+          : { ok: false, error: `أرسل ✅ لكن التعديل فشل ❌ — ${e.error} (رسالة#${mid}). راجع صلاحيات البوت في القناة.` } });
+      } catch (e) {
+        broadcast({ type: 'lockResult', data: { ok: false, error: e.message } });
+      }
       break;
     }
 
