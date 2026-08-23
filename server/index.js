@@ -77,6 +77,22 @@ const DEFAULT_SETTINGS = {
   stSLmode: 'flip',
   stSLpct: 0.5,
   cxChatSTSim: '',
+  // ── نظام القفل ─────────────────────────────────────────
+  lockOn: false,            // المفتاح العام لنظام القفل
+  lockMaster: false,        // القفل العام — يمنع تعديل الحد اليومي
+  lockAutoSLon: false,      // (1) ستوب تلقائي للصفقات اليدوية
+  lockAutoSLpct: 2,         // نسبة الستوب من السعر %
+  lockDailyOn: false,       // (2)+(3) الحد اليومي
+  lockDailyAmt: 10,         // الحد بالدولار (هامش الصفقة + سقف الخسارة اليومية)
+  lockDailyHours: 24,       // مدة النافذة / الانتظار بالساعات
+  lockAutoBEon: false,      // (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه
+  lockBEnearPct: 1,         // قرب السعر من خط السوبر/EMA لتفعيل البريك إيفن %
+  lockBEoffsetPct: 0.1,     // نسبة البريك إيفن فوق الدخول (تغطية العمولات) %
+  lockTgChat: '',           // قناة إشعارات نظام القفل
+  lockCornixSync: false,    // مزامنة الأوامر مع كورنكس عبر الرد على رسالة الإشارة
+  lockCxBEtpl: 'SL to entry',
+  lockCxSLtpl: 'New stop loss: {price}',
+  lockCxTrailTpl: 'Trailing stop: {pct}%',
   dirFilter: 'all',
   useSymbolSettings: true,
   // فلتر إرسال إشارات التلغرام حسب وجود إعدادات خاصة للعملة: all = الكل، star = العملات ⭐ فقط، other = الباقي فقط
@@ -107,6 +123,17 @@ const STATE = {
   respectData: {},
   perSymST: {},
   simTrades: [],
+  // نظام القفل — نافذة يومية + تتبّع الصفقات اليدوية
+  lockState: {
+    windowStart: 0,      // بداية النافذة الحالية
+    realizedLoss: 0,     // الخسارة المحققة داخل النافذة ($)
+    lockedUntil: 0,      // مقفل حتى هذا الوقت
+    enabledAt: 0,        // وقت تفعيل النظام (حماية الصفقات القديمة)
+    manualSyms: {},      // sym -> { ts, margin } الصفقات اليدوية المعروفة
+    beDone: {},          // sym -> true (بريك إيفن مطبّق)
+    trades: [],          // سجل مختصر لصفقات النافذة
+  },
+  sentMsgIds: {},        // sym -> message_id لرسالة الإشارة (لمزامنة كورنكس)
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
   sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
   symbolSettings: {},    // إعدادات خاصة لكل عملة — تُدمج فوق STATE.settings عند توليد إشاراتها
@@ -430,14 +457,18 @@ async function resolveLeverage(sym, requestedLev) {
 }
 
 const lotSizeCache = {}; // sym -> stepSize (from exchangeInfo)
+const tickSizeCache = {}; // sym -> tickSize (PRICE_FILTER) — لازم لأوامر الوقف
 
 // جلب stepSize ديناميكياً إذا ما كان في الكاش (للعملات التي لم تُحمَّل عند البدء)
 async function ensureLotSize(sym) {
-  if (lotSizeCache[sym]) return;
+  if (lotSizeCache[sym] && tickSizeCache[sym]) return;
   try {
     const info = await fetchBinance(`/fapi/v1/exchangeInfo?symbol=${sym}`);
-    const lot = info.symbols?.[0]?.filters?.find(f => f.filterType === 'LOT_SIZE');
+    const filters = info.symbols?.[0]?.filters || [];
+    const lot = filters.find(f => f.filterType === 'LOT_SIZE');
     if (lot) lotSizeCache[sym] = parseFloat(lot.stepSize);
+    const pf = filters.find(f => f.filterType === 'PRICE_FILTER');
+    if (pf) tickSizeCache[sym] = parseFloat(pf.tickSize);
   } catch (e) {}
 }
 
@@ -445,6 +476,14 @@ function roundQty(qty, sym) {
   const step = lotSizeCache[sym] || 0.001;
   const precision = step >= 1 ? 0 : Math.max(0, -Math.floor(Math.log10(step)));
   return parseFloat((Math.floor(qty / step) * step).toFixed(precision));
+}
+
+// تقريب السعر إلى أقرب مضاعف لـ tickSize — بايننس يرفض أوامر الوقف بأسعار غير مطابقة
+function roundPrice(price, sym) {
+  const tick = tickSizeCache[sym];
+  if (!tick || !isFinite(price)) return parseFloat(Number(price).toFixed(8));
+  const precision = tick >= 1 ? 0 : Math.max(0, -Math.floor(Math.log10(tick)));
+  return parseFloat((Math.round(price / tick) * tick).toFixed(precision));
 }
 
 // قفل لمنع التنفيذ المتزامن لنفس أمر DCA
@@ -482,27 +521,43 @@ async function getPositions(acc) {
 const tgQueue = [];
 let tgSending = false;
 
-async function tgSend(text, chat) {
+// opts.trackSym  → يحفظ message_id للرسالة تحت هذا الرمز (لمزامنة كورنكس لاحقاً)
+// opts.replyTo   → يرسلها كرد على رسالة موجودة (أوامر تحديث كورنكس)
+async function tgSend(text, chat, opts = {}) {
   const st = STATE.settings;
   if (!st.cxToken || !chat) return;
-  tgQueue.push({ text, chat, token: st.cxToken });
+  tgQueue.push({ text, chat, token: st.cxToken, ...opts });
   if (!tgSending) drainTgQueue();
 }
 
 async function drainTgQueue() {
   tgSending = true;
   while (tgQueue.length) {
-    const { text, chat, token } = tgQueue.shift();
+    const item = tgQueue.shift();
+    const { text, chat, token, trackSym, replyTo } = item;
     try {
+      const payload = { chat_id: chat, text };
+      if (replyTo) payload.reply_to_message_id = replyTo;
       const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chat, text })
+        body: JSON.stringify(payload)
       });
-      if (!res.ok) {
+      if (res.ok) {
+        if (trackSym) {
+          try {
+            const d = await res.json();
+            const mid = d?.result?.message_id;
+            if (mid) {
+              STATE.sentMsgIds[trackSym] = { id: mid, chat, ts: Date.now() };
+              saveSentMsgIdsDebounced();
+            }
+          } catch (e) {}
+        }
+      } else {
         const body = await res.text().catch(() => '');
         if (res.status === 429) {
           const wait = parseInt(body.match(/"retry_after":(\d+)/)?.[1] || '5') * 1000;
-          tgQueue.unshift({ text, chat, token });
+          tgQueue.unshift(item);
           await new Promise(r => setTimeout(r, wait));
         } else {
           reportError('تلغرام', `فشل الإرسال (${res.status}): ${body.slice(0, 200)}`);
@@ -514,6 +569,19 @@ async function drainTgQueue() {
     if (tgQueue.length) await new Promise(r => setTimeout(r, 1000));
   }
   tgSending = false;
+}
+
+let msgIdsTimer = null;
+function saveSentMsgIdsDebounced() {
+  if (msgIdsTimer) clearTimeout(msgIdsTimer);
+  msgIdsTimer = setTimeout(() => {
+    // تنظيف: احتفظ فقط بمعرّفات آخر ٧ أيام
+    const cutoff = Date.now() - 7 * 86400000;
+    for (const k of Object.keys(STATE.sentMsgIds)) {
+      if ((STATE.sentMsgIds[k]?.ts || 0) < cutoff) delete STATE.sentMsgIds[k];
+    }
+    db.saveSentMsgIds(STATE.sentMsgIds);
+  }, 3000);
 }
 
 // إرسال ملف (نتائج فحص/باك تيست بصيغة JSON) كمستند تلغرام
@@ -622,7 +690,8 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   const text = prefix + buildMsg(sym, side, st) + note;
   if (origPrice !== null) livePrices[sym] = origPrice;
   st.cxLev = origLev;
-  await tgSend(text, st.cxChat);
+  // trackSym: نحفظ message_id لنستطيع الرد عليها لاحقاً بأوامر تحديث كورنكس (بريك إيفن/وقف/تريلنج)
+  await tgSend(text, st.cxChat, { trackSym: sym });
 
   // إرسال ملخص إعدادات الصفقة لقناة "إعدادات الصفقات" — لكل الصفقات
   if (STATE.settings.cxChatSettings) {
@@ -1175,6 +1244,482 @@ async function placeOrUpdateSTSL(acc, sym, pos, slPrice) {
     addCopyLog('success', `🛡️ ST SL: ${sym} وقف عند ${slPrice}`);
   } catch (e) {
     addCopyLog('fail', `❌ ST SL أمر ${sym}: ${e.message}`);
+  }
+}
+
+// ══════════════════════════════════════════════
+//  نظام القفل — حدّ يومي + ستوب تلقائي + بريك إيفن + تريلنج
+// ══════════════════════════════════════════════
+
+const HOUR_MS = 3600000;
+
+function lockSave() { db.saveLockState(STATE.lockState); }
+
+// إشعار لقناة نظام القفل (وإن لم تُضبط تُستخدم القناة الأساسية)
+function lockNotify(text) {
+  const chat = STATE.settings.lockTgChat || STATE.settings.cxChat;
+  if (chat) tgSend('🔒 نظام القفل\n' + text, chat);
+}
+
+// يدوّر النافذة اليومية إذا انتهت مدّتها، ويُرجع الحالة الحالية
+function lockWindow() {
+  const L = STATE.lockState;
+  const hrs = Math.max(1, parseFloat(STATE.settings.lockDailyHours) || 24);
+  const now = Date.now();
+  if (!L.windowStart) { L.windowStart = now; lockSave(); }
+  // انتهت فترة القفل → نافذة جديدة نظيفة
+  if (L.lockedUntil && now >= L.lockedUntil) {
+    L.lockedUntil = 0; L.realizedLoss = 0; L.windowStart = now; L.trades = [];
+    lockSave();
+    lockNotify(`✅ انتهت فترة الانتظار — التداول اليدوي مفتوح من جديد\nالحد اليومي: $${STATE.settings.lockDailyAmt}`);
+  } else if (!L.lockedUntil && now - L.windowStart >= hrs * HOUR_MS) {
+    L.realizedLoss = 0; L.windowStart = now; L.trades = [];
+    lockSave();
+  }
+  return L;
+}
+
+function lockIsLocked() {
+  if (!STATE.settings.lockOn || !STATE.settings.lockDailyOn) return false;
+  const L = lockWindow();
+  return !!(L.lockedUntil && Date.now() < L.lockedUntil);
+}
+
+function lockRemaining() {
+  const L = lockWindow();
+  const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+  return Math.max(0, cap - (L.realizedLoss || 0));
+}
+
+// تسجيل نتيجة صفقة يدوية مُغلقة — يفعّل القفل عند بلوغ الحد
+function lockRecordClose(sym, pnlUsd) {
+  if (!STATE.settings.lockOn || !STATE.settings.lockDailyOn) return;
+  const L = lockWindow();
+  // حماية من التسجيل المزدوج (سجل الرمز يبقى ١٠ دقائق بعد الإغلاق)
+  const rec = L.manualSyms[sym];
+  if (rec?.recorded) return;
+  if (rec) rec.recorded = true;
+  L.trades = [{ sym, pnl: pnlUsd, ts: Date.now() }, ...(L.trades || [])].slice(0, 100);
+  if (pnlUsd < 0) L.realizedLoss = parseFloat(((L.realizedLoss || 0) + Math.abs(pnlUsd)).toFixed(4));
+  const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+  const hrs = Math.max(1, parseFloat(STATE.settings.lockDailyHours) || 24);
+  if (cap > 0 && L.realizedLoss >= cap && !L.lockedUntil) {
+    L.lockedUntil = Date.now() + hrs * HOUR_MS;
+    lockNotify(
+      `⛔ بلغت الحد اليومي للخسارة\n` +
+      `الخسارة: $${L.realizedLoss.toFixed(2)} من $${cap}\n` +
+      `أي صفقة يدوية تُفتح الآن ستُغلق فوراً\n` +
+      `⏳ يفتح بعد ${hrs} ساعة`
+    );
+  } else {
+    lockNotify(
+      `${pnlUsd >= 0 ? '✅' : '❌'} أُغلقت ${sym.replace('USDT', '/USDT')} — ${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toFixed(2)}\n` +
+      `المتبقي من الحد اليومي: $${lockRemaining().toFixed(2)} من $${cap}`
+    );
+  }
+  lockSave();
+  broadcast({ type: 'lockState', data: lockPublic() });
+}
+
+function lockPublic() {
+  const L = STATE.lockState;
+  const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+  const hrs = Math.max(1, parseFloat(STATE.settings.lockDailyHours) || 24);
+  return {
+    windowStart: L.windowStart, realizedLoss: L.realizedLoss || 0,
+    lockedUntil: L.lockedUntil || 0, remaining: Math.max(0, cap - (L.realizedLoss || 0)),
+    cap, hours: hrs, locked: lockIsLocked(),
+    windowEnds: L.lockedUntil || (L.windowStart + hrs * HOUR_MS),
+    trades: (L.trades || []).slice(0, 20),
+  };
+}
+
+// هل هذه الصفقة يدوية؟ (ليست من إشارة البوت/كورنكس)
+function isManualPosition(sym) {
+  if (STATE.openTrades.some(t => t.symbol === sym)) return false;
+  if (STATE.sentMsgIds[sym]) return false;
+  if (STATE.sentSigs[sym]) return false;
+  return true;
+}
+
+// رد على رسالة إشارة كورنكس بأمر تحديث — يبقي التلغرام/كورنكس متوافقاً مع بايننس
+async function cornixReply(sym, text) {
+  if (!STATE.settings.lockCornixSync) return false;
+  const rec = STATE.sentMsgIds[sym];
+  if (!rec?.id) return false;
+  await tgSend(text, rec.chat || STATE.settings.cxChat, { replyTo: rec.id });
+  return true;
+}
+
+// إلغاء أوامر الوقف القائمة (بدون المساس بالتريلنج إن طُلب)
+async function cancelStops(acc, sym, { keepTrailing = true } = {}) {
+  try {
+    const orders = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
+    if (!Array.isArray(orders)) return;
+    for (const o of orders) {
+      const isTrail = o.type === 'TRAILING_STOP_MARKET' || o.origType === 'TRAILING_STOP_MARKET';
+      if (isTrail && keepTrailing) continue;
+      if (o.type === 'STOP_MARKET' || o.type === 'STOP' || isTrail) {
+        await bFetch(acc.apiKey, acc.apiSecret, 'DELETE', '/fapi/v1/order', { symbol: sym, orderId: o.orderId });
+      }
+    }
+  } catch (e) {}
+}
+
+// تقليص جزئي لمركز — بدون تسجيله كصفقة مغلقة في الإحصائيات (يُستخدم للتقليم)
+async function reducePosition(acc, sym, posAmt, qtyToClose) {
+  const isLong = posAmt > 0;
+  await ensureLotSize(sym);
+  const qty = roundQty(Math.abs(qtyToClose), sym);
+  if (qty <= 0) throw new Error('الكمية صغيرة جداً');
+  const mode = await getPositionMode(acc);
+  const p = { symbol: sym, side: isLong ? 'SELL' : 'BUY', type: 'MARKET', quantity: qty };
+  if (mode === 'hedge') p.positionSide = isLong ? 'LONG' : 'SHORT';
+  else { p.positionSide = 'BOTH'; p.reduceOnly = 'true'; }
+  await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', p);
+  return qty;
+}
+
+// وضع أمر وقف حدّي فعلي على المنصّة (يبقى قائماً حتى لو توقّف البوت)
+async function placeStop(acc, sym, pos, stopPrice, tag) {
+  await ensureLotSize(sym);
+  const px = roundPrice(stopPrice, sym);
+  const amt = parseFloat(pos.positionAmt);
+  const isLong = amt > 0;
+  const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
+  // بايننس يرفض وقفاً سيُفعَّل فوراً — تحقّق من الاتجاه أولاً
+  if (mark > 0) {
+    if (isLong && px >= mark) throw new Error(`سعر الوقف ${px} فوق السعر الحالي ${mark}`);
+    if (!isLong && px <= mark) throw new Error(`سعر الوقف ${px} تحت السعر الحالي ${mark}`);
+  }
+  await cancelStops(acc, sym, { keepTrailing: true });
+  const mode = await getPositionMode(acc);
+  const params = {
+    symbol: sym, side: isLong ? 'SELL' : 'BUY', type: 'STOP_MARKET',
+    stopPrice: String(px), closePosition: 'true', workingType: 'MARK_PRICE',
+  };
+  // في وضع الهيدج لازم positionSide محدّد؛ في العادي BOTH
+  params.positionSide = mode === 'hedge' ? (isLong ? 'LONG' : 'SHORT') : 'BOTH';
+  await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', params);
+  addCopyLog('success', `🛡️ ${tag}: ${sym} وقف حدّي @ ${px}`);
+  return px;
+}
+
+// (4)+(5) بريك إيفن للصفقات الرابحة — سعر الوقف فوق الدخول بقليل لتغطية العمولات
+async function applyBreakEven(acc, syms, offsetPct, reason) {
+  const results = { done: [], skipped: [], failed: [] };
+  const positions = (acc.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  const off = parseFloat(offsetPct);
+  const offset = isFinite(off) ? off : 0.1;
+  for (const pos of positions) {
+    const sym = pos.symbol;
+    if (syms && syms.length && !syms.includes(sym)) continue;
+    const pnl = parseFloat(pos.unRealizedProfit) || 0;
+    if (pnl <= 0) { results.skipped.push(`${sym}: خاسرة`); continue; }
+    const isLong = parseFloat(pos.positionAmt) > 0;
+    const entry = parseFloat(pos.entryPrice) || 0;
+    if (!entry) { results.skipped.push(`${sym}: لا يوجد سعر دخول`); continue; }
+    const bePrice = isLong ? entry * (1 + offset / 100) : entry * (1 - offset / 100);
+    try {
+      const px = await placeStop(acc, sym, pos, bePrice, 'بريك إيفن');
+      STATE.lockState.beDone[sym] = Date.now();
+      results.done.push(`${sym} @ ${px}`);
+      await cornixReply(sym, STATE.settings.lockCxBEtpl || 'SL to entry');
+    } catch (e) {
+      results.failed.push(`${sym}: ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  if (results.done.length || results.failed.length) {
+    lockSave();
+    lockNotify(
+      `🟡 بريك إيفن (${reason})\nنسبة فوق الدخول: ${offset}%\n` +
+      (results.done.length ? `✅ طُبّق: ${results.done.join(' · ')}\n` : '') +
+      (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
+      (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
+    );
+  }
+  return results;
+}
+
+// (6) وقف خسارة للصفقات الخاسرة — بنسبة من السعر الحالي
+async function applyLossStop(acc, syms, pct) {
+  const results = { done: [], skipped: [], failed: [] };
+  const positions = (acc.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  const d = parseFloat(pct);
+  if (!isFinite(d) || d <= 0) return results;
+  for (const pos of positions) {
+    const sym = pos.symbol;
+    if (syms && syms.length && !syms.includes(sym)) continue;
+    const pnl = parseFloat(pos.unRealizedProfit) || 0;
+    if (pnl >= 0) { results.skipped.push(`${sym}: رابحة`); continue; }
+    const isLong = parseFloat(pos.positionAmt) > 0;
+    const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
+    if (!mark) { results.skipped.push(`${sym}: لا يوجد سعر`); continue; }
+    const slPrice = isLong ? mark * (1 - d / 100) : mark * (1 + d / 100);
+    try {
+      const px = await placeStop(acc, sym, pos, slPrice, 'وقف خسارة');
+      results.done.push(`${sym} @ ${px}`);
+      await cornixReply(sym, (STATE.settings.lockCxSLtpl || 'New stop loss: {price}').replace('{price}', String(px)));
+    } catch (e) {
+      results.failed.push(`${sym}: ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  if (results.done.length || results.failed.length) {
+    lockNotify(
+      `🛑 وقف الخسارة (${d}% من السعر الحالي)\n` +
+      (results.done.length ? `✅ طُبّق: ${results.done.join(' · ')}\n` : '') +
+      (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
+      (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
+    );
+  }
+  return results;
+}
+
+// (7) تعديل التريلنج للصفقات الرابحة
+// ملاحظة: بايننس يقبل callbackRate بين 0.1% و5% فقط — ما فوقها يُطبَّق على كورنكس فقط
+const BINANCE_TRAIL_MAX = 5;
+async function applyTrailing(acc, syms, pct) {
+  const results = { done: [], skipped: [], failed: [], cornixOnly: [] };
+  const positions = (acc.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  const rate = parseFloat(pct);
+  if (!isFinite(rate) || rate <= 0) return results;
+  const overMax = rate > BINANCE_TRAIL_MAX;
+  for (const pos of positions) {
+    const sym = pos.symbol;
+    if (syms && syms.length && !syms.includes(sym)) continue;
+    const pnl = parseFloat(pos.unRealizedProfit) || 0;
+    if (pnl <= 0) { results.skipped.push(`${sym}: خاسرة`); continue; }
+    const tpl = (STATE.settings.lockCxTrailTpl || 'Trailing stop: {pct}%').replace('{pct}', String(rate));
+    if (overMax) {
+      // لا يمكن وضعه على بايننس — نكتفي بمزامنة كورنكس
+      const ok = await cornixReply(sym, tpl);
+      results.cornixOnly.push(sym + (ok ? '' : ' (بدون كورنكس)'));
+      continue;
+    }
+    const isLong = parseFloat(pos.positionAmt) > 0;
+    const qty = roundQty(Math.abs(parseFloat(pos.positionAmt)), sym);
+    try {
+      await ensureLotSize(sym);
+      await cancelStops(acc, sym, { keepTrailing: false });
+      const tmode = await getPositionMode(acc);
+      const tp = {
+        symbol: sym, side: isLong ? 'SELL' : 'BUY', type: 'TRAILING_STOP_MARKET',
+        quantity: qty, callbackRate: rate,
+      };
+      if (tmode === 'hedge') tp.positionSide = isLong ? 'LONG' : 'SHORT';
+      else { tp.positionSide = 'BOTH'; tp.reduceOnly = 'true'; }
+      await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', tp);
+      results.done.push(`${sym} @ ${rate}%`);
+      addCopyLog('success', `📉 تريلنج: ${sym} @ ${rate}%`);
+      await cornixReply(sym, tpl);
+    } catch (e) {
+      results.failed.push(`${sym}: ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  if (results.done.length || results.failed.length || results.cornixOnly.length) {
+    lockNotify(
+      `📉 تعديل التريلنج → ${rate}%\n` +
+      (results.done.length ? `✅ على بايننس: ${results.done.join(' · ')}\n` : '') +
+      (results.cornixOnly.length ? `📨 كورنكس فقط (>${BINANCE_TRAIL_MAX}% غير مدعوم ببايننس): ${results.cornixOnly.join(' · ')}\n` : '') +
+      (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
+      (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
+    );
+  }
+  return results;
+}
+
+// هل الاتجاه العام (BTC) انعكس أو اقترب من الانعكاس؟
+function trendReversalStatus() {
+  const nearPct = parseFloat(STATE.settings.lockBEnearPct) || 1;
+  const btc = STATE.superTrend?.btcPrice || STATE.ema200?.btcPrice || livePrices['BTCUSDT'] || 0;
+  if (!btc) return { trigger: false };
+  const reasons = [];
+  const stVal = STATE.superTrend?.value;
+  if (stVal) {
+    const dist = Math.abs((btc - stVal) / btc) * 100;
+    if (dist <= nearPct) reasons.push(`السعر على بُعد ${dist.toFixed(2)}% من خط السوبر`);
+  }
+  const emaVal = STATE.ema200?.value;
+  if (emaVal) {
+    const dist = Math.abs((btc - emaVal) / btc) * 100;
+    if (dist <= nearPct) reasons.push(`السعر على بُعد ${dist.toFixed(2)}% من EMA200`);
+  }
+  // انعكاس فعلي: تغيّر اتجاه السوبر عن آخر قراءة محفوظة
+  const prevDir = STATE._lastGlobalSTdir;
+  const curDir = STATE.superTrend?.direction;
+  if (curDir && prevDir && curDir !== prevDir) reasons.push(`السوبر العام انقلب إلى ${curDir === 'up' ? 'صاعد' : 'نازل'}`);
+  if (curDir) STATE._lastGlobalSTdir = curDir;
+  return { trigger: reasons.length > 0, reasons };
+}
+
+// المراقب الدوري لنظام القفل
+let lockBusy = false;
+let bootBaselineDone = false;   // أول دورة بعد الإقلاع تُسجّل الصفقات القائمة فقط
+async function monitorLock() {
+  if (!STATE.settings.lockOn || lockBusy) return;
+  lockBusy = true;
+  try {
+    const L = lockWindow();
+    if (!L.enabledAt) { L.enabledAt = Date.now(); lockSave(); }
+    const master = STATE.copyAccounts.find(a => a.isMaster);
+    if (!master?.apiKey) return;
+    let positions = (master.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+
+    // ── حماية بعد الإقلاع: أي صفقة قائمة في أول دورة تُسجَّل كخط أساس ──
+    // (تحمي من التقليم/الإغلاق الخاطئ لو ضاع ملف الحالة أو أُعيد تشغيل السيرفر)
+    if (!bootBaselineDone) {
+      bootBaselineDone = true;
+      let seeded = 0;
+      for (const p of positions) {
+        if (!L.manualSyms[p.symbol]) {
+          L.manualSyms[p.symbol] = { ts: Date.now(), margin: 0, baseline: true, slPlaced: true };
+          seeded++;
+        }
+      }
+      if (seeded) {
+        lockSave();
+        addCopyLog('info', `🔒 نظام القفل: ${seeded} صفقة قائمة سُجّلت كخط أساس (لن تتأثر)`);
+      }
+      return; // لا نتصرّف في أول دورة — نكتفي بالتسجيل
+    }
+
+    // ── (3) القفل نشط: أغلق أي صفقة يدوية فُتحت بعد القفل ──
+    if (lockIsLocked()) {
+      for (const pos of positions) {
+        const sym = pos.symbol;
+        if (!isManualPosition(sym)) continue;
+        const known = L.manualSyms[sym];
+        // لا نلمس صفقات خط الأساس (كانت مفتوحة قبل التفعيل/الإقلاع)
+        if (known?.baseline) continue;
+        // ولا صفقة فُتحت قبل لحظة بدء القفل
+        const lockStartedAt = L.lockedUntil - (parseFloat(STATE.settings.lockDailyHours) || 24) * HOUR_MS;
+        if (known && known.ts < lockStartedAt) continue;
+        if (!known) { L.manualSyms[sym] = { ts: Date.now(), margin: 0 }; lockSave(); }
+        try {
+          await closeFollower(master, sym, parseFloat(pos.positionAmt));
+          lockNotify(`⛔ صفقة يدوية أُغلقت فوراً — القفل نشط\n#${sym.replace('USDT', '/USDT')}\n⏳ يفتح بعد ${Math.ceil((L.lockedUntil - Date.now()) / 60000)} دقيقة`);
+        } catch (e) {
+          addCopyLog('fail', `❌ قفل ${sym}: ${e.message}`);
+        }
+        await new Promise(r => setTimeout(r, 300));
+      }
+      try { master.livePositions = await getPositions(master); } catch (e) {}
+      positions = (master.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+    }
+
+    // ── (2) تقليم الزيادة فوق الحد اليومي للصفقات اليدوية ──
+    if (STATE.settings.lockDailyOn && !lockIsLocked()) {
+      const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+      if (cap > 0) {
+        for (const pos of positions) {
+          const sym = pos.symbol;
+          if (!isManualPosition(sym)) continue;
+          const amt = Math.abs(parseFloat(pos.positionAmt));
+          const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
+          const lev = parseFloat(pos.leverage) || 1;
+          if (!mark || !amt) continue;
+          const margin = (amt * mark) / lev;
+          // حماية: تجاهل الصفقات المفتوحة قبل تفعيل النظام
+          if (!L.manualSyms[sym]) {
+            const openedBefore = (STATE.lockState.enabledAt || 0) > 0 && !L._seededBaseline;
+            L.manualSyms[sym] = { ts: Date.now(), margin, baseline: openedBefore };
+            lockSave();
+            if (openedBefore) continue;
+          }
+          if (L.manualSyms[sym].baseline) continue;
+          if (margin <= cap * 1.02) continue;   // هامش تسامح 2% لتفادي التقليم المتكرر
+          const excessMargin = margin - cap;
+          const closeQty = roundQty((excessMargin * lev) / mark, sym);
+          if (closeQty <= 0) continue;
+          try {
+            await reducePosition(master, sym, parseFloat(pos.positionAmt), closeQty);
+            lockNotify(
+              `✂️ تقليم الزيادة — #${sym.replace('USDT', '/USDT')}\n` +
+              `الهامش كان $${margin.toFixed(2)} → أصبح $${cap.toFixed(2)}\n` +
+              `أُخرج: $${excessMargin.toFixed(2)}`
+            );
+          } catch (e) {
+            addCopyLog('fail', `❌ تقليم ${sym}: ${e.message}`);
+          }
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+    }
+
+    // ── (1) ستوب تلقائي لأي صفقة يدوية بلا وقف ──
+    if (STATE.settings.lockAutoSLon) {
+      const slPct = parseFloat(STATE.settings.lockAutoSLpct) || 2;
+      for (const pos of positions) {
+        const sym = pos.symbol;
+        if (!isManualPosition(sym)) continue;
+        if (L.manualSyms[sym]?.slPlaced) continue;
+        try {
+          const orders = await bFetch(master.apiKey, master.apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
+          const hasStop = Array.isArray(orders) && orders.some(o => o.type === 'STOP_MARKET' || o.type === 'STOP' || o.type === 'TRAILING_STOP_MARKET');
+          if (hasStop) {
+            L.manualSyms[sym] = { ...(L.manualSyms[sym] || { ts: Date.now() }), slPlaced: true };
+            lockSave();
+            continue;
+          }
+          const isLong = parseFloat(pos.positionAmt) > 0;
+          const entry = parseFloat(pos.entryPrice) || parseFloat(pos.markPrice) || 0;
+          if (!entry) continue;
+          const slPrice = isLong ? entry * (1 - slPct / 100) : entry * (1 + slPct / 100);
+          const px = await placeStop(master, sym, pos, slPrice, 'ستوب يدوي تلقائي');
+          L.manualSyms[sym] = { ...(L.manualSyms[sym] || { ts: Date.now() }), slPlaced: true };
+          lockSave();
+          const lev = parseFloat(pos.leverage) || 1;
+          lockNotify(
+            `🛡️ ستوب تلقائي — #${sym.replace('USDT', '/USDT')}\n` +
+            `${isLong ? '🟢 LONG' : '🔴 SHORT'} · دخول ${entry}\n` +
+            `وقف @ ${px} (${slPct}% من السعر ≈ ${(slPct * lev).toFixed(0)}% من الهامش)`
+          );
+        } catch (e) {
+          addCopyLog('fail', `❌ ستوب تلقائي ${sym}: ${e.message}`);
+        }
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+
+    // ── (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه العام ──
+    if (STATE.settings.lockAutoBEon) {
+      const status = trendReversalStatus();
+      if (status.trigger) {
+        const pending = positions.filter(p => {
+          if (L.beDone[p.symbol]) return false;
+          return (parseFloat(p.unRealizedProfit) || 0) > 0;
+        }).map(p => p.symbol);
+        if (pending.length) {
+          await applyBreakEven(master, pending, STATE.settings.lockBEoffsetPct, status.reasons.join(' · '));
+        }
+      }
+    }
+
+    // تنظيف: نُعلّم المغلقة بوقت الإغلاق ولا نحذفها فوراً —
+    // لأن كاشف الإغلاق (syncCopy/المراقب) يحتاجها ليسجّل الخسارة على الحد اليومي
+    const openSyms = new Set(positions.map(p => p.symbol));
+    const now2 = Date.now();
+    let changed = false;
+    for (const s of Object.keys(L.manualSyms)) {
+      const rec = L.manualSyms[s];
+      if (openSyms.has(s)) {
+        if (rec.closedAt) { delete rec.closedAt; changed = true; }
+      } else if (!rec.closedAt) {
+        rec.closedAt = now2; changed = true;
+      } else if (now2 - rec.closedAt > 600000) {
+        delete L.manualSyms[s]; changed = true;
+      }
+    }
+    for (const s of Object.keys(L.beDone)) if (!openSyms.has(s)) { delete L.beDone[s]; changed = true; }
+    if (changed) lockSave();
+    broadcast({ type: 'lockState', data: lockPublic() });
+  } catch (e) {
+    addCopyLog('fail', `❌ نظام القفل: ${e.message}`);
+  } finally {
+    lockBusy = false;
   }
 }
 
@@ -1753,6 +2298,7 @@ async function syncCopy() {
       master.stats.tot = parseFloat(((master.stats.tot || 0) + pct).toFixed(2));
       if (!master.closedTrades) master.closedTrades = [];
       master.closedTrades = [{ symbol: sym, side, entryPrice, exitPrice, pnl: pnlUsd, pct, closeTs: Date.now(), closeTime: nowStr() }, ...master.closedTrades].slice(0, 200);
+      if (STATE.lockState.manualSyms[sym] && !STATE.lockState.manualSyms[sym].baseline) lockRecordClose(sym, pnlUsd);
 
       broadcast({ type: 'trades', data: STATE.openTrades });
       broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
@@ -1890,6 +2436,7 @@ function getPublicState() {
     superTrend: STATE.superTrend,
     respectData: STATE.respectData,
     perSymST: STATE.perSymST,
+    lockState: lockPublic(),
     lastUpdate: nowStr(),
     btBusy: btState.busy,
   };
@@ -1927,6 +2474,31 @@ async function handleClientMsg(msg, ws) {
       if (msg.data.stSLon === true && !STATE.settings.stSLon) {
         STATE._stslEnabledAt = Date.now();
         STATE._stslTracked = {};
+      }
+      // ── القفل العام: يمنع تعديل الحد اليومي (والقفل نفسه) بعد تفعيله ──
+      if (STATE.settings.lockMaster) {
+        const PROTECTED = ['lockDailyOn', 'lockDailyAmt', 'lockDailyHours', 'lockMaster', 'lockOn'];
+        const blocked = PROTECTED.filter(k => msg.data[k] !== undefined && msg.data[k] !== STATE.settings[k]);
+        for (const k of blocked) delete msg.data[k];
+        if (blocked.length) {
+          broadcast({ type: 'lockResult', data: { ok: false, error: '🔒 القفل العام مفعّل — إعدادات الحد اليومي محميّة' } });
+        }
+      }
+      // عند تفعيل نظام القفل نسجّل الصفقات القائمة كخط أساس فلا تُقلَّم ولا تُغلق
+      if (msg.data.lockOn === true && !STATE.settings.lockOn) {
+        STATE.lockState.enabledAt = Date.now();
+        STATE.lockState.manualSyms = {};
+        STATE.lockState.beDone = {};
+        const master = STATE.copyAccounts.find(a => a.isMaster);
+        for (const p of (master?.livePositions || [])) {
+          if (Math.abs(parseFloat(p.positionAmt || 0)) > 0) {
+            STATE.lockState.manualSyms[p.symbol] = { ts: Date.now(), margin: 0, baseline: true, slPlaced: true };
+          }
+        }
+        STATE.lockState._seededBaseline = true;
+        if (!STATE.lockState.windowStart) STATE.lockState.windowStart = Date.now();
+        lockSave();
+        lockNotify(`🔒 تم تفعيل نظام القفل\nالصفقات المفتوحة حالياً (${Object.keys(STATE.lockState.manualSyms).length}) لن تتأثر`);
       }
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
@@ -2553,6 +3125,66 @@ async function handleClientMsg(msg, ws) {
       break;
     }
 
+    // ── نظام القفل: أوامر يدوية ─────────────────────────
+    case 'lockBreakEven': {
+      const { syms, pct } = msg.data || {};
+      const master = STATE.copyAccounts.find(a => a.isMaster);
+      if (!master?.apiKey) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لا يوجد حساب ماستر' } }); break; }
+      try { master.livePositions = await getPositions(master); } catch (e) {}
+      const r = await applyBreakEven(master, syms, pct ?? STATE.settings.lockBEoffsetPct, 'يدوي');
+      broadcast({ type: 'lockResult', data: { ok: true, action: 'be', ...r } });
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      break;
+    }
+
+    case 'lockLossStop': {
+      const { syms, pct } = msg.data || {};
+      const master = STATE.copyAccounts.find(a => a.isMaster);
+      if (!master?.apiKey) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لا يوجد حساب ماستر' } }); break; }
+      try { master.livePositions = await getPositions(master); } catch (e) {}
+      const r = await applyLossStop(master, syms, pct);
+      broadcast({ type: 'lockResult', data: { ok: true, action: 'sl', ...r } });
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      break;
+    }
+
+    case 'lockTrailing': {
+      const { syms, pct } = msg.data || {};
+      const master = STATE.copyAccounts.find(a => a.isMaster);
+      if (!master?.apiKey) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لا يوجد حساب ماستر' } }); break; }
+      try { master.livePositions = await getPositions(master); } catch (e) {}
+      const r = await applyTrailing(master, syms, pct);
+      broadcast({ type: 'lockResult', data: { ok: true, action: 'trail', ...r } });
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+      break;
+    }
+
+    case 'lockReset': {
+      // إعادة فتح التداول يدوياً — ممنوع إن كان القفل العام مفعّلاً
+      if (STATE.settings.lockMaster) {
+        broadcast({ type: 'lockResult', data: { ok: false, error: '🔒 القفل العام مفعّل — لا يمكن إعادة الضبط' } });
+        break;
+      }
+      STATE.lockState.lockedUntil = 0;
+      STATE.lockState.realizedLoss = 0;
+      STATE.lockState.windowStart = Date.now();
+      STATE.lockState.trades = [];
+      lockSave();
+      lockNotify('🔓 أُعيد ضبط النافذة يدوياً — التداول اليدوي مفتوح');
+      broadcast({ type: 'lockState', data: lockPublic() });
+      break;
+    }
+
+    case 'lockRefresh': {
+      const master = STATE.copyAccounts.find(a => a.isMaster);
+      if (master?.apiKey) {
+        try { master.livePositions = await getPositions(master); master.liveBalance = await getBalance(master); } catch (e) {}
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
+      broadcast({ type: 'lockState', data: lockPublic() });
+      break;
+    }
+
     case 'closeOnePosition': {
       const { accId, symbol, posAmt } = msg.data;
       const acc = STATE.copyAccounts.find(a => a.id === accId);
@@ -2572,17 +3204,28 @@ async function handleClientMsg(msg, ws) {
       const acc = STATE.copyAccounts.find(a => a.id === accId);
       if (!acc?.apiKey) { broadcast({ type: 'manualOrderResult', data: { success: false, error: 'الحساب غير موجود أو بدون API' } }); break; }
       try {
+        // ── نظام القفل: امنع الفتح أثناء فترة الانتظار ──
+        if (lockIsLocked()) {
+          const mins = Math.ceil((STATE.lockState.lockedUntil - Date.now()) / 60000);
+          throw new Error(`⛔ نظام القفل نشط — بلغت الحد اليومي للخسارة. يفتح بعد ${mins} دقيقة`);
+        }
         const bal = await getBalance(acc);
         if (bal <= 0) throw new Error(`الرصيد صفر — تأكد من الـ API`);
         const price = livePrices[sym] || parseFloat(limitPrice) || 1;
         await ensureLotSize(sym);
         const leverage = Math.min(parseInt(lev) || 20, await getMaxLev(sym));
         const amtPct = parseFloat(pct || 5) / 100;
-        const rawQty = useAmt
-          ? (parseFloat(amt || 0) * leverage) / price
-          : (bal * amtPct * leverage) / price;
+        // الهامش المطلوب بالدولار
+        let margin = useAmt ? parseFloat(amt || 0) : bal * amtPct;
+        // ── نظام القفل: اسقف الهامش عند الحد اليومي (تقليم قبل الفتح = بدون عمولة زائدة) ──
+        let trimmed = 0;
+        if (STATE.settings.lockOn && STATE.settings.lockDailyOn) {
+          const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+          if (cap > 0 && margin > cap) { trimmed = margin - cap; margin = cap; }
+        }
+        const rawQty = (margin * leverage) / price;
         const qty = roundQty(rawQty, sym);
-        if (qty <= 0) throw new Error(`الكمية صغيرة جداً (رصيد: $${bal.toFixed(2)})`);
+        if (qty <= 0) throw new Error(`الكمية صغيرة جداً (رصيد: $${bal.toFixed(2)}، هامش: $${margin.toFixed(2)})`);
         await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/leverage', { symbol: sym, leverage });
         const mode = await getPositionMode(acc);
         const isBuy = side === 'LONG';
@@ -2616,9 +3259,42 @@ async function handleClientMsg(msg, ws) {
           broadcast({ type: 'pendingOrders', data: STATE.pendingOrders });
         }
         [acc.livePositions, acc.liveBalance] = await Promise.all([getPositions(acc), getBalance(acc)]);
+
+        // ── نظام القفل: تسجيل الصفقة + ستوب تلقائي + إشعار ──
+        if (STATE.settings.lockOn) {
+          STATE.lockState.manualSyms[sym] = { ts: Date.now(), margin, slPlaced: false };
+          lockSave();
+          let slLine = '';
+          if (STATE.settings.lockAutoSLon && orderParams.type === 'MARKET') {
+            const slPct = parseFloat(STATE.settings.lockAutoSLpct) || 2;
+            const fresh = (acc.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+            if (fresh) {
+              try {
+                const isLong = parseFloat(fresh.positionAmt) > 0;
+                const ep = parseFloat(fresh.entryPrice) || price;
+                const px = await placeStop(acc, sym, fresh, isLong ? ep * (1 - slPct / 100) : ep * (1 + slPct / 100), 'ستوب يدوي');
+                STATE.lockState.manualSyms[sym].slPlaced = true;
+                lockSave();
+                slLine = `\n🛡️ وقف تلقائي @ ${px} (${slPct}% ≈ ${(slPct * leverage).toFixed(0)}% من الهامش)`;
+              } catch (e) {
+                slLine = `\n⚠️ تعذّر وضع الوقف: ${e.message}`;
+              }
+            }
+          }
+          const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+          lockNotify(
+            `📈 صفقة يدوية — #${sym.replace('USDT', '/USDT')}\n` +
+            `${side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'} · ${leverage}x · هامش $${margin.toFixed(2)}` +
+            (trimmed > 0 ? `\n✂️ قُلّمت الزيادة: $${trimmed.toFixed(2)} (الحد $${cap})` : '') +
+            slLine +
+            (STATE.settings.lockDailyOn ? `\n💰 المتبقي من الحد اليومي: $${lockRemaining().toFixed(2)} من $${cap}` : '')
+          );
+          broadcast({ type: 'lockState', data: lockPublic() });
+        }
+
         db.saveAccounts(STATE.copyAccounts);
         broadcast({ type: 'accounts', data: getSafeAccounts() });
-        broadcast({ type: 'manualOrderResult', data: { success: true, sym, side, qty, lev: leverage, acc: acc.name, type: orderParams.type } });
+        broadcast({ type: 'manualOrderResult', data: { success: true, sym, side, qty, lev: leverage, acc: acc.name, type: orderParams.type, margin, trimmed } });
       } catch (e) {
         console.error('manualOrder error:', e);
         addCopyLog('fail', `❌ يدوي ${sym} — ${acc.name}: ${e.message}`);
@@ -2837,7 +3513,7 @@ async function handleClientMsg(msg, ws) {
       const origLev = st.cxLev; st.cxLev = String(lv);
       const text = buildMsg(sym, side, st) + note;
       st.cxLev = origLev;
-      await tgSend(text, st.cxChat);
+      await tgSend(text, st.cxChat, { trackSym: sym });
       if (STATE.settings.cxChatSettings) {
         await tgSend(buildSettingsMsg(sym, side, st, lv), STATE.settings.cxChatSettings);
       }
@@ -2973,6 +3649,9 @@ async function init() {
   STATE.simTrades = db.loadSimTrades();
   STATE.copyLog = db.loadCopyLog();
   STATE.sentSigs = db.loadSentSigs();
+  STATE.sentMsgIds = db.loadSentMsgIds();
+  const savedLock = db.loadLockState();
+  if (savedLock) STATE.lockState = { ...STATE.lockState, ...savedLock, manualSyms: savedLock.manualSyms || {}, beDone: savedLock.beDone || {} };
   alertId = STATE.alerts.reduce((m, a) => Math.max(m, a.id || 0), 0);
   console.log(`📦 DB loaded: ${STATE.copyAccounts.length} accounts, ${STATE.openTrades.length} trades, ${STATE.dcaOrders.length} DCA orders`);
 
@@ -3074,6 +3753,7 @@ async function init() {
           master.stats.tot = parseFloat(((master.stats.tot || 0) + pct).toFixed(2));
           if (!master.closedTrades) master.closedTrades = [];
           master.closedTrades = [{ symbol: sym, side, entryPrice, exitPrice, pnl: pnlUsd, pct, closeTs: Date.now(), closeTime: nowStr() }, ...master.closedTrades].slice(0, 200);
+          if (STATE.lockState.manualSyms[sym] && !STATE.lockState.manualSyms[sym].baseline) lockRecordClose(sym, pnlUsd);
 
           broadcast({ type: 'trades', data: STATE.openTrades });
           broadcast({ type: 'closedTrades', data: STATE.closedTrades.slice(0, 100) });
@@ -3103,6 +3783,18 @@ async function init() {
       if (STATE.settings.stSLon) await monitorSTSL();
     } catch {}
   }, 30000);
+
+  // مراقب نظام القفل — كل ١٥ ثانية (يعمل سواء كان النسخ شغالاً أو لا)
+  setInterval(async () => {
+    if (!STATE.settings.lockOn) return;
+    const master = STATE.copyAccounts.find(a => a.isMaster);
+    if (!master?.apiKey) return;
+    // حدّث المراكز إذا كان النسخ متوقفاً (وإلا syncCopy يحدّثها)
+    if (!STATE.copyOn) {
+      try { master.livePositions = await getPositions(master); } catch (e) { return; }
+    }
+    await monitorLock();
+  }, 15000);
 
   // self-ping كل 25 ثانية لمنع النوم
   const selfHost = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL?.replace('https://', '');

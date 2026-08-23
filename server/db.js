@@ -26,7 +26,7 @@ function writeJSON(name, data) {
 
 // استعادة ملفات البيانات من PostgreSQL (إن وُجدت) عند بدء التشغيل —
 // تعالج فقدان الـ filesystem المحلي بعد كل redeploy على Railway.
-const DB_FILES = ['settings', 'accounts', 'open_trades', 'closed_trades', 'dca_orders', 'alerts', 'symbol_settings', 'respect_data', 'wait_queue', 'pending_orders', 'sim_trades', 'copy_log', 'sent_sigs'];
+const DB_FILES = ['settings', 'accounts', 'open_trades', 'closed_trades', 'dca_orders', 'alerts', 'symbol_settings', 'respect_data', 'wait_queue', 'pending_orders', 'sim_trades', 'copy_log', 'sent_sigs', 'lock_state', 'sent_msg_ids'];
 async function restoreFromPg() {
   if (!pg.enabled) return;
   for (const name of DB_FILES) {
@@ -132,6 +132,12 @@ function loadCopyLog() { return readJSON('copy_log', []); }
 function saveSentSigs(sigs) { writeJSON('sent_sigs', sigs); }
 function loadSentSigs() { return readJSON('sent_sigs', {}); }
 
+function saveLockState(s) { writeJSON('lock_state', s); }
+function loadLockState() { return readJSON('lock_state', null); }
+
+function saveSentMsgIds(m) { writeJSON('sent_msg_ids', m); }
+function loadSentMsgIds() { return readJSON('sent_msg_ids', {}); }
+
 module.exports = {
   saveSettings, loadSettings,
   saveAccounts, loadAccounts,
@@ -146,5 +152,7 @@ module.exports = {
   saveSimTrades, loadSimTrades,
   saveCopyLog, loadCopyLog,
   saveSentSigs, loadSentSigs,
+  saveLockState, loadLockState,
+  saveSentMsgIds, loadSentMsgIds,
   restoreFromPg,
 };
