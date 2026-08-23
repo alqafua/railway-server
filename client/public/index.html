@@ -1053,11 +1053,20 @@ function rLockPage(){
   const S=(t,color)=>{const s=el('div',{className:'set-section'});s.appendChild(el('div',{className:'set-sec-title',style:color?{color}:{}},t));return s;};
   const G=()=>el('div',{className:'set-grid'});
   const save=o=>{send('updateSettings',o);C.settings={...C.settings,...o};render();};
+  // تفعيل ميزة فرعية والنظام متوقف = لا شيء يحدث — نسأل ونشغّل الاثنين معاً
+  const saveFeature=o=>{
+    if(!C.settings.lockOn&&Object.values(o)[0]===true){
+      if(confirm('نظام القفل متوقف حالياً — لن تعمل هذه الميزة بدونه.\n\nتشغيل النظام الآن؟\n(الصفقات المفتوحة حالياً تُسجَّل كخط أساس ولن تُقلَّم أو تُغلق)')){
+        save({...o,lockOn:true});return;
+      }
+    }
+    save(o);
+  };
   const TOG=(label,key,sub,locked)=>{
     const w=el('div',{style:{display:'flex',alignItems:'center',gap:'10px',padding:'8px 0',opacity:locked?'.55':'1'}});
     const sw=el('div',{style:{width:'44px',height:'24px',borderRadius:'12px',background:C.settings[key]?'var(--green)':'var(--bg3)',border:'1px solid '+(C.settings[key]?'var(--green)':'var(--border)'),position:'relative',cursor:locked?'not-allowed':'pointer',flexShrink:'0',transition:'all .2s'}});
     sw.appendChild(el('div',{style:{width:'18px',height:'18px',borderRadius:'50%',background:'#fff',position:'absolute',top:'2px',[C.settings[key]?'left':'right']:'3px',transition:'all .2s'}}));
-    if(!locked)sw.onclick=()=>save({[key]:!C.settings[key]});
+    if(!locked)sw.onclick=()=>(key==='lockOn'||key==='lockMaster'?save:saveFeature)({[key]:!C.settings[key]});
     else sw.onclick=()=>showNotif('🔒 القفل العام مفعّل — لا يمكن التعديل',3000);
     w.appendChild(sw);
     const tx=el('div',{style:{flex:'1'}});
@@ -1089,12 +1098,18 @@ function rLockPage(){
   pill.appendChild(el('span',{className:'cpd '+(C.settings.lockOn?'on':'off')}));
   pill.appendChild(document.createTextNode(C.settings.lockOn?'نشط':'متوقف'));
   title.appendChild(pill);bar.appendChild(title);
-  bar.appendChild(el('button',{className:'btn',onClick:()=>send('lockRefresh',{})},'🔄 تحديث'));
+  const acts=el('div',{style:{display:'flex',gap:'6px',flexWrap:'wrap'}});
+  acts.appendChild(el('button',{className:'btn',onClick:()=>send('lockRefresh',{})},'🔄 تحديث'));
+  const scanBtn=el('button',{className:'btn',style:{background:'rgba(165,94,234,.1)',borderColor:'var(--purple)',color:'var(--purple)',fontWeight:'700'}});
+  scanBtn.textContent='⚡ فحص الآن';
+  scanBtn.onclick=()=>{scanBtn.textContent='⏳ يفحص...';scanBtn.disabled=true;send('lockRunNow',{});};
+  acts.appendChild(scanBtn);
+  bar.appendChild(acts);
   page.appendChild(bar);
 
   if(!C.settings.lockOn){
-    const warn=el('div',{style:{background:'rgba(255,165,2,.08)',border:'1px solid rgba(255,165,2,.3)',borderRadius:'12px',padding:'12px 14px',marginBottom:'14px',fontSize:'12px',color:'var(--orange)',lineHeight:'1.7'}});
-    warn.innerHTML='⚠️ <b>النظام متوقف</b> — شغّله من الزر فوق ليبدأ العمل.<br>عند التشغيل: الصفقات المفتوحة حالياً تُسجَّل كخط أساس ولن تتأثر (لا تُقلَّم ولا تُغلق).';
+    const warn=el('div',{style:{background:'rgba(255,71,87,.1)',border:'2px solid var(--red)',borderRadius:'12px',padding:'12px 14px',marginBottom:'14px',fontSize:'12px',color:'var(--red)',lineHeight:'1.7'}});
+    warn.innerHTML='⛔ <b>النظام متوقف — لا شيء يعمل</b><br>كل الخيارات تحت معطّلة فعلياً حتى تشغّل النظام من الزر بالأعلى.<br><span style="color:var(--text2)">عند التشغيل: الصفقات المفتوحة حالياً لا تُقلَّم ولا تُغلق (لكن الستوب التلقائي يُطبَّق عليها).</span>';
     page.appendChild(warn);
   }
 
@@ -1118,6 +1133,39 @@ function rLockPage(){
     if(L.locked&&!C.settings.lockMaster){
       page.appendChild(el('button',{className:'btn',style:{width:'100%',marginBottom:'14px',background:'rgba(255,71,87,.1)',borderColor:'var(--red)',color:'var(--red)',fontWeight:'800',justifyContent:'center'},onClick:()=>{if(confirm('إعادة فتح التداول اليدوي الآن وتصفير الخسارة المسجلة؟'))send('lockReset',{});}},'🔓 إعادة ضبط النافذة يدوياً'));
     }
+  }
+
+  // ── لوحة التشخيص: ماذا يرى النظام في كل صفقة ──
+  const diag=L?.diag||{};
+  const diagSyms=Object.keys(diag);
+  if(diagSyms.length){
+    const sD=S('🔍 تشخيص الصفقات — ماذا يرى النظام','var(--accent)');
+    sD.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginBottom:'8px'}},
+      'آخر فحص: '+(L.diagAt?new Date(L.diagAt).toLocaleTimeString('ar-SA'):'—')+' · اضغط «فحص الآن» بالأعلى للتحديث الفوري'));
+    diagSyms.forEach(sym=>{
+      const d=diag[sym];
+      const row=el('div',{style:{padding:'9px 11px',borderRadius:'10px',marginBottom:'5px',background:'var(--bg3)',border:'1px solid '+(d.blocked?'rgba(255,165,2,.3)':d.hasStop?'rgba(46,213,115,.3)':'rgba(255,71,87,.35)')}});
+      const top=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'6px'}});
+      top.appendChild(el('span',{style:{fontSize:'12px',fontWeight:'800'}},sym.replace('USDT','/USDT')));
+      const tags=el('div',{style:{display:'flex',gap:'4px',flexWrap:'wrap'}});
+      const mkTag=(t,c)=>el('span',{style:{fontSize:'9px',fontWeight:'700',padding:'2px 7px',borderRadius:'6px',background:c+'22',color:c,border:'1px solid '+c+'55'}},t);
+      tags.appendChild(mkTag(d.manual?'يدوية':'صفقة بوت',d.manual?'var(--orange)':'var(--blue)'));
+      if(d.baseline)tags.appendChild(mkTag('خط أساس','var(--text2)'));
+      tags.appendChild(mkTag(d.hasStop===null?'الوقف؟':d.hasStop?'✅ لها وقف':'⚠️ بلا وقف',d.hasStop?'var(--green)':'var(--red)'));
+      top.appendChild(tags);
+      row.appendChild(top);
+      const info=el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'5px',display:'flex',gap:'10px',flexWrap:'wrap'}});
+      info.appendChild(el('span',{},'هامش $'+(d.margin??0).toFixed(2)));
+      info.appendChild(el('span',{},'رافعة '+d.lev+'x'));
+      info.appendChild(el('span',{style:{color:d.pnl>=0?'var(--green)':'var(--red)',fontWeight:'700'}},(d.pnl>=0?'+':'')+'$'+(d.pnl||0).toFixed(2)));
+      row.appendChild(info);
+      if(d.blocked)row.appendChild(el('div',{style:{fontSize:'10px',color:'var(--orange)',marginTop:'4px'}},'⏭ لا يُقلَّم/يُغلق: '+d.blocked));
+      if(d.lastErr)row.appendChild(el('div',{style:{fontSize:'10px',color:'var(--red)',marginTop:'4px'}},'❌ آخر خطأ: '+d.lastErr));
+      if(C.settings.lockDailyOn&&d.manual&&!d.baseline&&L.cap>0&&d.margin>L.cap*1.02)
+        row.appendChild(el('div',{style:{fontSize:'10px',color:'var(--orange)',marginTop:'4px',fontWeight:'700'}},'✂️ سيُقلَّم إلى $'+L.cap+' (زيادة $'+(d.margin-L.cap).toFixed(2)+')'));
+      sD.appendChild(row);
+    });
+    page.appendChild(sD);
   }
 
   const mLocked=!!C.settings.lockMaster;

@@ -1331,16 +1331,60 @@ function lockPublic() {
     cap, hours: hrs, locked: lockIsLocked(),
     windowEnds: L.lockedUntil || (L.windowStart + hrs * HOUR_MS),
     trades: (L.trades || []).slice(0, 20),
+    diag: L.diag || {},
+    diagAt: L.diagAt || 0,
+    booted: bootBaselineDone,
   };
 }
 
-// هل هذه الصفقة يدوية؟ (ليست من إشارة البوت/كورنكس)
-function isManualPosition(sym) {
-  if (STATE.openTrades.some(t => t.symbol === sym)) return false;
-  if (STATE.sentMsgIds[sym]) return false;
-  if (STATE.sentSigs[sym]) return false;
-  return true;
+// يبني تشخيصاً لكل مركز مفتوح: يدوية؟ خط أساس؟ لها وقف؟ الهامش؟
+async function buildLockDiag(master, positions) {
+  const L = STATE.lockState;
+  const diag = {};
+  for (const pos of positions) {
+    const sym = pos.symbol;
+    const chk = manualCheck(sym);
+    const rec = L.manualSyms[sym] || null;
+    const amt = Math.abs(parseFloat(pos.positionAmt));
+    const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
+    const lev = parseFloat(pos.leverage) || 1;
+    const margin = mark && lev ? (amt * mark) / lev : 0;
+    let hasStop = null;
+    try {
+      const orders = await bFetch(master.apiKey, master.apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
+      hasStop = Array.isArray(orders) && orders.some(o => o.type === 'STOP_MARKET' || o.type === 'STOP' || o.type === 'TRAILING_STOP_MARKET');
+    } catch (e) {}
+    // سبب عدم التصرّف (إن وُجد) — baseline يمنع التقليم/الإغلاق فقط، لا الستوب
+    let blocked = null;
+    if (!chk.manual) blocked = chk.why;
+    else if (rec?.baseline) blocked = 'خط أساس — لا تُقلَّم ولا تُغلق (الستوب يُطبَّق)';
+    diag[sym] = {
+      manual: chk.manual, why: chk.why, baseline: !!rec?.baseline,
+      slPlaced: !!rec?.slPlaced, hasStop, margin: parseFloat(margin.toFixed(2)),
+      lev, pnl: parseFloat(pos.unRealizedProfit) || 0, blocked,
+      lastErr: rec?.lastErr || null,
+    };
+    await new Promise(r => setTimeout(r, 120));
+  }
+  L.diag = diag;
+  L.diagAt = Date.now();
+  return diag;
 }
+
+// سجلّات openTrades التي تُنشأ تلقائياً لأي مركز جديد على الماستر —
+// لا تدل على أن الصفقة من إشارة البوت (تُنشأ حتى للصفقات اليدوية عند تشغيل النسخ)
+const AUTO_TRADE_LABELS = ['🪞 Copy', '🪞 Binance', '📊 مراقبة'];
+
+// هل هذه الصفقة يدوية؟ (ليست من إشارة البوت/كورنكس)
+// نُرجع السبب أيضاً ليظهر في لوحة التشخيص
+function manualCheck(sym) {
+  if (STATE.sentMsgIds[sym]) return { manual: false, why: 'أُرسلت إشارة تلغرام لهذا الرمز' };
+  if (STATE.sentSigs[sym]) return { manual: false, why: 'إشارة بوت نشطة لهذا الرمز' };
+  const t = STATE.openTrades.find(x => x.symbol === sym);
+  if (t && !AUTO_TRADE_LABELS.includes(t.label)) return { manual: false, why: `صفقة بوت (${t.label})` };
+  return { manual: true, why: 'يدوية' };
+}
+function isManualPosition(sym) { return manualCheck(sym).manual; }
 
 // رد على رسالة إشارة كورنكس بأمر تحديث — يبقي التلغرام/كورنكس متوافقاً مع بايننس
 async function cornixReply(sym, text) {
@@ -1575,14 +1619,17 @@ async function monitorLock() {
       let seeded = 0;
       for (const p of positions) {
         if (!L.manualSyms[p.symbol]) {
-          L.manualSyms[p.symbol] = { ts: Date.now(), margin: 0, baseline: true, slPlaced: true };
+          // baseline يحمي من التقليم والإغلاق فقط — الستوب يُطبَّق لأنه حماية لا خطر
+          L.manualSyms[p.symbol] = { ts: Date.now(), margin: 0, baseline: true };
           seeded++;
         }
       }
       if (seeded) {
         lockSave();
-        addCopyLog('info', `🔒 نظام القفل: ${seeded} صفقة قائمة سُجّلت كخط أساس (لن تتأثر)`);
+        addCopyLog('info', `🔒 نظام القفل: ${seeded} صفقة قائمة سُجّلت كخط أساس (لا تُقلَّم ولا تُغلق)`);
       }
+      try { await buildLockDiag(master, positions); } catch (e) {}
+      broadcast({ type: 'lockState', data: lockPublic() });
       return; // لا نتصرّف في أول دورة — نكتفي بالتسجيل
     }
 
@@ -1679,6 +1726,9 @@ async function monitorLock() {
           );
         } catch (e) {
           addCopyLog('fail', `❌ ستوب تلقائي ${sym}: ${e.message}`);
+          // نحفظ آخر خطأ ليظهر في لوحة التشخيص بدل الصمت
+          L.manualSyms[sym] = { ...(L.manualSyms[sym] || { ts: Date.now() }), lastErr: e.message, lastErrAt: Date.now() };
+          lockSave();
         }
         await new Promise(r => setTimeout(r, 300));
       }
@@ -1715,6 +1765,11 @@ async function monitorLock() {
     }
     for (const s of Object.keys(L.beDone)) if (!openSyms.has(s)) { delete L.beDone[s]; changed = true; }
     if (changed) lockSave();
+
+    // تشخيص كل دورة ثانية (كل ٣٠ ثانية) لتخفيف الضغط على الـ API
+    if (!L.diagAt || Date.now() - L.diagAt > 30000) {
+      await buildLockDiag(master, positions);
+    }
     broadcast({ type: 'lockState', data: lockPublic() });
   } catch (e) {
     addCopyLog('fail', `❌ نظام القفل: ${e.message}`);
@@ -3179,9 +3234,27 @@ async function handleClientMsg(msg, ws) {
       const master = STATE.copyAccounts.find(a => a.isMaster);
       if (master?.apiKey) {
         try { master.livePositions = await getPositions(master); master.liveBalance = await getBalance(master); } catch (e) {}
+        const positions = (master.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+        try { await buildLockDiag(master, positions); } catch (e) {}
         broadcast({ type: 'accounts', data: getSafeAccounts() });
       }
       broadcast({ type: 'lockState', data: lockPublic() });
+      break;
+    }
+
+    // فحص فوري — يشغّل دورة المراقب الآن بدل انتظار ١٥ ثانية
+    case 'lockRunNow': {
+      if (!STATE.settings.lockOn) {
+        broadcast({ type: 'lockResult', data: { ok: false, error: 'نظام القفل متوقف — شغّله أولاً من الزر بالأعلى' } });
+        break;
+      }
+      const master = STATE.copyAccounts.find(a => a.isMaster);
+      if (!master?.apiKey) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لا يوجد حساب ماستر' } }); break; }
+      try { master.livePositions = await getPositions(master); } catch (e) {}
+      STATE.lockState.diagAt = 0;
+      await monitorLock();
+      broadcast({ type: 'lockResult', data: { ok: true, action: 'scan', done: [], skipped: [], failed: [], msg: 'اكتمل الفحص' } });
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
       break;
     }
 
