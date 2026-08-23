@@ -3937,15 +3937,9 @@ async function init() {
   // تحميل الحالة من قاعدة البيانات
   STATE.settings = db.loadSettings(DEFAULT_SETTINGS);
 
-  // تنظيف: معرّفات قنوات كانت مكتوبة يدوياً كقيم افتراضية قديمة —
-  // على خادم/بوت جديد لا يملكها البوت فتفشل بـ "chat not found" مع كل إشارة
-  const STALE_CHATS = ['-1003974976122', '-1004495709499'];
-  for (const [key, env] of [['cxChatBT', 'TG_CHAT_BT'], ['cxChatSettings', 'TG_CHAT_SETTINGS']]) {
-    if (STALE_CHATS.includes(String(STATE.settings[key])) && !process.env[env]) {
-      STATE.settings[key] = '';
-      console.log(`🧹 أُزيل معرّف قناة قديم من ${key} (لم يكن يخصّ هذا البوت)`);
-    }
-  }
+  // ملاحظة: لا تمسح معرّفات القنوات تلقائياً هنا. القيم المحفوظة تخصّ المستخدم
+  // حتى لو طابقت قيمة افتراضية قديمة. القناة التي يتعذّر الإرسال إليها تُعطَّل
+  // وقتياً في drainTgQueue مع تسمية الخانة، ويعيدها تعديل الرقم من الواجهة.
   STATE.symbolSettings = db.loadSymbolSettings();
   // تحديث إعدادات التلغرام من env vars عند كل تشغيل
   if (process.env.TG_TOKEN) STATE.settings.cxToken = process.env.TG_TOKEN;
