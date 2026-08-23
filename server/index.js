@@ -551,12 +551,14 @@ async function drainTgQueue() {
   tgSending = true;
   while (tgQueue.length) {
     const item = tgQueue.shift();
-    const { text, chat, token, trackSym, replyTo } = item;
+    const { text, chat, token, trackSym, replyTo, editId } = item;
     if (deadChats.has(String(chat))) continue;   // قناة معطوبة — تخطَّ بصمت
     try {
-      const payload = { chat_id: chat, text };
+      // editId → تعديل رسالة قائمة بدل إرسال جديدة
+      const method = editId ? 'editMessageText' : 'sendMessage';
+      const payload = editId ? { chat_id: chat, message_id: editId, text } : { chat_id: chat, text };
       if (replyTo) payload.reply_to_message_id = replyTo;
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
@@ -566,7 +568,8 @@ async function drainTgQueue() {
             const d = await res.json();
             const mid = d?.result?.message_id;
             if (mid) {
-              STATE.sentMsgIds[trackSym] = { id: mid, chat, ts: Date.now() };
+              // نحفظ النص أيضاً — لازم لتعديل الرسالة لاحقاً بنفس صيغتها
+              STATE.sentMsgIds[trackSym] = { id: mid, chat, ts: Date.now(), text };
               saveSentMsgIdsDebounced();
             }
           } catch (e) {}
@@ -628,6 +631,15 @@ async function tgSendDocument(buf, filename, caption, chat) {
 // فجوة الدخول "القريب من السعر" — يعتمده كورنكس كدخول أول فعلي (راجع buildMsg)
 const NEAR_ENTRY_GAP = 0.0001; // 0.01%
 
+// تنسيق أسعار رسالة كورنكس — مصدر واحد كي تبقى الرسالة المعدَّلة مطابقة للأصلية
+function fmtSignalPrice(n) {
+  if (!n && n !== 0) return 'N/A';
+  if (n >= 100) return n.toFixed(2);
+  if (n >= 1) return n.toFixed(3);
+  if (n >= 0.1) return n.toFixed(4);
+  return n.toFixed(6);
+}
+
 // يحوّل قيمة "تريلنج الدخول" (مهما كانت صيغتها: مع % أو بدونها، بمسافات، أو بأرقام عربية)
 // إلى نسبة نظيفة بصيغة "N%" — لضمان عدم خروج رسالة كورنكس بصيغة فاسدة أو فارغة لهذا البند
 function entryTrailPct(v) {
@@ -639,7 +651,7 @@ function entryTrailPct(v) {
 function buildMsg(sym, side, st = STATE.settings) {
   const p = livePrices[sym], pair = sym.replace('USDT', '/USDT');
   const star = hasSymOverride(sym) ? ' ⭐' : '';
-  const fp = n => { if (!n && n !== 0) return 'N/A'; if (n >= 100) return n.toFixed(2); if (n >= 1) return n.toFixed(3); if (n >= 0.1) return n.toFixed(4); return n.toFixed(6); };
+  const fp = fmtSignalPrice;
   let tp1 = null, tp2 = null, sll = null, eNear = null, e2 = null;
   if (p) {
     const t1 = parseFloat(st.cxTP1) / 100;
@@ -1413,13 +1425,63 @@ function manualCheck(sym) {
 }
 function isManualPosition(sym) { return manualCheck(sym).manual; }
 
-// رد على رسالة إشارة كورنكس بأمر تحديث — يبقي التلغرام/كورنكس متوافقاً مع بايننس
-async function cornixReply(sym, text) {
-  if (!STATE.settings.lockCornixSync) return false;
+// ── مزامنة كورنكس ─────────────────────────────────────
+// وضعان: رد على رسالة الإشارة بأمر تحديث، أو تعديل الرسالة الأصلية نفسها
+// بنفس صيغتها مع تغيير الأرقام فقط (كي يستطيع كورنكس قراءتها من جديد).
+
+// يستبدل سعر الوقف في نص إشارة كورنكس، مع الحفاظ على باقي الرسالة كما هي
+function replaceStopInMsg(text, newStop) {
+  // "Stop Targets:" ثم سطر "1) <سعر>"
+  const re = /(Stop Targets:[^\n]*\n\s*1\)\s*)([^\n]*)/;
+  if (!re.test(text)) return null;
+  return text.replace(re, `$1${newStop}`);
+}
+
+// يستبدل نسبة تريلنج جني الأرباح — "Take-Profit: Percentage (N%)" داخل قسم Trailing
+// (لا يمسّ "Take-Profit Targets:" لأن الصيغة هناك بلا نقطتين قبل Percentage)
+function replaceTrailInMsg(text, newPct) {
+  const re = /(Take-Profit:\s*Percentage\s*\()([^)]*)(\))/;
+  if (!re.test(text)) return null;
+  return text.replace(re, `$1${newPct}%$3`);
+}
+
+// يعدّل رسالة الإشارة الأصلية بالأرقام الجديدة
+async function cornixEditSignal(sym, { stop, trailPct } = {}) {
   const rec = STATE.sentMsgIds[sym];
-  if (!rec?.id) return false;
-  await tgSend(text, rec.chat || STATE.settings.cxChat, { replyTo: rec.id });
-  return true;
+  if (!rec?.id || !rec.text) return { ok: false, why: 'لا توجد رسالة إشارة محفوظة لهذا الرمز' };
+  let t = rec.text;
+  const changes = [];
+  if (stop != null) {
+    const nt = replaceStopInMsg(t, fmtSignalPrice(stop));
+    if (nt) { t = nt; changes.push(`الوقف → ${fmtSignalPrice(stop)}`); }
+  }
+  if (trailPct != null) {
+    const nt = replaceTrailInMsg(t, trailPct);
+    if (nt) { t = nt; changes.push(`التريلنج → ${trailPct}%`); }
+  }
+  if (!changes.length) return { ok: false, why: 'تعذّر إيجاد البند المطلوب في نص الرسالة' };
+  if (t === rec.text) return { ok: false, why: 'لا تغيير' };
+  await tgSend(t, rec.chat || STATE.settings.cxChat, { editId: rec.id });
+  rec.text = t;                 // النص المحفوظ يبقى مطابقاً للرسالة المنشورة
+  saveSentMsgIdsDebounced();
+  return { ok: true, changes };
+}
+
+// ينفّذ المزامنة حسب الوضع المختار — يُرجع وصفاً لما تم لعرضه في الإشعار
+async function cornixSync(sym, { cmd, stop, trailPct } = {}) {
+  if (!STATE.settings.lockCornixSync) return null;
+  const rec = STATE.sentMsgIds[sym];
+  if (!rec?.id) return null;
+  const mode = STATE.settings.lockCornixMode || 'reply';
+  const out = [];
+  if (mode === 'reply' || mode === 'both') {
+    if (cmd) { await tgSend(cmd, rec.chat || STATE.settings.cxChat, { replyTo: rec.id }); out.push('رد'); }
+  }
+  if (mode === 'edit' || mode === 'both') {
+    const r = await cornixEditSignal(sym, { stop, trailPct });
+    out.push(r.ok ? 'تعديل الرسالة' : `تعديل فشل (${r.why})`);
+  }
+  return out.length ? out.join(' + ') : null;
 }
 
 // إلغاء أوامر الوقف القائمة (بدون المساس بالتريلنج إن طُلب)
@@ -1495,7 +1557,7 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
       const px = await placeStop(acc, sym, pos, bePrice, 'بريك إيفن');
       STATE.lockState.beDone[sym] = Date.now();
       results.done.push(`${sym} @ ${px}`);
-      await cornixReply(sym, STATE.settings.lockCxBEtpl || 'SL to entry');
+      await cornixSync(sym, { cmd: STATE.settings.lockCxBEtpl || 'SL to entry', stop: px });
     } catch (e) {
       results.failed.push(`${sym}: ${e.message}`);
     }
@@ -1531,7 +1593,10 @@ async function applyLossStop(acc, syms, pct) {
     try {
       const px = await placeStop(acc, sym, pos, slPrice, 'وقف خسارة');
       results.done.push(`${sym} @ ${px}`);
-      await cornixReply(sym, (STATE.settings.lockCxSLtpl || 'New stop loss: {price}').replace('{price}', String(px)));
+      await cornixSync(sym, {
+        cmd: (STATE.settings.lockCxSLtpl || 'New stop loss: {price}').replace('{price}', String(px)),
+        stop: px,
+      });
     } catch (e) {
       results.failed.push(`${sym}: ${e.message}`);
     }
@@ -1565,8 +1630,8 @@ async function applyTrailing(acc, syms, pct) {
     const tpl = (STATE.settings.lockCxTrailTpl || 'Trailing stop: {pct}%').replace('{pct}', String(rate));
     if (overMax) {
       // لا يمكن وضعه على بايننس — نكتفي بمزامنة كورنكس
-      const ok = await cornixReply(sym, tpl);
-      results.cornixOnly.push(sym + (ok ? '' : ' (بدون كورنكس)'));
+      const r = await cornixSync(sym, { cmd: tpl, trailPct: rate });
+      results.cornixOnly.push(sym + (r ? '' : ' (بدون كورنكس)'));
       continue;
     }
     const isLong = parseFloat(pos.positionAmt) > 0;
@@ -1584,7 +1649,7 @@ async function applyTrailing(acc, syms, pct) {
       await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', tp);
       results.done.push(`${sym} @ ${rate}%`);
       addCopyLog('success', `📉 تريلنج: ${sym} @ ${rate}%`);
-      await cornixReply(sym, tpl);
+      await cornixSync(sym, { cmd: tpl, trailPct: rate });
     } catch (e) {
       results.failed.push(`${sym}: ${e.message}`);
     }
@@ -3273,6 +3338,35 @@ async function handleClientMsg(msg, ws) {
         broadcast({ type: 'accounts', data: getSafeAccounts() });
       }
       broadcast({ type: 'lockState', data: lockPublic() });
+      break;
+    }
+
+    // اختبار تعديل الرسالة — يعدّل رقم الوقف في رسالة الإشارة فقط،
+    // بدون لمس أي أمر على بايننس، لمعرفة هل يقرأ كورنكس التعديل
+    case 'lockTestEdit': {
+      const { sym, stop } = msg.data || {};
+      const s = String(sym || '').replace(/USDT$/i, '').toUpperCase() + 'USDT';
+      const rec = STATE.sentMsgIds[s];
+      if (!rec?.id || !rec.text) {
+        broadcast({ type: 'lockResult', data: { ok: false, error: `لا توجد رسالة إشارة محفوظة لـ ${s} — التعديل يعمل فقط على إشارات أرسلها البوت بعد آخر تحديث` } });
+        break;
+      }
+      const px = parseFloat(stop);
+      if (!isFinite(px) || px <= 0) { broadcast({ type: 'lockResult', data: { ok: false, error: 'أدخل سعر وقف صحيح' } }); break; }
+      const r = await cornixEditSignal(s, { stop: px });
+      broadcast({ type: 'lockResult', data: r.ok
+        ? { ok: true, action: 'testEdit', done: [`${s}: ${r.changes.join(' · ')}`], skipped: [], failed: [] }
+        : { ok: false, error: `${s}: ${r.why}` } });
+      break;
+    }
+
+    // الرموز التي لدينا رسالة إشارة محفوظة لها (لاختبار التعديل)
+    case 'lockMsgSyms': {
+      const list = Object.entries(STATE.sentMsgIds)
+        .map(([sym, r]) => ({ sym, ts: r.ts, hasText: !!r.text }))
+        .filter(x => x.hasText)
+        .sort((a, b) => b.ts - a.ts).slice(0, 30);
+      broadcast({ type: 'lockMsgSyms', data: list });
       break;
     }
 

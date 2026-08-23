@@ -138,7 +138,7 @@ const RES_PRESETS={
   medium:{label:'🟡 متوسط',minTrades:15,maxDD:12,minPF:1.3,minRespectShort:20,minRespectLong:20,minAvgReversal:0.5},
   strict:{label:'🔴 صارم',minTrades:25,maxDD:8,minPF:1.5,minRespectShort:30,minRespectLong:30,minAvgReversal:1},
 };
-const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEnearPct:1,lockBEoffsetPct:0.1,lockTgChat:'',lockCornixSync:false,lockCxBEtpl:'SL to entry',lockCxSLtpl:'New stop loss: {price}',lockCxTrailTpl:'Trailing stop: {pct}%',extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
+const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',lockMsgSyms:[],sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEnearPct:1,lockBEoffsetPct:0.1,lockTgChat:'',lockCornixSync:false,lockCornixMode:'reply',lockCxBEtpl:'SL to entry',lockCxSLtpl:'New stop loss: {price}',lockCxTrailTpl:'Trailing stop: {pct}%',extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
 const MIN_SIG_SAMPLE=10; // أقل عدد إشارات لاعتماد نسبة الاحترام في "الإعداد النهائي المُحسَّن"
@@ -314,6 +314,7 @@ function handleServerMsg(msg){
     case 'accounts':C.accounts=msg.data;break;
     case 'copyOn':C.copyOn=msg.data;needRender=true;break;
     case 'lockState':C.lockState=msg.data;if(C.page==='lock')needRender=true;break;
+    case 'lockMsgSyms':C.lockMsgSyms=msg.data||[];if(C.page==='lock')needRender=true;break;
     case 'lockResult':{
       C.lockBusy='';
       const d=msg.data||{};
@@ -603,7 +604,7 @@ function rSysStatusPill(){
   else{pill.textContent='✅ يعمل';}
   return pill;
 }
-function rNav(){const nav=el('div',{className:'navbar'});nav.appendChild(el('button',{className:'ntab '+(C.page==='dashboard'?'t-dash':''),onClick:()=>{C.page='dashboard';render();}},'📊 الداشبورد'));const sb=el('button',{className:'ntab '+(C.page==='subscribers'?'t-sub':''),onClick:()=>{C.page='subscribers';render();}});sb.appendChild(document.createTextNode('🪞 المشتركون'));if(C.accounts.length)sb.appendChild(el('span',{className:'nbadge'},String(C.accounts.length)));if(C.waitQueue&&C.waitQueue.length)sb.appendChild(el('span',{className:'nbadge',style:{background:'var(--orange)',marginRight:'2px'}},String(C.waitQueue.length)));nav.appendChild(sb);nav.appendChild(el('button',{className:'ntab '+(C.page==='backtest'?'t-bt':''),onClick:()=>{C.page='backtest';send('btInfo',{});render();}},'🔬 Backtest'));nav.appendChild(el('button',{className:'ntab '+(C.page==='symbols'?'t-sym':''),onClick:()=>{C.page='symbols';send('btInfo',{});render();}},'🪙 العملات'));nav.appendChild(el('button',{className:'ntab '+(C.page==='results'?'t-res':''),onClick:()=>{C.page='results';render();}},'📊 النتائج'));const lkb=el('button',{className:'ntab '+(C.page==='lock'?'t-lock':''),onClick:()=>{C.page='lock';send('lockRefresh',{});render();}});lkb.appendChild(document.createTextNode('🔒 نظام القفل'));if(C.settings.lockOn)lkb.appendChild(el('span',{className:'nbadge',style:{background:C.lockState?.locked?'var(--red)':'var(--green)'}},C.lockState?.locked?'⛔':'✓'));nav.appendChild(lkb);nav.appendChild(el('button',{className:'ntab '+(C.page==='settings'?'t-set':''),onClick:()=>{C.page='settings';render();}},'⚙️ الإعدادات'));const nr=el('div',{className:'nav-right'});const pill=el('div',{className:'copy-pill '+(C.copyOn?'on':'off'),onClick:()=>send('toggleCopy')});pill.appendChild(el('span',{className:'cpd '+(C.copyOn?'on':'off')}));pill.appendChild(document.createTextNode(C.copyOn?'نشط':'Copy'));nr.appendChild(pill);nr.appendChild(el('span',{className:'ws-ind '+(C.wsConn?'on':'off')},C.wsConn?'🟢 متصل':'🔴 منقطع'));nav.appendChild(nr);return nav;}
+function rNav(){const nav=el('div',{className:'navbar'});nav.appendChild(el('button',{className:'ntab '+(C.page==='dashboard'?'t-dash':''),onClick:()=>{C.page='dashboard';render();}},'📊 الداشبورد'));const sb=el('button',{className:'ntab '+(C.page==='subscribers'?'t-sub':''),onClick:()=>{C.page='subscribers';render();}});sb.appendChild(document.createTextNode('🪞 المشتركون'));if(C.accounts.length)sb.appendChild(el('span',{className:'nbadge'},String(C.accounts.length)));if(C.waitQueue&&C.waitQueue.length)sb.appendChild(el('span',{className:'nbadge',style:{background:'var(--orange)',marginRight:'2px'}},String(C.waitQueue.length)));nav.appendChild(sb);nav.appendChild(el('button',{className:'ntab '+(C.page==='backtest'?'t-bt':''),onClick:()=>{C.page='backtest';send('btInfo',{});render();}},'🔬 Backtest'));nav.appendChild(el('button',{className:'ntab '+(C.page==='symbols'?'t-sym':''),onClick:()=>{C.page='symbols';send('btInfo',{});render();}},'🪙 العملات'));nav.appendChild(el('button',{className:'ntab '+(C.page==='results'?'t-res':''),onClick:()=>{C.page='results';render();}},'📊 النتائج'));const lkb=el('button',{className:'ntab '+(C.page==='lock'?'t-lock':''),onClick:()=>{C.page='lock';send('lockRefresh',{});send('lockMsgSyms',{});render();}});lkb.appendChild(document.createTextNode('🔒 نظام القفل'));if(C.settings.lockOn)lkb.appendChild(el('span',{className:'nbadge',style:{background:C.lockState?.locked?'var(--red)':'var(--green)'}},C.lockState?.locked?'⛔':'✓'));nav.appendChild(lkb);nav.appendChild(el('button',{className:'ntab '+(C.page==='settings'?'t-set':''),onClick:()=>{C.page='settings';render();}},'⚙️ الإعدادات'));const nr=el('div',{className:'nav-right'});const pill=el('div',{className:'copy-pill '+(C.copyOn?'on':'off'),onClick:()=>send('toggleCopy')});pill.appendChild(el('span',{className:'cpd '+(C.copyOn?'on':'off')}));pill.appendChild(document.createTextNode(C.copyOn?'نشط':'Copy'));nr.appendChild(pill);nr.appendChild(el('span',{className:'ws-ind '+(C.wsConn?'on':'off')},C.wsConn?'🟢 متصل':'🔴 منقطع'));nav.appendChild(nr);return nav;}
 function rSettingsPage(){const page=el('div',{className:'set-page'});page.appendChild(el('div',{className:'set-title'},'⚙️ الإعدادات'));const tabs=el('div',{className:'set-tabs'});[['cornix','⚙️ Cornix'],['telegram','📤 تلغرام'],['trailing','🟣 Trailing RSI'],['liquidity','💧 السيولة'],['scanner','🔍 السكانر'],['symbols','🪙 لكل عملة']].forEach(([k,lb])=>{tabs.appendChild(el('button',{className:'set-tab '+(settingsTab===k?'active':''),onClick:()=>{settingsTab=k;render();}},lb));});page.appendChild(tabs);
 const S=(t)=>{const s=el('div',{className:'set-section'});s.appendChild(el('div',{className:'set-sec-title'},t));return s;};
 const G=()=>el('div',{className:'set-grid'});
@@ -1290,16 +1291,68 @@ function rLockPage(){
   const sN=S('📨 الإشعارات ومزامنة كورنكس','var(--blue)');
   sN.appendChild(el('div',{style:{fontSize:'11px',color:'var(--text2)',lineHeight:'1.7',marginBottom:'6px'}},'كل عمليات النظام (فتح صفقة، تقليم، وقف، بريك إيفن، بلوغ الحد) تُرسَل لهذه القناة. اتركها فارغة لاستخدام القناة الأساسية.'));
   const gN=G();gN.appendChild(TXT('Chat ID — قناة نظام القفل','lockTgChat','-100xxxxxxxxx'));sN.appendChild(gN);
-  sN.appendChild(TOG('مزامنة كورنكس (تجريبي)','lockCornixSync','يرد على رسالة الإشارة الأصلية بأمر التحديث ليتطابق كورنكس مع بايننس'));
+  sN.appendChild(TOG('مزامنة كورنكس (تجريبي)','lockCornixSync','يحدّث كورنكس ليتطابق مع بايننس'));
   if(C.settings.lockCornixSync){
-    const warn=el('div',{style:{background:'rgba(255,165,2,.08)',border:'1px solid rgba(255,165,2,.3)',borderRadius:'10px',padding:'10px 12px',margin:'8px 0',fontSize:'11px',color:'var(--orange)',lineHeight:'1.7'}});
-    warn.innerHTML='⚠️ صيغة أوامر كورنكس تختلف حسب الإعداد. <b>جرّبها على صفقة واحدة أولاً</b> وتأكد أن كورنكس نفّذ التحديث، وإن لم ينفّذ عدّل الصيغة أدناه. تنفيذ بايننس يعمل في كل الأحوال.';
-    sN.appendChild(warn);
-    const gT=G();
-    gT.appendChild(TXT('صيغة البريك إيفن','lockCxBEtpl','SL to entry'));
-    gT.appendChild(TXT('صيغة الوقف — {price}','lockCxSLtpl','New stop loss: {price}'));
-    gT.appendChild(TXT('صيغة التريلنج — {pct}','lockCxTrailTpl','Trailing stop: {pct}%'));
-    sN.appendChild(gT);
+    // اختيار الوضع
+    const modeRow=el('div',{style:{margin:'10px 0'}});
+    modeRow.appendChild(el('div',{style:{fontSize:'11px',color:'var(--text2)',marginBottom:'6px',fontWeight:'700'}},'طريقة التحديث:'));
+    const modes=el('div',{style:{display:'flex',gap:'6px',flexWrap:'wrap'}});
+    [['reply','💬 رد على الإشارة','يرسل أمراً نصياً كرد على رسالة الإشارة'],
+     ['edit','✏️ تعديل الرسالة','يعدّل أرقام الرسالة الأصلية بنفس صيغتها'],
+     ['both','🔀 الاثنان','يجرّب الطريقتين معاً']].forEach(([v,lb,desc])=>{
+      const on=(C.settings.lockCornixMode||'reply')===v;
+      const b=el('button',{className:'btn',title:desc,style:{fontSize:'11px',padding:'5px 12px',fontWeight:on?'800':'600',background:on?'rgba(61,159,255,.15)':'var(--bg3)',borderColor:on?'var(--blue)':'var(--border)',color:on?'var(--blue)':'var(--text2)'},onClick:()=>save({lockCornixMode:v})},lb);
+      modes.appendChild(b);
+    });
+    modeRow.appendChild(modes);
+    const cur=C.settings.lockCornixMode||'reply';
+    modeRow.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'5px'}},
+      cur==='reply'?'يرسل أمراً نصياً كرد على رسالة الإشارة — يحتاج أن يكون تحديث الإشارات مفعّلاً عند كورنكس.'
+      :cur==='edit'?'يعدّل أرقام الرسالة الأصلية ويترك باقي الصيغة كما هي.'
+      :'يجرّب الطريقتين معاً.'));
+    sN.appendChild(modeRow);
+
+    if(cur==='edit'||cur==='both'){
+      const w2=el('div',{style:{background:'rgba(255,71,87,.08)',border:'1px solid var(--red)',borderRadius:'10px',padding:'10px 12px',margin:'8px 0',fontSize:'11px',color:'var(--red)',lineHeight:'1.7'}});
+      w2.innerHTML='⚠️ <b>اختبر قبل الاعتماد عليه.</b> عند تعديل رسالة، يصل كورنكس حدثٌ مختلف عن الرسالة الجديدة. إن قرأه كإشارة جديدة فقد <b>يفتح صفقة ثانية</b> على نفس العملة. استخدم زر الاختبار أدناه على عملة لا تتداولها، وراقب كورنكس قبل تفعيله على صفقاتك.';
+      sN.appendChild(w2);
+
+      // اختبار آمن — يعدّل الرسالة فقط بدون لمس أي أمر على بايننس
+      const tBox=el('div',{style:{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:'10px',padding:'10px 12px',marginBottom:'8px'}});
+      tBox.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'800',marginBottom:'6px'}},'🧪 اختبار التعديل (لا يلمس بايننس)'));
+      const tRow=el('div',{style:{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}});
+      const syms=C.lockMsgSyms||[];
+      const sel=el('select',{className:'sel',style:{fontSize:'11px',minWidth:'130px'}});
+      if(!syms.length)sel.appendChild(el('option',{value:''},'— لا توجد رسائل محفوظة —'));
+      syms.forEach(x=>sel.appendChild(el('option',{value:x.sym},x.sym.replace('USDT','/USDT'))));
+      tRow.appendChild(sel);
+      const spI=el('input',{type:'number',className:'ninp',placeholder:'سعر الوقف',step:'0.000001',style:{width:'110px'}});
+      tRow.appendChild(spI);
+      const tBtn=el('button',{className:'btn',style:{fontSize:'11px',fontWeight:'800',borderColor:'var(--blue)',color:'var(--blue)',background:'transparent'}},'✏️ عدّل الرسالة');
+      tBtn.onclick=()=>{
+        if(!sel.value){showNotif('❌ اختر رمزاً — التعديل يعمل فقط على إشارات أُرسلت بعد آخر تحديث',4000);return;}
+        const v=parseFloat(spI.value);
+        if(!isFinite(v)||v<=0){showNotif('❌ أدخل سعر وقف',2500);return;}
+        tBtn.textContent='⏳...';tBtn.disabled=true;
+        send('lockTestEdit',{sym:sel.value,stop:v});
+      };
+      tRow.appendChild(tBtn);
+      tRow.appendChild(el('button',{className:'btn',style:{fontSize:'11px'},onClick:()=>send('lockMsgSyms',{})},'🔄'));
+      tBox.appendChild(tRow);
+      tBox.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'6px',lineHeight:'1.6'}},'بعد الضغط: افتح القناة وتأكد أن الرسالة تغيّرت، ثم افتح كورنكس وشوف هل تغيّر الوقف عنده — أو هل فتح صفقة جديدة.'));
+      sN.appendChild(tBox);
+    }
+
+    if(cur==='reply'||cur==='both'){
+      const warn=el('div',{style:{background:'rgba(255,165,2,.08)',border:'1px solid rgba(255,165,2,.3)',borderRadius:'10px',padding:'10px 12px',margin:'8px 0',fontSize:'11px',color:'var(--orange)',lineHeight:'1.7'}});
+      warn.innerHTML='⚠️ صيغة أوامر كورنكس تختلف حسب الإعداد. جرّبها على صفقة واحدة أولاً، وإن لم ينفّذ كورنكس عدّل الصيغة أدناه. تنفيذ بايننس يعمل في كل الأحوال.';
+      sN.appendChild(warn);
+      const gT=G();
+      gT.appendChild(TXT('صيغة البريك إيفن','lockCxBEtpl','SL to entry'));
+      gT.appendChild(TXT('صيغة الوقف — {price}','lockCxSLtpl','New stop loss: {price}'));
+      gT.appendChild(TXT('صيغة التريلنج — {pct}','lockCxTrailTpl','Trailing stop: {pct}%'));
+      sN.appendChild(gT);
+    }
   }
   page.appendChild(sN);
 
