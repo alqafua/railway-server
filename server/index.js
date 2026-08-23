@@ -46,8 +46,10 @@ const DEFAULT_SETTINGS = {
   cxToken: process.env.TG_TOKEN || '',
   cxChat: process.env.TG_CHAT || '',
   cxChatClose: process.env.TG_CHAT_CLOSE || '',
-  cxChatBT: process.env.TG_CHAT_BT || '-1003974976122',
-  cxChatSettings: process.env.TG_CHAT_SETTINGS || '-1004495709499',
+  // لا تضع معرّفات قنوات ثابتة هنا — على خادم جديد تصبح قنوات لا يملكها البوت
+  // فيفشل الإرسال بـ "chat not found" مع كل إشارة
+  cxChatBT: process.env.TG_CHAT_BT || '',
+  cxChatSettings: process.env.TG_CHAT_SETTINGS || '',
   cxEntry2on: true, cxEntry2Dist: '0.2', cxEntry2Amt: '50',
   cxBEon: false,
   trSon: false, trSstart: 75, trSgap: 3,
@@ -530,11 +532,27 @@ async function tgSend(text, chat, opts = {}) {
   if (!tgSending) drainTgQueue();
 }
 
+// أي خانة إعدادات يخصّها هذا الـ chat id — ليظهر اسمها في رسالة الخطأ
+function chatLabel(chat) {
+  const s = STATE.settings, c = String(chat);
+  if (c === String(s.cxChat)) return 'Chat ID الأساسي (الإشارات)';
+  if (c === String(s.cxChatClose)) return 'Chat ID — إغلاق الصفقات';
+  if (c === String(s.cxChatSettings)) return 'Chat ID — إعدادات الصفقات';
+  if (c === String(s.cxChatBT)) return 'Chat ID — الباك تيست';
+  if (c === String(s.cxChatSTSim)) return 'Chat ID — محاكاة سوبر تريند';
+  if (c === String(s.lockTgChat)) return 'Chat ID — نظام القفل';
+  return 'قناة غير معروفة';
+}
+
+// قنوات فشلت بـ "chat not found" — نتوقف عن مراسلتها بدل تكرار الخطأ مع كل إشارة
+const deadChats = new Map();   // chat -> { at, label }
+
 async function drainTgQueue() {
   tgSending = true;
   while (tgQueue.length) {
     const item = tgQueue.shift();
     const { text, chat, token, trackSym, replyTo } = item;
+    if (deadChats.has(String(chat))) continue;   // قناة معطوبة — تخطَّ بصمت
     try {
       const payload = { chat_id: chat, text };
       if (replyTo) payload.reply_to_message_id = replyTo;
@@ -560,7 +578,16 @@ async function drainTgQueue() {
           tgQueue.unshift(item);
           await new Promise(r => setTimeout(r, wait));
         } else {
-          reportError('تلغرام', `فشل الإرسال (${res.status}): ${body.slice(0, 200)}`);
+          const label = chatLabel(chat);
+          const notFound = /chat not found|chat_id is empty|bot was kicked|not a member/i.test(body);
+          if (notFound) {
+            // لن تنجح أبداً حتى يُصلَّح الإعداد — أوقف الإرسال لها وبلّغ مرة واحدة
+            deadChats.set(String(chat), { at: Date.now(), label });
+            reportError('تلغرام', `القناة «${label}» غير موجودة (${chat}) — صحّح الرقم في صفحة الإعدادات أو امسحه. أُوقف الإرسال لها.`);
+            addCopyLog('fail', `❌ تلغرام: «${label}» غير موجودة (${chat}) — أُوقف الإرسال لها`);
+          } else {
+            reportError('تلغرام', `فشل الإرسال إلى «${label}» (${res.status}): ${body.slice(0, 160)}`);
+          }
         }
       }
     } catch (e) {
@@ -2555,6 +2582,13 @@ async function handleClientMsg(msg, ws) {
         lockSave();
         lockNotify(`🔒 تم تفعيل نظام القفل\nالصفقات المفتوحة حالياً (${Object.keys(STATE.lockState.manualSyms).length}) لن تتأثر`);
       }
+      // تعديل أي Chat ID يعيد تفعيل الإرسال له (لو كان معطوباً سابقاً)
+      for (const k of ['cxChat', 'cxChatClose', 'cxChatSettings', 'cxChatBT', 'cxChatSTSim', 'lockTgChat']) {
+        if (msg.data[k] !== undefined && msg.data[k] !== STATE.settings[k]) {
+          deadChats.delete(String(STATE.settings[k]));
+          deadChats.delete(String(msg.data[k]));
+        }
+      }
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
       broadcast({ type: 'settings', data: STATE.settings });
@@ -3690,6 +3724,16 @@ async function init() {
 
   // تحميل الحالة من قاعدة البيانات
   STATE.settings = db.loadSettings(DEFAULT_SETTINGS);
+
+  // تنظيف: معرّفات قنوات كانت مكتوبة يدوياً كقيم افتراضية قديمة —
+  // على خادم/بوت جديد لا يملكها البوت فتفشل بـ "chat not found" مع كل إشارة
+  const STALE_CHATS = ['-1003974976122', '-1004495709499'];
+  for (const [key, env] of [['cxChatBT', 'TG_CHAT_BT'], ['cxChatSettings', 'TG_CHAT_SETTINGS']]) {
+    if (STALE_CHATS.includes(String(STATE.settings[key])) && !process.env[env]) {
+      STATE.settings[key] = '';
+      console.log(`🧹 أُزيل معرّف قناة قديم من ${key} (لم يكن يخصّ هذا البوت)`);
+    }
+  }
   STATE.symbolSettings = db.loadSymbolSettings();
   // تحديث إعدادات التلغرام من env vars عند كل تشغيل
   if (process.env.TG_TOKEN) STATE.settings.cxToken = process.env.TG_TOKEN;
