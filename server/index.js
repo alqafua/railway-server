@@ -133,6 +133,7 @@ const STATE = {
     enabledAt: 0,        // وقت تفعيل النظام (حماية الصفقات القديمة)
     manualSyms: {},      // sym -> { ts, margin } الصفقات اليدوية المعروفة
     beDone: {},          // sym -> true (بريك إيفن مطبّق)
+    ourStops: {},        // sym -> [orderId] أوامر الوقف التي وضعها النظام (لا نلغي غيرها)
     trades: [],          // سجل مختصر لصفقات النافذة
   },
   sentMsgIds: {},        // sym -> message_id لرسالة الإشارة (لمزامنة كورنكس)
@@ -1388,10 +1389,21 @@ async function buildLockDiag(master, positions) {
     const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
     const lev = parseFloat(pos.leverage) || 1;
     const margin = mark && lev ? (amt * mark) / lev : 0;
-    let hasStop = null;
+    let hasStop = null, ourStop = null, stopPx = null;
     try {
       const orders = await bFetch(master.apiKey, master.apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
-      hasStop = Array.isArray(orders) && orders.some(o => o.type === 'STOP_MARKET' || o.type === 'STOP' || o.type === 'TRAILING_STOP_MARKET');
+      if (Array.isArray(orders)) {
+        const stops = orders.filter(o => o.type === 'STOP_MARKET' || o.type === 'STOP' || o.type === 'TRAILING_STOP_MARKET');
+        hasStop = stops.length > 0;
+        const ourIds = (L.ourStops?.[sym] || []).map(String);
+        const mine = stops.find(o => ourIds.includes(String(o.orderId)));
+        ourStop = !!mine;
+        // أقرب وقف للسعر هو الذي سيُنفَّذ فعلياً
+        const prices = stops.map(o => parseFloat(o.stopPrice)).filter(p => p > 0);
+        if (prices.length && mark) {
+          stopPx = prices.reduce((a, b) => Math.abs(b - mark) < Math.abs(a - mark) ? b : a);
+        }
+      }
     } catch (e) {}
     // سبب عدم التصرّف (إن وُجد) — baseline يمنع التقليم/الإغلاق فقط، لا الستوب
     let blocked = null;
@@ -1399,7 +1411,7 @@ async function buildLockDiag(master, positions) {
     else if (rec?.baseline) blocked = 'خط أساس — لا تُقلَّم ولا تُغلق (الستوب يُطبَّق)';
     diag[sym] = {
       manual: chk.manual, why: chk.why, baseline: !!rec?.baseline,
-      slPlaced: !!rec?.slPlaced, hasStop, margin: parseFloat(margin.toFixed(2)),
+      slPlaced: !!rec?.slPlaced, hasStop, ourStop, stopPx, margin: parseFloat(margin.toFixed(2)),
       lev, pnl: parseFloat(pos.unRealizedProfit) || 0, blocked,
       lastErr: rec?.lastErr || null,
     };
@@ -1558,19 +1570,26 @@ async function cornixSync(sym, { cmd, stop, trailPct } = {}) {
   return out.length ? out.join(' + ') : null;
 }
 
-// إلغاء أوامر الوقف القائمة (بدون المساس بالتريلنج إن طُلب)
-async function cancelStops(acc, sym, { keepTrailing = true } = {}) {
-  try {
-    const orders = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
-    if (!Array.isArray(orders)) return;
-    for (const o of orders) {
-      const isTrail = o.type === 'TRAILING_STOP_MARKET' || o.origType === 'TRAILING_STOP_MARKET';
-      if (isTrail && keepTrailing) continue;
-      if (o.type === 'STOP_MARKET' || o.type === 'STOP' || isTrail) {
-        await bFetch(acc.apiKey, acc.apiSecret, 'DELETE', '/fapi/v1/order', { symbol: sym, orderId: o.orderId });
-      }
-    }
-  } catch (e) {}
+// يلغي أوامر الوقف التي وضعها هذا النظام فقط.
+// لا نمسّ أوامر كورنكس: وقفه بعيد (٣٠٪ مثلاً) ووقفنا أقرب، فالأقرب يضرب أولاً
+// والاثنان يتعايشان على المنصّة. إلغاء وقف كورنكس كان يترك الصفقة بلا حماية
+// احتياطية وقد يدفع كورنكس لإعادة إنشائه.
+async function cancelOurStops(acc, sym) {
+  const store = STATE.lockState.ourStops || (STATE.lockState.ourStops = {});
+  const ids = store[sym] || [];
+  for (const id of ids) {
+    // قد يكون الأمر نُفِّذ أو أُلغي مسبقاً — الفشل هنا غير مهم
+    try { await bFetch(acc.apiKey, acc.apiSecret, 'DELETE', '/fapi/v1/order', { symbol: sym, orderId: id }); }
+    catch (e) {}
+  }
+  if (ids.length) { delete store[sym]; lockSave(); }
+}
+
+function rememberOurStop(sym, orderId) {
+  if (!orderId) return;
+  const store = STATE.lockState.ourStops || (STATE.lockState.ourStops = {});
+  store[sym] = [orderId];
+  lockSave();
 }
 
 // تقليص جزئي لمركز — بدون تسجيله كصفقة مغلقة في الإحصائيات (يُستخدم للتقليم)
@@ -1599,7 +1618,7 @@ async function placeStop(acc, sym, pos, stopPrice, tag) {
     if (isLong && px >= mark) throw new Error(`سعر الوقف ${px} فوق السعر الحالي ${mark}`);
     if (!isLong && px <= mark) throw new Error(`سعر الوقف ${px} تحت السعر الحالي ${mark}`);
   }
-  await cancelStops(acc, sym, { keepTrailing: true });
+  await cancelOurStops(acc, sym);
   const mode = await getPositionMode(acc);
   const params = {
     symbol: sym, side: isLong ? 'SELL' : 'BUY', type: 'STOP_MARKET',
@@ -1607,7 +1626,8 @@ async function placeStop(acc, sym, pos, stopPrice, tag) {
   };
   // في وضع الهيدج لازم positionSide محدّد؛ في العادي BOTH
   params.positionSide = mode === 'hedge' ? (isLong ? 'LONG' : 'SHORT') : 'BOTH';
-  await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', params);
+  const r = await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', params);
+  rememberOurStop(sym, r?.orderId);
   addCopyLog('success', `🛡️ ${tag}: ${sym} وقف حدّي @ ${px}`);
   return px;
 }
@@ -1712,7 +1732,7 @@ async function applyTrailing(acc, syms, pct) {
     const qty = roundQty(Math.abs(parseFloat(pos.positionAmt)), sym);
     try {
       await ensureLotSize(sym);
-      await cancelStops(acc, sym, { keepTrailing: false });
+      await cancelOurStops(acc, sym);
       const tmode = await getPositionMode(acc);
       const tp = {
         symbol: sym, side: isLong ? 'SELL' : 'BUY', type: 'TRAILING_STOP_MARKET',
@@ -1720,7 +1740,8 @@ async function applyTrailing(acc, syms, pct) {
       };
       if (tmode === 'hedge') tp.positionSide = isLong ? 'LONG' : 'SHORT';
       else { tp.positionSide = 'BOTH'; tp.reduceOnly = 'true'; }
-      await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', tp);
+      const tr = await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', tp);
+      rememberOurStop(sym, tr?.orderId);
       results.done.push(`${sym} @ ${rate}%`);
       addCopyLog('success', `📉 تريلنج: ${sym} @ ${rate}%`);
       await cornixSync(sym, { cmd: tpl, trailPct: rate });
@@ -1930,6 +1951,7 @@ async function monitorLock() {
       }
     }
     for (const s of Object.keys(L.beDone)) if (!openSyms.has(s)) { delete L.beDone[s]; changed = true; }
+    if (L.ourStops) for (const s of Object.keys(L.ourStops)) if (!openSyms.has(s)) { delete L.ourStops[s]; changed = true; }
     if (changed) lockSave();
 
     // تشخيص كل دورة ثانية (كل ٣٠ ثانية) لتخفيف الضغط على الـ API
