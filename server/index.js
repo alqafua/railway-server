@@ -4263,8 +4263,34 @@ async function init() {
   alertId = STATE.alerts.reduce((m, a) => Math.max(m, a.id || 0), 0);
   console.log(`📦 DB loaded: ${STATE.copyAccounts.length} accounts, ${STATE.openTrades.length} trades, ${STATE.dcaOrders.length} DCA orders`);
 
+  // تحميل قائمة العملات مع إعادة محاولة — بايننس يردّ 418/429 عند تكرار
+  // إعادة التشغيل، وفشل واحد هنا كان يترك الماسح بصفر عملة إلى الأبد
+  let exInfo = null;
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    try {
+      exInfo = await fetchBinance('/fapi/v1/exchangeInfo');
+      if (attempt > 1) console.log(`✅ نجح تحميل العملات بعد ${attempt} محاولات`);
+      break;
+    } catch (e) {
+      const wait = Math.min(15 * 60000, 30000 * Math.pow(2, attempt - 1));
+      console.error(`⚠️ تحميل العملات فشل (محاولة ${attempt}/8): ${e.message} — إعادة بعد ${Math.round(wait / 1000)} ثانية`);
+      reportError('تحميل العملات', `${e.message} — إعادة المحاولة بعد ${Math.round(wait / 60000)} دقيقة`);
+      if (attempt === 8) break;
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  if (!exInfo) {
+    console.error('❌ تعذّر تحميل العملات بعد ٨ محاولات — سيُعاد المحاولة كل ١٥ دقيقة');
+    setInterval(async () => {
+      if (STATE.symbols.length) return;
+      try { const d2 = await fetchBinance('/fapi/v1/exchangeInfo'); if (d2?.symbols) { console.log('🔄 عاد الاتصال ببايننس — إعادة التشغيل'); process.exit(0); } }
+      catch (e) {}
+    }, 15 * 60000);
+    return;
+  }
+
   try {
-    const d = await fetchBinance('/fapi/v1/exchangeInfo');
+    const d = exInfo;
     STATE.symbols = d.symbols
       .filter(s => s.quoteAsset === 'USDT' && s.contractType === 'PERPETUAL' && s.status === 'TRADING')
       .map(s => {
