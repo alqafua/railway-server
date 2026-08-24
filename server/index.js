@@ -1576,6 +1576,43 @@ async function cornixEditSignal(sym, { stop, trailPct } = {}) {
   return { ok: true, changes };
 }
 
+// فحص وجود رسالة بلا أي أثر جانبي:
+// نطلب تحويلها إلى قناة وهمية غير موجودة. تلغرام يتحقق من الرسالة المصدر أولاً،
+// فيكون ردّه:
+//   "message to forward not found" → الرسالة غير موجودة
+//   "chat not found"               → الرسالة موجودة (فشل عند الوجهة فقط)
+// وبهذا لا تُحوَّل أي رسالة ولا تتلوّث أي قناة.
+const PROBE_DEST = '-1000000000001';
+async function messageExists(fromChat, msgId) {
+  const token = STATE.settings.cxToken;
+  if (!token) return null;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 12000);
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/forwardMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: PROBE_DEST, from_chat_id: fromChat, message_id: msgId }),
+      signal: ac.signal,
+    });
+    if (res.ok) return true;                       // نجح فعلاً (وجهة صالحة بالصدفة)
+    const body = await res.text().catch(() => '');
+    if (/message to forward not found/i.test(body)) return false;
+    if (/chat not found/i.test(body)) return true;
+    return null;                                   // غير حاسم
+  } catch (e) { return null; }
+  finally { clearTimeout(timer); }
+}
+
+// يبحث عن رسالة كورنكس البديلة بعد رقم رسالتنا مباشرة
+async function findReplacementMsg(chat, ourId) {
+  for (let off = 1; off <= 5; off++) {
+    const ex = await messageExists(chat, ourId + off);
+    if (ex === true) return ourId + off;
+    await new Promise(r => setTimeout(r, 300));
+  }
+  return null;
+}
+
 // بعد إرسال إشارة بمدّة قصيرة نتحقق: هل بقيت رسالتنا؟ وهل ما زال البوت يملكها؟
 // نعدّلها بنفس نصها تماماً، فردّ تلغرام وحده يكفي للحكم دون تغيير أي شيء.
 // هذا يحسم السؤال آلياً بدل الاعتماد على توقيت المستخدم أو على رسائل قد تُحذف يدوياً.
@@ -1592,6 +1629,13 @@ async function verifySignalMsg(sym) {
   } else if (/not found/i.test(err)) {
     verdict = 'gone';
     detail = 'اختفت خلال دقيقة من إرسالها — حُذفت أو أعاد كورنكس نشرها';
+    // ابحث عن البديل: أرقام الرسائل متتابعة فرسالة كورنكس تلي رسالتنا
+    const alt = await findReplacementMsg(chat, rec.id);
+    if (alt) {
+      rec.cornixId = alt;
+      saveSentMsgIdsDebounced();
+      detail += ` · البديل على الأرجح #${alt}`;
+    }
   } else if (/can't be edited|MESSAGE_AUTHOR_REQUIRED|not enough rights/i.test(err)) {
     verdict = 'foreign';
     detail = 'موجودة لكن البوت لا يملك حق تعديلها';
@@ -1600,7 +1644,7 @@ async function verifySignalMsg(sym) {
     detail = err.slice(0, 80);
   }
   const store = STATE.lockState.msgFate || (STATE.lockState.msgFate = {});
-  store[sym] = { at: Date.now(), id: rec.id, chat, verdict, detail };
+  store[sym] = { at: Date.now(), id: rec.id, chat, verdict, detail, cornixId: rec.cornixId || null };
   // نحتفظ بآخر ١٠ فقط
   const keys = Object.keys(store).sort((a, b) => (store[b].at || 0) - (store[a].at || 0));
   for (const k of keys.slice(10)) delete store[k];
