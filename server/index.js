@@ -135,6 +135,7 @@ const STATE = {
     manualSyms: {},      // sym -> { ts, margin } الصفقات اليدوية المعروفة
     beDone: {},          // sym -> true (بريك إيفن مطبّق)
     ourStops: {},        // sym -> [orderId] أوامر الوقف التي وضعها النظام (لا نلغي غيرها)
+    manualOverride: {},  // sym -> 'manual' | 'bot' — تصنيف يدوي يغلب الاستنتاج التلقائي
     trades: [],          // سجل مختصر لصفقات النافذة
   },
   sentMsgIds: {},        // sym -> message_id لرسالة الإشارة (لمزامنة كورنكس)
@@ -1416,6 +1417,7 @@ async function buildLockDiag(master, positions) {
       slPlaced: !!rec?.slPlaced, hasStop, ourStop, stopPx, margin: parseFloat(margin.toFixed(2)),
       lev, pnl: parseFloat(pos.unRealizedProfit) || 0, blocked,
       lastErr: rec?.lastErr || null,
+      override: L.manualOverride?.[sym] || null,
     };
     await new Promise(r => setTimeout(r, 120));
   }
@@ -1431,6 +1433,11 @@ const AUTO_TRADE_LABELS = ['🪞 Copy', '🪞 Binance', '📊 مراقبة'];
 // هل هذه الصفقة يدوية؟ (ليست من إشارة البوت/كورنكس)
 // نُرجع السبب أيضاً ليظهر في لوحة التشخيص
 function manualCheck(sym) {
+  // تجاوز يدوي من المستخدم — يغلب كل استنتاج، لأن الرمز قد يكون له إشارة قديمة
+  // بينما الصفقة القائمة فُتحت باليد (أو العكس)
+  const ov = STATE.lockState.manualOverride?.[sym];
+  if (ov === 'manual') return { manual: true, why: 'يدوية (تحديد يدوي)' };
+  if (ov === 'bot') return { manual: false, why: 'صفقة بوت (تحديد يدوي)' };
   if (STATE.sentMsgIds[sym]) return { manual: false, why: 'أُرسلت إشارة تلغرام لهذا الرمز' };
   if (STATE.sentSigs[sym]) return { manual: false, why: 'إشارة بوت نشطة لهذا الرمز' };
   const t = STATE.openTrades.find(x => x.symbol === sym);
@@ -1622,16 +1629,35 @@ async function placeStop(acc, sym, pos, stopPrice, tag) {
   }
   await cancelOurStops(acc, sym);
   const mode = await getPositionMode(acc);
-  const params = {
-    symbol: sym, side: isLong ? 'SELL' : 'BUY', type: 'STOP_MARKET',
-    stopPrice: String(px), closePosition: 'true', workingType: 'MARK_PRICE',
-  };
-  // في وضع الهيدج لازم positionSide محدّد؛ في العادي BOTH
-  params.positionSide = mode === 'hedge' ? (isLong ? 'LONG' : 'SHORT') : 'BOTH';
-  const r = await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', params);
-  rememberOurStop(sym, r?.orderId);
-  addCopyLog('success', `🛡️ ${tag}: ${sym} وقف حدّي @ ${px}`);
-  return px;
+  const side = isLong ? 'SELL' : 'BUY';
+  const posSide = mode === 'hedge' ? (isLong ? 'LONG' : 'SHORT') : 'BOTH';
+
+  // بعض الحسابات/العملات ترفض closePosition على /fapi/v1/order وتردّ
+  // "Order type not supported for this endpoint" — نسقط عندها إلى صيغة
+  // الكمية + reduceOnly، وهي الصيغة المستخدمة في باقي البوت.
+  const attempts = [
+    { symbol: sym, side, type: 'STOP_MARKET', stopPrice: String(px), closePosition: 'true', positionSide: posSide },
+    (() => {
+      const q = { symbol: sym, side, type: 'STOP_MARKET', stopPrice: String(px), quantity: roundQty(Math.abs(amt), sym), positionSide: posSide };
+      if (mode !== 'hedge') q.reduceOnly = 'true';
+      return q;
+    })(),
+  ];
+
+  let lastErr = null;
+  for (const params of attempts) {
+    try {
+      const r = await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', params);
+      rememberOurStop(sym, r?.orderId);
+      addCopyLog('success', `🛡️ ${tag}: ${sym} وقف حدّي @ ${px}`);
+      return px;
+    } catch (e) {
+      lastErr = e;
+      // أخطاء لا تُصلحها إعادة المحاولة بصيغة أخرى
+      if (!/not supported for this endpoint|Algo Order/i.test(e.message)) throw e;
+    }
+  }
+  throw lastErr || new Error('تعذّر وضع الوقف');
 }
 
 // (4)+(5) بريك إيفن للصفقات الرابحة — سعر الوقف فوق الدخول بقليل لتغطية العمولات
@@ -3604,6 +3630,30 @@ async function handleClientMsg(msg, ws) {
     // الرموز التي لدينا رسالة إشارة محفوظة لها (لاختبار التعديل)
     case 'lockMsgSyms': {
       broadcast({ type: 'lockMsgSyms', data: msgSymsList() });
+      break;
+    }
+
+    // تصنيف صفقة يدوياً — الاستنتاج التلقائي يخطئ حين يكون للرمز إشارة قديمة
+    // بينما الصفقة القائمة فُتحت باليد
+    case 'lockSetKind': {
+      const { sym, kind } = msg.data || {};
+      if (!sym) break;
+      const store = STATE.lockState.manualOverride || (STATE.lockState.manualOverride = {});
+      if (kind === 'auto') delete store[sym];
+      else store[sym] = kind === 'manual' ? 'manual' : 'bot';
+      // التصنيف الجديد يعني إعادة تقييم الوقف
+      if (STATE.lockState.manualSyms[sym]) delete STATE.lockState.manualSyms[sym].slPlaced;
+      lockSave();
+      const master = STATE.copyAccounts.find(a => a.isMaster);
+      if (master?.apiKey) {
+        try {
+          master.livePositions = await getPositions(master);
+          const positions = (master.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+          await buildLockDiag(master, positions);
+        } catch (e) {}
+      }
+      broadcast({ type: 'lockState', data: lockPublic() });
+      broadcast({ type: 'lockResult', data: { ok: true, action: 'kind', done: [`${sym.replace('USDT', '/USDT')} → ${kind === 'auto' ? 'تلقائي' : kind === 'manual' ? 'يدوية' : 'صفقة بوت'}`], skipped: [], failed: [] } });
       break;
     }
 
