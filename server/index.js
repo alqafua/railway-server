@@ -3523,12 +3523,26 @@ async function handleClientMsg(msg, ws) {
           if (res.ok) { lines.push(`#${mid}: ✅ موجودة — حُوّلت لقناة القفل`); found.push(mid); }
           else {
             let d = body; try { d = JSON.parse(body).description || body; } catch (e) {}
-            lines.push(`#${mid}: ❌ ${String(d).slice(0, 45)}`);
+            const s = String(d);
+            // تلغرام يفحص الرسالة المصدر قبل الوجهة: فشل الوجهة يعني أن الرسالة موجودة
+            if (/chat not found/i.test(s)) {
+              lines.push(`#${mid}: ✅ موجودة — لكن تعذّر التحويل (قناة الوجهة ${dest} غير موجودة)`);
+              found.push(mid);
+            } else if (/message to forward not found/i.test(s)) {
+              lines.push(`#${mid}: ❌ غير موجودة`);
+            } else {
+              lines.push(`#${mid}: ⚠️ ${s.slice(0, 45)}`);
+            }
           }
         } catch (e) { lines.push(`#${mid}: ⚠️ ${e.message}`); }
         await new Promise(r => setTimeout(r, 400));
       }
-      lines.push(found.length ? 'افتح قناة القفل وشوف أي رسالة هي إشارة كورنكس، ثم جرّب تعديلها برقمها.' : 'لم يُعثر على رسائل بعد رسالتنا.');
+      if (found.length) {
+        lines.push('');
+        lines.push(`المرشّح الأرجح لرسالة كورنكس: #${found[0]} — جرّب تعديلها في الخانة أدناه.`);
+      } else {
+        lines.push('لم يُعثر على رسائل بعد رسالتنا.');
+      }
       STATE.lockState.cornixCandidates = found;
       lockSave();
       broadcast({ type: 'lockResult', data: { ok: true, action: 'find', done: lines, skipped: [], failed: [], verbose: true } });
