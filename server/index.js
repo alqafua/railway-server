@@ -1479,10 +1479,14 @@ const TG_EDIT_WINDOW_MS = 48 * HOUR_MS;
 async function tgEditDirect(chat, messageId, text) {
   const token = STATE.settings.cxToken;
   if (!token) return { ok: false, error: 'لا يوجد توكن بوت' };
+  // مهلة صريحة: بدونها قد يعلّق الطلب إلى الأبد فيبقى الزر ينتظر بلا رد
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 15000);
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chat, message_id: messageId, text }),
+      signal: ac.signal,
     });
     const body = await res.text().catch(() => '');
     if (res.ok) return { ok: true };
@@ -1490,7 +1494,9 @@ async function tgEditDirect(chat, messageId, text) {
     try { desc = JSON.parse(body).description || body; } catch (e) {}
     return { ok: false, error: desc, status: res.status };
   } catch (e) {
-    return { ok: false, error: e.message };
+    return { ok: false, error: e.name === 'AbortError' ? 'انتهت المهلة (١٥ ثانية) بلا رد من تلغرام' : e.message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

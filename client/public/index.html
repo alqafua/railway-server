@@ -140,7 +140,7 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v13-lock';
+const UI_VERSION='v14-lock';
 const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',lockMsgSyms:[],lockProbe:[],sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEnearPct:1,lockBEoffsetPct:0.1,lockTgChat:'',lockCornixSync:false,lockCornixMode:'reply',lockCxBEtpl:'SL to entry',lockCxSLtpl:'New stop loss: {price}',lockCxTrailTpl:'Trailing stop: {pct}%',extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
@@ -1373,11 +1373,20 @@ function rLockPage(){
       teRow.appendChild(el('span',{style:{fontSize:'10px',color:'var(--text2)'}},'④ جرّب تعديلها:'));
       teRow.appendChild(teI);
       const teB=el('button',{className:'btn',style:{fontSize:'11px',fontWeight:'800',borderColor:'var(--red)',color:'var(--red)',background:'transparent'}},'جرّب');
+      // ضغطتان بدل confirm — بعض متصفحات الجوال تحجب confirm فيعلّق الزر بلا رد
+      let teArmed=false;
       teB.onclick=()=>{
         const v=parseInt(teI.value);
         if(!v){showNotif('❌ أدخل رقم الرسالة من نتيجة البحث',2500);return;}
-        if(!confirm('سيحاول تعديل الرسالة #'+v+' بنص اختباري.\nلو نجح فسيستبدل محتواها — جرّب على إشارة لا تهمك.\nمتابعة؟'))return;
-        teB.textContent='⏳';teB.disabled=true;send('lockTryEditCornix',{msgId:v});
+        if(!teArmed){
+          teArmed=true;teB.textContent='اضغط للتأكيد';teB.style.background='rgba(255,71,87,.15)';
+          showNotif('سيستبدل محتوى الرسالة #'+v+' بنص اختباري — اضغط مرة أخرى للتأكيد',5000);
+          setTimeout(()=>{if(teArmed){teArmed=false;teB.textContent='جرّب';teB.style.background='transparent';}},6000);
+          return;
+        }
+        teArmed=false;teB.textContent='⏳';teB.disabled=true;send('lockTryEditCornix',{msgId:v});
+        // شبكة أمان: لو لم يصل رد خلال ٢٠ ثانية نعيد الزر بدل تركه معلّقاً
+        setTimeout(()=>{if(teB.disabled){teB.textContent='جرّب';teB.disabled=false;teB.style.background='transparent';showNotif('⚠️ لم يصل رد من السيرفر — تأكد من الاتصال',4000);}},20000);
       };
       teRow.appendChild(teB);
       tBox.appendChild(teRow);
@@ -3723,7 +3732,26 @@ function rBacktestPage(){
   page.appendChild(s5);
   return page;
 }
+// حاجز أخطاء: استثناء أثناء الرسم كان يترك الصفحة بيضاء بلا أي أثر —
+// الآن يظهر الخطأ ويبقى زر للعودة بدل التعليق الصامت
 function render(){
+  try{ renderInner(); }
+  catch(e){
+    console.error('render error:',e);
+    const root=document.getElementById('root');
+    if(!root)return;
+    root.innerHTML='';
+    const box=el('div',{style:{margin:'40px auto',maxWidth:'560px',background:'rgba(255,71,87,.08)',border:'2px solid var(--red)',borderRadius:'14px',padding:'18px'}});
+    box.appendChild(el('div',{style:{fontSize:'15px',fontWeight:'800',color:'var(--red)',marginBottom:'10px'}},'⚠️ خطأ في عرض الصفحة'));
+    box.appendChild(el('div',{style:{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8',marginBottom:'12px',direction:'ltr',textAlign:'left',fontFamily:'monospace',wordBreak:'break-word'}},String(e&&e.message||e)));
+    const bar=el('div',{style:{display:'flex',gap:'8px',flexWrap:'wrap'}});
+    bar.appendChild(el('button',{className:'btn',onClick:()=>{C.page='dashboard';render();}},'← الداشبورد'));
+    bar.appendChild(el('button',{className:'btn',onClick:()=>location.reload()},'🔄 إعادة تحميل'));
+    box.appendChild(bar);
+    root.appendChild(box);
+  }
+}
+function renderInner(){
   // حفظ موقع الـ scroll
   const scrollY=window.scrollY;
   const root=document.getElementById('root');if(needsSetup()){root.innerHTML='';root.appendChild(rServerSetup());return;}if(!C.loggedIn){root.innerHTML='';root.appendChild(rLogin());return;}const ae=document.activeElement;const typing=ae&&(ae.tagName==='INPUT'||ae.tagName==='SELECT'||ae.tagName==='TEXTAREA');if(typing&&C.page==='dashboard'&&root.querySelector('.dash-hdr')){const st=getStats();const sv=root.querySelectorAll('.sval');if(sv.length>=5){sv[0].textContent=st.ob;sv[1].textContent=st.os;sv[2].textContent=st.conf;sv[3].textContent=st.trail;sv[4].textContent=st.total;}if(C.progress>0){const pb=root.querySelector('.prog-bar');if(pb){const pf=pb.querySelector('.prog-fill');if(pf)pf.style.width=C.progress+'%';}}const grid=root.querySelector('.grid');if(grid){const list=getList();const ng=el('div',{className:'grid'});list.forEach(sym=>{const c=rCard(sym);if(c)ng.appendChild(c);});grid.parentNode.replaceChild(ng,grid);}const ot=root.querySelector('.toast');const nt=rToast();if(ot&&nt)ot.parentNode.replaceChild(nt,ot);else if(ot&&!nt)ot.remove();else if(!ot&&nt)root.appendChild(nt);return;}
