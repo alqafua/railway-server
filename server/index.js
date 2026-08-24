@@ -136,6 +136,7 @@ const STATE = {
     beDone: {},          // sym -> true (بريك إيفن مطبّق)
     ourStops: {},        // sym -> [orderId] أوامر الوقف التي وضعها النظام (لا نلغي غيرها)
     manualOverride: {},  // sym -> 'manual' | 'bot' — تصنيف يدوي يغلب الاستنتاج التلقائي
+    msgFate: {},         // sym -> مصير رسالة الإشارة بعد إرسالها (هل بقيت؟ هل يملكها البوت؟)
     trades: [],          // سجل مختصر لصفقات النافذة
   },
   sentMsgIds: {},        // sym -> message_id لرسالة الإشارة (لمزامنة كورنكس)
@@ -575,6 +576,8 @@ async function drainTgQueue() {
               // نحفظ النص أيضاً — لازم لتعديل الرسالة لاحقاً بنفس صيغتها
               STATE.sentMsgIds[trackSym] = { id: mid, chat, ts: Date.now(), text };
               saveSentMsgIdsDebounced();
+              // بعد دقيقة: هل بقيت الرسالة؟ يحسم آلياً هل يحذفها كورنكس
+              setTimeout(() => { verifySignalMsg(trackSym).catch(() => {}); }, 60000);
             }
           } catch (e) {}
         }
@@ -1376,6 +1379,7 @@ function lockPublic() {
     trades: (L.trades || []).slice(0, 20),
     diag: L.diag || {},
     diagAt: L.diagAt || 0,
+    msgFate: L.msgFate || {},
     booted: bootBaselineDone,
   };
 }
@@ -1570,6 +1574,39 @@ async function cornixEditSignal(sym, { stop, trailPct } = {}) {
   rec.text = t;                 // النص المحفوظ يبقى مطابقاً للرسالة المنشورة
   saveSentMsgIdsDebounced();
   return { ok: true, changes };
+}
+
+// بعد إرسال إشارة بمدّة قصيرة نتحقق: هل بقيت رسالتنا؟ وهل ما زال البوت يملكها؟
+// نعدّلها بنفس نصها تماماً، فردّ تلغرام وحده يكفي للحكم دون تغيير أي شيء.
+// هذا يحسم السؤال آلياً بدل الاعتماد على توقيت المستخدم أو على رسائل قد تُحذف يدوياً.
+async function verifySignalMsg(sym) {
+  const rec = STATE.sentMsgIds[sym];
+  if (!rec?.id || !rec.text) return;
+  const chat = rec.chat || STATE.settings.cxChat;
+  const r = await tgEditDirect(chat, rec.id, rec.text);
+  const err = String(r.error || '');
+  let verdict, detail;
+  if (r.ok || /not modified/i.test(err)) {
+    verdict = 'alive';
+    detail = 'الرسالة باقية والبوت يملكها — التعديل ممكن';
+  } else if (/not found/i.test(err)) {
+    verdict = 'gone';
+    detail = 'اختفت خلال دقيقة من إرسالها — حُذفت أو أعاد كورنكس نشرها';
+  } else if (/can't be edited|MESSAGE_AUTHOR_REQUIRED|not enough rights/i.test(err)) {
+    verdict = 'foreign';
+    detail = 'موجودة لكن البوت لا يملك حق تعديلها';
+  } else {
+    verdict = 'unknown';
+    detail = err.slice(0, 80);
+  }
+  const store = STATE.lockState.msgFate || (STATE.lockState.msgFate = {});
+  store[sym] = { at: Date.now(), id: rec.id, chat, verdict, detail };
+  // نحتفظ بآخر ١٠ فقط
+  const keys = Object.keys(store).sort((a, b) => (store[b].at || 0) - (store[a].at || 0));
+  for (const k of keys.slice(10)) delete store[k];
+  lockSave();
+  addCopyLog(verdict === 'alive' ? 'success' : 'info', `🔎 رسالة ${sym}: ${detail}`);
+  broadcast({ type: 'lockState', data: lockPublic() });
 }
 
 // قائمة الإشارات المحفوظة مع عمرها وقابليتها للتعديل

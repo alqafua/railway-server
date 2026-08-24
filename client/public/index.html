@@ -140,7 +140,7 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v14-lock';
+const UI_VERSION='v15-lock';
 const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',lockMsgSyms:[],lockProbe:[],sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEnearPct:1,lockBEoffsetPct:0.1,lockTgChat:'',lockCornixSync:false,lockCornixMode:'reply',lockCxBEtpl:'SL to entry',lockCxSLtpl:'New stop loss: {price}',lockCxTrailTpl:'Trailing stop: {pct}%',extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
@@ -1305,16 +1305,33 @@ function rLockPage(){
   const sN=S('📨 الإشعارات ومزامنة كورنكس','var(--blue)');
   sN.appendChild(el('div',{style:{fontSize:'11px',color:'var(--text2)',lineHeight:'1.7',marginBottom:'6px'}},'كل عمليات النظام (فتح صفقة، تقليم، وقف، بريك إيفن، بلوغ الحد) تُرسَل لهذه القناة. اتركها فارغة لاستخدام القناة الأساسية.'));
   const gN=G();gN.appendChild(TXT('Chat ID — قناة نظام القفل','lockTgChat','-100xxxxxxxxx'));sN.appendChild(gN);
-  // خلاصة ما ثبت بالتجربة — تمنع إعادة الدوران في طرق مسدودة
-  const cxNote=el('div',{style:{background:'rgba(61,159,255,.06)',border:'1px solid rgba(61,159,255,.3)',borderRadius:'10px',padding:'11px 13px',margin:'8px 0',fontSize:'11px',color:'var(--text2)',lineHeight:'1.8'}});
-  cxNote.innerHTML='<b style="color:var(--blue)">ℹ️ نتيجة الاختبار على قناتك</b><br>'
-    +'كورنكس <b>يحذف رسالة البوت ويعيد نشرها باسمه</b> (مع أزرار View Signal). لذلك:<br>'
-    +'• <b>تعديل الرسالة</b> — مستحيل، الرسالة لم تعد ملك البوت<br>'
-    +'• <b>الرد بأمر تحديث</b> — جُرِّبت خمس صيغ ولم ينفّذ كورنكس أياً منها<br>'
-    +'<b style="color:var(--green)">الحل المعتمد:</b> بايننس هو المرجع. النظام يضع وقفه الخاص على المنصّة، '
-    +'ووقف كورنكس البعيد (٣٠٪) يبقى كشبكة أمان. الأقرب للسعر هو الذي ينفّذ — وهو وقفنا. '
-    +'لا حاجة لتفعيل المزامنة أدناه.';
-  sN.appendChild(cxNote);
+  // مصير رسائل الإشارات — يُفحص آلياً بعد دقيقة من كل إشارة
+  const fate=L?.msgFate||{};
+  const fateKeys=Object.keys(fate).sort((a,b)=>(fate[b].at||0)-(fate[a].at||0));
+  const fBox=el('div',{style:{background:'rgba(61,159,255,.06)',border:'1px solid rgba(61,159,255,.3)',borderRadius:'10px',padding:'11px 13px',margin:'8px 0',fontSize:'11px',lineHeight:'1.8'}});
+  fBox.appendChild(el('div',{style:{fontWeight:'800',color:'var(--blue)',marginBottom:'6px'}},'🔎 مصير رسائل الإشارات (فحص آلي بعد دقيقة من كل إشارة)'));
+  if(!fateKeys.length){
+    fBox.appendChild(el('div',{style:{color:'var(--text2)'}},'لم تُفحص إشارة بعد. عند وصول إشارة جديدة يفحصها البوت تلقائياً ويظهر الحكم هنا — لا تمسح رسائل القناة حتى يكتمل الفحص.'));
+  } else {
+    const V={alive:['✅','var(--green)'],gone:['❌','var(--red)'],foreign:['⛔','var(--orange)'],unknown:['⚠️','var(--text2)']};
+    fateKeys.slice(0,6).forEach(s=>{
+      const f=fate[s];const[ic,col]=V[f.verdict]||V.unknown;
+      const r=el('div',{style:{display:'flex',gap:'6px',alignItems:'flex-start',marginBottom:'3px'}});
+      r.appendChild(el('span',{style:{color:col,fontWeight:'800',flexShrink:'0'}},ic));
+      const t=el('div',{});
+      t.appendChild(el('span',{style:{fontWeight:'700'}},s.replace('USDT','/USDT')+' '));
+      t.appendChild(el('span',{style:{color:'var(--text2)',fontSize:'10px'}},f.detail));
+      r.appendChild(t);fBox.appendChild(r);
+    });
+    const alive=fateKeys.filter(s=>fate[s].verdict==='alive').length;
+    const gone=fateKeys.filter(s=>fate[s].verdict==='gone').length;
+    const sum=el('div',{style:{marginTop:'8px',paddingTop:'8px',borderTop:'1px solid var(--border)',fontSize:'11px'}});
+    if(alive&&!gone)sum.innerHTML='<b style="color:var(--green)">الخلاصة:</b> رسائل البوت تبقى ويملكها — <b>تعديل الرسالة ممكن</b> وستعمل المزامنة.';
+    else if(gone&&!alive)sum.innerHTML='<b style="color:var(--red)">الخلاصة:</b> رسائل البوت تختفي بعد إرسالها — التعديل غير ممكن. بايننس هو المرجع، ووقف النظام أقرب للسعر من وقف كورنكس فهو الذي ينفّذ.';
+    else sum.innerHTML='<b>الخلاصة:</b> النتائج مختلطة — انتظر إشارات إضافية، ولا تمسح رسائل القناة أثناء الفحص.';
+    fBox.appendChild(sum);
+  }
+  sN.appendChild(fBox);
   sN.appendChild(TOG('مزامنة كورنكس (تجريبي)','lockCornixSync','لم تنجح على قناتك — اتركها مطفأة'));
   if(C.settings.lockCornixSync){
     // اختيار الوضع
