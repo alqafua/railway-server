@@ -140,7 +140,7 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v8-lock';
+const UI_VERSION='v9-lock';
 const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',lockMsgSyms:[],lockProbe:[],sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEnearPct:1,lockBEoffsetPct:0.1,lockTgChat:'',lockCornixSync:false,lockCornixMode:'reply',lockCxBEtpl:'SL to entry',lockCxSLtpl:'New stop loss: {price}',lockCxTrailTpl:'Trailing stop: {pct}%',extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
@@ -1354,6 +1354,25 @@ function rLockPage(){
       probeBtn.onclick=()=>{probeBtn.textContent='⏳ يفحص...';probeBtn.disabled=true;send('lockProbeMsg',{});};
       tBox.appendChild(probeBtn);
       tBox.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginBottom:'10px',lineHeight:'1.6'}},'يفحص آخر ٥ إشارات ويقول لكل واحدة: هل ما زالت رسالة البوت، أم حُذفت وأعاد كورنكس نشرها. لا يغيّر أي رقم.'));
+      // البحث عن رسالة كورنكس ومحاولة تعديلها
+      const findBtn=el('button',{className:'btn',style:{width:'100%',justifyContent:'center',fontSize:'11px',fontWeight:'700',marginBottom:'6px',borderColor:'var(--purple)',color:'var(--purple)',background:'rgba(165,94,234,.06)'}});
+      findBtn.textContent='③ ابحث عن رسالة كورنكس';
+      findBtn.onclick=()=>{findBtn.textContent='⏳ يبحث...';findBtn.disabled=true;send('lockFindCornix',{});};
+      tBox.appendChild(findBtn);
+      tBox.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginBottom:'8px',lineHeight:'1.6'}},'أرقام الرسائل متتابعة، فرسالة كورنكس بعد رسالتنا مباشرة. يحوّل الرسائل التالية إلى قناة القفل لتراها. لا يعدّل شيئاً.'));
+      const teRow=el('div',{style:{display:'flex',gap:'6px',alignItems:'center',flexWrap:'wrap',marginBottom:'8px'}});
+      const teI=el('input',{type:'number',className:'ninp',placeholder:'رقم الرسالة',style:{width:'110px'}});
+      teRow.appendChild(el('span',{style:{fontSize:'10px',color:'var(--text2)'}},'④ جرّب تعديلها:'));
+      teRow.appendChild(teI);
+      const teB=el('button',{className:'btn',style:{fontSize:'11px',fontWeight:'800',borderColor:'var(--red)',color:'var(--red)',background:'transparent'}},'جرّب');
+      teB.onclick=()=>{
+        const v=parseInt(teI.value);
+        if(!v){showNotif('❌ أدخل رقم الرسالة من نتيجة البحث',2500);return;}
+        if(!confirm('سيحاول تعديل الرسالة #'+v+' بنص اختباري.\nلو نجح فسيستبدل محتواها — جرّب على إشارة لا تهمك.\nمتابعة؟'))return;
+        teB.textContent='⏳';teB.disabled=true;send('lockTryEditCornix',{msgId:v});
+      };
+      teRow.appendChild(teB);
+      tBox.appendChild(teRow);
       if(C.lockProbe?.length){
         const pb=el('div',{style:{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'8px',padding:'9px 11px',marginBottom:'10px'}});
         pb.appendChild(el('div',{style:{fontSize:'10px',fontWeight:'800',color:'var(--orange)',marginBottom:'5px'}},'نتيجة الفحص:'));

@@ -3499,6 +3499,62 @@ async function handleClientMsg(msg, ws) {
       break;
     }
 
+    // البحث عن رسالة كورنكس: أرقام الرسائل في القناة متتابعة، فرسالة كورنكس
+    // البديلة تقع بعد رسالتنا مباشرة. نستخدم forwardMessage لأنه لا يغيّر شيئاً —
+    // ينجح إن كانت الرسالة موجودة، ويفشل إن لم تكن.
+    case 'lockFindCornix': {
+      const dest = STATE.settings.lockTgChat || STATE.settings.cxChat;
+      const token = STATE.settings.cxToken;
+      const entries = Object.entries(STATE.sentMsgIds).filter(([, r]) => r?.id)
+        .sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
+      if (!entries.length || !token) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لا توجد إشارة محفوظة' } }); break; }
+      const [sym, rec] = entries[0];
+      const from = rec.chat || STATE.settings.cxChat;
+      const lines = [`رسالتنا لـ ${sym.replace('USDT', '/USDT')} كانت #${rec.id} في ${from}`];
+      const found = [];
+      for (let off = 1; off <= 6; off++) {
+        const mid = rec.id + off;
+        try {
+          const res = await fetch(`https://api.telegram.org/bot${token}/forwardMessage`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: dest, from_chat_id: from, message_id: mid }),
+          });
+          const body = await res.text().catch(() => '');
+          if (res.ok) { lines.push(`#${mid}: ✅ موجودة — حُوّلت لقناة القفل`); found.push(mid); }
+          else {
+            let d = body; try { d = JSON.parse(body).description || body; } catch (e) {}
+            lines.push(`#${mid}: ❌ ${String(d).slice(0, 45)}`);
+          }
+        } catch (e) { lines.push(`#${mid}: ⚠️ ${e.message}`); }
+        await new Promise(r => setTimeout(r, 400));
+      }
+      lines.push(found.length ? 'افتح قناة القفل وشوف أي رسالة هي إشارة كورنكس، ثم جرّب تعديلها برقمها.' : 'لم يُعثر على رسائل بعد رسالتنا.');
+      STATE.lockState.cornixCandidates = found;
+      lockSave();
+      broadcast({ type: 'lockResult', data: { ok: true, action: 'find', done: lines, skipped: [], failed: [], verbose: true } });
+      break;
+    }
+
+    // محاولة تعديل رسالة كورنكس نفسها — يُظهر رد تلغرام الحرفي
+    case 'lockTryEditCornix': {
+      const { msgId } = msg.data || {};
+      const mid = parseInt(msgId);
+      if (!mid) { broadcast({ type: 'lockResult', data: { ok: false, error: 'أدخل رقم الرسالة' } }); break; }
+      const entries = Object.entries(STATE.sentMsgIds).filter(([, r]) => r?.id)
+        .sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
+      const chat = entries[0]?.[1]?.chat || STATE.settings.cxChat;
+      const r = await tgEditDirect(chat, mid, '🧪 اختبار: هل يستطيع البوت تعديل رسالة كورنكس؟');
+      const err = String(r.error || '');
+      let verdict;
+      if (r.ok) verdict = '✅✅ نجح! البوت يستطيع تعديل رسالة كورنكس — الحل ممكن';
+      else if (/not modified/i.test(err)) verdict = '✅ الرسالة موجودة والبوت يملك حق تعديلها';
+      else if (/not found/i.test(err)) verdict = '❌ لا توجد رسالة بهذا الرقم';
+      else if (/can't be edited|MESSAGE_AUTHOR_REQUIRED|not enough rights/i.test(err)) verdict = '⛔ موجودة لكن تلغرام يمنع البوت من تعديل رسالة غيره — الطريق مسدود';
+      else verdict = '⚠️ ' + err.slice(0, 80);
+      broadcast({ type: 'lockResult', data: { ok: true, action: 'tryedit', done: [`#${mid} في ${chat}:`, verdict], skipped: [], failed: [], verbose: true } });
+      break;
+    }
+
     // اختبار الصلاحية: يرسل رسالة نصية بسيطة ثم يعدّلها فوراً —
     // يفصل "هل يقدر البوت يعدّل؟" عن "هل السجل المحفوظ صحيح؟"
     case 'lockTestPerm': {
