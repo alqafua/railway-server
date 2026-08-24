@@ -44,7 +44,8 @@ const DEFAULT_SETTINGS = {
   cxTP1: '3', cxTP1Amt: '50', cxTP2on: false, cxTP2: '6', cxTP2Amt: '50',
   cxTrailTp: 'on', cxTrailPct: '0.5', cxEntryTrail: '0.5%',
   cxToken: process.env.TG_TOKEN || '',
-  cxChat: process.env.TG_CHAT || '',
+  // قناة الإشارات الثابتة — تُستخدم ما لم يُضبط TG_CHAT أو تُحفظ قيمة من الواجهة
+  cxChat: process.env.TG_CHAT || '-1004495709499',
   cxChatClose: process.env.TG_CHAT_CLOSE || '',
   // لا تضع معرّفات قنوات ثابتة هنا — على خادم جديد تصبح قنوات لا يملكها البوت
   // فيفشل الإرسال بـ "chat not found" مع كل إشارة
@@ -341,7 +342,8 @@ async function updateRespect() {
     broadcast({ type: 'respectProgress', data: { current: Math.min(i + 3, total), total, done: false } });
     if (i + 3 < total) await new Promise(r => setTimeout(r, 1500));
   }
-  db.saveRespectData(STATE.respectData);
+  STATE.respectAt = Date.now();
+  db.saveRespectData({ _at: STATE.respectAt, ...STATE.respectData });
   broadcast({ type: 'respectData', data: STATE.respectData });
   broadcast({ type: 'respectProgress', data: { current: total, total, done: true } });
 }
@@ -4083,7 +4085,14 @@ async function init() {
   STATE.closedTrades = db.loadClosedTrades();
   STATE.dcaOrders = db.loadDcaOrders();
   STATE.alerts = db.loadAlerts();
-  STATE.respectData = db.loadRespectData();
+  {
+    // بيانات الاحترام محفوظة على القرص مع وقت آخر فحص — نستعيدها ولا نعيد
+    // فحص ٥٢٧ عملة مع كل إقلاع (كل نشر جديد يعيد تشغيل السيرفر)
+    const rd = db.loadRespectData() || {};
+    STATE.respectAt = rd._at || 0;
+    delete rd._at;
+    STATE.respectData = rd;
+  }
   STATE.waitQueue = db.loadWaitQueue();
   STATE.pendingOrders = db.loadPendingOrders();
   STATE.simTrades = db.loadSimTrades();
@@ -4124,8 +4133,20 @@ async function init() {
     setInterval(updateEMA200, 10 * 60 * 1000);
     updateSuperTrend();
     setInterval(updateSuperTrend, 10 * 60 * 1000);
-    updateRespect();
-    setInterval(updateRespect, 24 * 60 * 60 * 1000);
+    // لا نعيد الفحص إن كانت البيانات المحفوظة أحدث من ٢٤ ساعة —
+    // وإلا أعاد كل نشر جديد فحص ٥٢٧ عملة بلا داعٍ
+    {
+      const age = Date.now() - (STATE.respectAt || 0);
+      const DAY = 24 * 60 * 60 * 1000;
+      const have = Object.keys(STATE.respectData || {}).length;
+      if (have && age < DAY) {
+        console.log(`📊 بيانات الاحترام محفوظة (${have} عملة، عمرها ${Math.floor(age / 3600000)} ساعة) — لا حاجة لإعادة الفحص`);
+        setTimeout(updateRespect, DAY - age);
+      } else {
+        updateRespect();
+      }
+      setInterval(updateRespect, DAY);
+    }
   } catch (e) {
     console.error('❌ Init failed:', e.message);
   }
