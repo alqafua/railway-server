@@ -91,7 +91,7 @@ const DEFAULT_SETTINGS = {
   lockAutoBEon: false,      // (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه
   lockBEnearPct: 1,         // قرب السعر من خط السوبر/EMA لتفعيل البريك إيفن %
   lockBEoffsetPct: 0.1,     // نسبة البريك إيفن فوق الدخول (تغطية العمولات) %
-  lockTgChat: '',           // قناة إشعارات نظام القفل
+  lockTgChat: process.env.TG_CHAT_LOCK || '-1004312421634',   // قناة إشعارات نظام القفل
   lockCornixSync: false,    // مزامنة الأوامر مع كورنكس عبر الرد على رسالة الإشارة
   lockCxBEtpl: 'SL to entry',
   lockCxSLtpl: 'New stop loss: {price}',
@@ -1386,7 +1386,7 @@ async function buildLockDiag(master, positions) {
   const diag = {};
   for (const pos of positions) {
     const sym = pos.symbol;
-    const chk = manualCheck(sym);
+    const chk = manualCheck(sym, pos);
     const rec = L.manualSyms[sym] || null;
     const amt = Math.abs(parseFloat(pos.positionAmt));
     const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
@@ -1432,19 +1432,41 @@ const AUTO_TRADE_LABELS = ['🪞 Copy', '🪞 Binance', '📊 مراقبة'];
 
 // هل هذه الصفقة يدوية؟ (ليست من إشارة البوت/كورنكس)
 // نُرجع السبب أيضاً ليظهر في لوحة التشخيص
-function manualCheck(sym) {
-  // تجاوز يدوي من المستخدم — يغلب كل استنتاج، لأن الرمز قد يكون له إشارة قديمة
-  // بينما الصفقة القائمة فُتحت باليد (أو العكس)
+// كورنكس ينفّذ الإشارة خلال ثوانٍ/دقائق من وصولها. فإن كان فارق الوقت بين
+// فتح المركز وإرسال الإشارة أكبر من هذا الحد، فالمركز فُتح يدوياً لا من الإشارة.
+const SIGNAL_MATCH_WINDOW_MS = 15 * 60 * 1000;
+
+function fmtGap(ms) {
+  const m = Math.round(ms / 60000);
+  if (m < 60) return `${m} د`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h} س` : `${Math.floor(h / 24)} ي`;
+}
+
+// pos اختياري — بوجوده نطابق وقت فتح المركز بوقت الإشارة بدل الاكتفاء
+// بوجود إشارة قديمة للرمز، فلا تُحسب صفقة يدوية على أنها صفقة بوت
+function manualCheck(sym, pos) {
+  // تجاوز يدوي من المستخدم — يغلب كل استنتاج
   const ov = STATE.lockState.manualOverride?.[sym];
   if (ov === 'manual') return { manual: true, why: 'يدوية (تحديد يدوي)' };
   if (ov === 'bot') return { manual: false, why: 'صفقة بوت (تحديد يدوي)' };
-  if (STATE.sentMsgIds[sym]) return { manual: false, why: 'أُرسلت إشارة تلغرام لهذا الرمز' };
+
+  const posTs = pos ? (parseFloat(pos.updateTime) || 0) : 0;
+  const rec = STATE.sentMsgIds[sym];
+  if (rec?.ts && posTs) {
+    const gap = Math.abs(posTs - rec.ts);
+    return gap <= SIGNAL_MATCH_WINDOW_MS
+      ? { manual: false, why: `فُتحت مع الإشارة (فارق ${fmtGap(gap)})` }
+      : { manual: true, why: `يدوية — الإشارة قبل ${fmtGap(gap)} من فتح المركز` };
+  }
+  // بلا وقت للمقارنة: نرجع للاستنتاج القديم
+  if (rec) return { manual: false, why: 'أُرسلت إشارة تلغرام لهذا الرمز' };
   if (STATE.sentSigs[sym]) return { manual: false, why: 'إشارة بوت نشطة لهذا الرمز' };
   const t = STATE.openTrades.find(x => x.symbol === sym);
   if (t && !AUTO_TRADE_LABELS.includes(t.label)) return { manual: false, why: `صفقة بوت (${t.label})` };
   return { manual: true, why: 'يدوية' };
 }
-function isManualPosition(sym) { return manualCheck(sym).manual; }
+function isManualPosition(sym, pos) { return manualCheck(sym, pos).manual; }
 
 // ── مزامنة كورنكس ─────────────────────────────────────
 // وضعان: رد على رسالة الإشارة بأمر تحديث، أو تعديل الرسالة الأصلية نفسها
@@ -1852,7 +1874,7 @@ async function monitorLock() {
     if (lockIsLocked()) {
       for (const pos of positions) {
         const sym = pos.symbol;
-        if (!isManualPosition(sym)) continue;
+        if (!isManualPosition(sym, pos)) continue;
         const known = L.manualSyms[sym];
         // لا نلمس صفقات خط الأساس (كانت مفتوحة قبل التفعيل/الإقلاع)
         if (known?.baseline) continue;
@@ -1878,7 +1900,7 @@ async function monitorLock() {
       if (cap > 0) {
         for (const pos of positions) {
           const sym = pos.symbol;
-          if (!isManualPosition(sym)) continue;
+          if (!isManualPosition(sym, pos)) continue;
           const amt = Math.abs(parseFloat(pos.positionAmt));
           const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
           const lev = parseFloat(pos.leverage) || 1;
@@ -1916,7 +1938,7 @@ async function monitorLock() {
       const slPct = parseFloat(STATE.settings.lockAutoSLpct) || 2;
       for (const pos of positions) {
         const sym = pos.symbol;
-        if (!isManualPosition(sym)) continue;
+        if (!isManualPosition(sym, pos)) continue;
         if (L.manualSyms[sym]?.slPlaced) continue;
         try {
           const orders = await bFetch(master.apiKey, master.apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
