@@ -83,7 +83,7 @@ const DEFAULT_SETTINGS = {
   // ── نظام القفل ─────────────────────────────────────────
   lockOn: false,            // المفتاح العام لنظام القفل
   lockMaster: false,        // القفل العام — يمنع تعديل الحد اليومي
-  lockMasterDays: 7,        // مدّته بالأيام (٠ = دائم بلا انتهاء)
+  lockMasterHours: 24,      // مدّته بالساعات (٠ = دائم بلا انتهاء)
   lockAllSettings: false,   // يوسّع القفل ليشمل كل إعدادات البوت لا الحد اليومي وحده
   lockAutoSLon: false,      // (1) ستوب تلقائي للصفقات اليدوية
   lockAutoSLpct: 2,         // نسبة الستوب من السعر %
@@ -1334,6 +1334,32 @@ const HOUR_MS = 3600000;
 
 function lockSave() { db.saveLockState(STATE.lockState); }
 
+function fmtHours(h) {
+  if (h < 1) return `${Math.round(h * 60)} دقيقة`;
+  if (h < 24) return `${h} ساعة`;
+  const d = Math.floor(h / 24), r = h % 24;
+  return `${d} يوم${r ? ` و${r} ساعة` : ''}`;
+}
+
+// يستعيد أي إعداد انحرف عن النسخة المحفوظة وقت القفل.
+// الرفض وحده لا يكفي: قد يتغيّر إعداد من مسار لم نغطّه أو من الخادم مباشرة،
+// فهذه الطبقة تُرجع الحالة لما كانت عليه وتُبلّغ بما تغيّر.
+function restoreSnapshot() {
+  const snap = STATE.lockState.snapshot;
+  if (!snap) return null;
+  const changed = [];
+  for (const k of Object.keys(snap)) {
+    if (JSON.stringify(STATE.settings[k]) !== JSON.stringify(snap[k])) {
+      changed.push({ k, from: STATE.settings[k], to: snap[k] });
+      STATE.settings[k] = snap[k];
+    }
+  }
+  if (!changed.length) return null;
+  db.saveSettings(STATE.settings);
+  broadcast({ type: 'settings', data: STATE.settings });
+  return changed;
+}
+
 // القفل العام: نشط طوال مدّته، وينتهي وحده بعدها.
 // المدّة صفر = دائم (لا ينتهي إلا بتغيير الإعداد من الخادم).
 function masterLockActive() {
@@ -1344,6 +1370,7 @@ function masterLockActive() {
     // انتهت المدّة — نرفع القفل تلقائياً
     STATE.settings.lockMaster = false;
     STATE.lockState.masterUntil = 0;
+    STATE.lockState.snapshot = null;
     db.saveSettings(STATE.settings);
     lockSave();
     lockNotify('🔓 انتهت مدّة القفل العام — عادت إعدادات الحد اليومي قابلة للتعديل');
@@ -2343,6 +2370,18 @@ async function monitorLock() {
       }
     }
 
+    // ── حارس النسخة: أي إعداد انحرف عن لحظة القفل يُستعاد ──
+    if (STATE.settings.lockAllSettings && masterLockActive()) {
+      const drift = restoreSnapshot();
+      if (drift) {
+        lockNotify(
+          `↩️ استُعيدت إعدادات تغيّرت أثناء القفل\n` +
+          drift.slice(0, 6).map(d => `${d.k}: ${JSON.stringify(d.from)} ← ${JSON.stringify(d.to)}`).join('\n') +
+          (drift.length > 6 ? `\n(و${drift.length - 6} أخرى)` : '')
+        );
+      }
+    }
+
     // ── التنفيذ التلقائي عند شرط الاتجاه العام ──
     // كل ميزة تختار محفّزها: قرب الانعكاس أو الانعكاس الفعلي أو كليهما.
     // ما كان له وقف افتراضي نشط لا يُعاد تسجيله.
@@ -3188,6 +3227,14 @@ async function handleClientMsg(msg, ws) {
             const until = STATE.lockState.masterUntil || 0;
             broadcast({ type: 'lockResult', data: { ok: false, error:
               `🔒 القفل الشامل مفعّل — كل الإعدادات محميّة${until ? ` (ينتهي ${new Date(until).toLocaleString('ar-SA')})` : ' (بلا مدّة)'}` } });
+            // أعد بث الإعدادات الحقيقية كي تتراجع الواجهة عمّا أظهرته
+            broadcast({ type: 'settings', data: STATE.settings });
+            lockNotify(
+              `🔒 مُنع تعديل إعدادات\n` +
+              `المحاولة: ${changed.slice(0, 6).map(k => `${k} → ${JSON.stringify(msg.data[k])}`).join('\n')}` +
+              (changed.length > 6 ? `\n(و${changed.length - 6} أخرى)` : '') +
+              `\n↩️ أُعيدت القيم كما كانت`
+            );
             break;   // لا نطبّق أي تغيير
           }
         } else {
@@ -3201,12 +3248,16 @@ async function handleClientMsg(msg, ws) {
       }
       // تفعيل القفل العام يضبط تاريخ انتهائه من المدّة المختارة
       if (msg.data.lockMaster === true && !STATE.settings.lockMaster) {
-        const days = parseFloat(msg.data.lockMasterDays ?? STATE.settings.lockMasterDays) || 0;
-        STATE.lockState.masterUntil = days > 0 ? Date.now() + days * 24 * HOUR_MS : 0;
+        const hrs = parseFloat(msg.data.lockMasterHours ?? STATE.settings.lockMasterHours) || 0;
+        STATE.lockState.masterUntil = hrs > 0 ? Date.now() + hrs * HOUR_MS : 0;
+        // نسخة كاملة من الإعدادات وقت القفل — أي انحراف عنها لاحقاً يُستعاد منها
+        // نثبّت مفاتيح القفل صراحةً: نسخةٌ تحمل lockMaster=false ستطفئ القفل
+        // عند أول استعادة، فلا نترك ذلك لترتيب الدمج
+        STATE.lockState.snapshot = { ...STATE.settings, ...msg.data, lockMaster: true };
         lockSave();
-        lockNotify(days > 0
-          ? `🔐 فُعّل القفل العام لمدّة ${days} يوم\nينتهي: ${new Date(STATE.lockState.masterUntil).toLocaleString('ar-SA')}`
-          : '🔐 فُعّل القفل العام بلا مدّة — لا ينتهي تلقائياً');
+        lockNotify(hrs > 0
+          ? `🔐 فُعّل القفل العام لمدّة ${fmtHours(hrs)}\nينتهي: ${new Date(STATE.lockState.masterUntil).toLocaleString('ar-SA')}\n💾 حُفظت نسخة من كل الإعدادات`
+          : '🔐 فُعّل القفل العام بلا مدّة — لا ينتهي تلقائياً\n💾 حُفظت نسخة من كل الإعدادات');
       }
 
       // عند تفعيل نظام القفل نسجّل الصفقات القائمة كخط أساس فلا تُقلَّم ولا تُغلق
