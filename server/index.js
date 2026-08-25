@@ -92,6 +92,9 @@ const DEFAULT_SETTINGS = {
   lockBEtrig: 'near',       // متى يشتغل: near = قرب الانعكاس · flip = انعكاس فعلي · both
   lockBEnearPct: 1,         // قرب السعر من خط السوبر/EMA لاعتباره "قرب انعكاس" %
   lockBEoffsetPct: 0.1,     // نسبة البريك إيفن فوق الدخول (تغطية العمولات) %
+  // أقل حركة سعرية مطلوبة قبل تطبيق البريك إيفن.
+  // بدونها تُقفل فوراً صفقةٌ بالكاد دخلت الربح، لأن مستوى التعادل يقع فوق سعرها.
+  lockBEminMove: 3,
   // تريلنج تلقائي عند شرط الاتجاه (وإلا فهو يدوي من الأزرار)
   lockAutoTrailOn: false,
   lockAutoTrailPct: 10,
@@ -1725,6 +1728,12 @@ function armVStop(sym, { kind, side, pct, price, entry, reason }) {
   } else {
     v.level = isLong ? price * (1 - v.pct / 100) : price * (1 + v.pct / 100);
   }
+  // حارس: مستوىً مُبلَّغ عند التسجيل يعني إغلاقاً فورياً — نرفضه بدل تنفيذه.
+  // يحمي من خطأ في الحساب أو من تسجيل بريك إيفن على صفقة لم تربح كفاية.
+  const hitNow = isLong ? price <= v.level : price >= v.level;
+  if (hitNow) {
+    return { rejected: true, why: `المستوى ${fmtSignalPrice(v.level)} مُبلَّغ أصلاً عند ${fmtSignalPrice(price)} — لم يُسجَّل` };
+  }
   store[sym] = v;
   lockSave();
   return v;
@@ -1951,15 +1960,27 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
     const entry = parseFloat(pos.entryPrice) || 0;
     if (!entry) { results.skipped.push(`${sym}: لا يوجد سعر دخول`); continue; }
     const bePrice = isLong ? entry * (1 + offset / 100) : entry * (1 - offset / 100);
+
+    // الغرض حماية ربح قائم، لا إقفال صفقة بالكاد دخلت الربح.
+    // صفقة تحرّكت أقل من مستوى التعادل يقع مستواها فوق سعرها الحالي،
+    // فتُقفل لحظة تسجيلها — لذا نشترط حركة كافية أولاً.
+    const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
+    const movePct = mark ? ((mark - entry) / entry) * 100 * (isLong ? 1 : -1) : 0;
+    const minMove = parseFloat(STATE.settings.lockBEminMove);
+    const need = Math.max(isFinite(minMove) ? minMove : 0, offset * 1.5);
+    if (movePct < need) {
+      results.skipped.push(`${sym}: تحرّكت ${movePct.toFixed(2)}% فقط (المطلوب ${need.toFixed(2)}%)`);
+      continue;
+    }
     try {
       const px = await placeStop(acc, sym, pos, bePrice, 'بريك إيفن');
       STATE.lockState.beDone[sym] = Date.now();
       results.done.push(`${sym} @ ${px}`);
       // وقف افتراضي موازٍ: يردّ على الإشارة بأمر إغلاق ليتبعه كورنكس والمشتركون
-      armVStop(sym, { kind: 'be', side: isLong ? 'LONG' : 'SHORT', pct: offset,
-                      price: parseFloat(pos.markPrice) || livePrices[sym] || entry,
-                      entry, reason: `بريك إيفن (${reason})` });
-      results.armed.push(`${sym} @ ${fmtSignalPrice(bePrice)}`);
+      const av = armVStop(sym, { kind: 'be', side: isLong ? 'LONG' : 'SHORT', pct: offset,
+                      price: mark || entry, entry, reason: `بريك إيفن (${reason})` });
+      if (av?.rejected) results.skipped.push(`${sym}: ${av.why}`);
+      else results.armed.push(`${sym} @ ${fmtSignalPrice(bePrice)}`);
       const s = await cornixSync(sym, { cmd: STATE.settings.lockCxBEtpl || 'SL to entry', stop: px });
       if (s) results.synced.push(`${sym}: ${s}`);
     } catch (e) {
@@ -1998,10 +2019,11 @@ async function applyLossStop(acc, syms, pct) {
     try {
       const px = await placeStop(acc, sym, pos, slPrice, 'وقف خسارة');
       results.done.push(`${sym} @ ${px}`);
-      armVStop(sym, { kind: 'sl', side: isLong ? 'LONG' : 'SHORT', pct: d,
+      const av2 = armVStop(sym, { kind: 'sl', side: isLong ? 'LONG' : 'SHORT', pct: d,
                       price: mark, entry: parseFloat(pos.entryPrice) || mark,
                       reason: `وقف ${d}% من ${fmtSignalPrice(mark)}` });
-      results.armed.push(`${sym} @ ${fmtSignalPrice(slPrice)}`);
+      if (av2?.rejected) results.skipped.push(`${sym}: ${av2.why}`);
+      else results.armed.push(`${sym} @ ${fmtSignalPrice(slPrice)}`);
       const s2 = await cornixSync(sym, {
         cmd: (STATE.settings.lockCxSLtpl || 'New stop loss: {price}').replace('{price}', String(px)),
         stop: px,
@@ -2046,9 +2068,10 @@ async function applyTrailing(acc, syms, pct) {
     const mk = parseFloat(pos.markPrice) || livePrices[sym] || 0;
     const ent = parseFloat(pos.entryPrice) || mk;
     if (mk) {
-      armVStop(sym, { kind: 'trail', side: isLong ? 'LONG' : 'SHORT', pct: rate,
+      const av3 = armVStop(sym, { kind: 'trail', side: isLong ? 'LONG' : 'SHORT', pct: rate,
                       price: mk, entry: ent, reason: `تريلنج ${rate}% من ${fmtSignalPrice(mk)}` });
-      results.armed.push(`${sym} @ ${rate}% من ${fmtSignalPrice(mk)}`);
+      if (av3?.rejected) results.skipped.push(`${sym}: ${av3.why}`);
+      else results.armed.push(`${sym} @ ${rate}% من ${fmtSignalPrice(mk)}`);
     }
     if (overMax) {
       // فوق حدّ بايننس — التتبّع الافتراضي وحده يكفي
@@ -2303,12 +2326,23 @@ async function monitorLock() {
         if (status.trigger) {
           const vs = STATE.lockState.vStops || {};
           const why = status.reasons.join(' · ');
+          // الرابحة = ربح موجب. أما البريك إيفن فيشترط حركة كافية إضافةً لذلك،
+          // وإلا أقفل صفقةً بالكاد دخلت الربح
+          const minMove = parseFloat(S.lockBEminMove) || 0;
+          const movedEnough = (p) => {
+            const e = parseFloat(p.entryPrice) || 0;
+            const m = parseFloat(p.markPrice) || livePrices[p.symbol] || 0;
+            if (!e || !m) return false;
+            const mv = ((m - e) / e) * 100 * (parseFloat(p.positionAmt) > 0 ? 1 : -1);
+            return mv >= minMove;
+          };
           const winners = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) > 0).map(p => p.symbol);
+          const beReady = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) > 0 && movedEnough(p)).map(p => p.symbol);
           const losers = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) < 0).map(p => p.symbol);
 
           // بريك إيفن للرابحات
           if (S.lockAutoBEon && trigMatches(S.lockBEtrig, status)) {
-            const pend = winners.filter(s => !L.beDone[s] && !vs[s]);
+            const pend = beReady.filter(s => !L.beDone[s] && !vs[s]);
             if (pend.length) await applyBreakEven(master, pend, S.lockBEoffsetPct, `تلقائي — ${why}`);
           }
           // تريلنج للرابحات
