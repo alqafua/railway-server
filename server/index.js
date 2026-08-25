@@ -863,6 +863,10 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
 
   // فلتر EMA 200 و SuperTrend — يؤثر على القائمة والإرسال لكن ليس السجل (AND logic عند تفعيل الاثنين)
   {
+    // فلتر مفعّل بلا بيانات = حجب، لا تخطٍّ. تخطّيه كان يمرّر إشارات معاكسة
+    // في الفترة التي تسبق تحميل البيانات.
+    if (st.ema200FilterOn && !STATE.ema200?.direction) return;
+    if (st.stFilterOn && !STATE.superTrend?.direction) return;
     const emaOn = st.ema200FilterOn && STATE.ema200?.direction;
     const stOn = st.stFilterOn && STATE.superTrend?.direction;
     if (emaOn || stOn) {
@@ -4928,14 +4932,16 @@ async function init() {
         STATE.symbolMeta[t.symbol].vol = parseFloat(t.quoteVolume) || 0;
       });
     } catch (e) {}
+    // فلاتر الاتجاه العام تُحمَّل قبل أول فحص: كان الفحص يسبقها فتمرّ
+    // إشارات معاكسة للاتجاه في أول دقائق كل إقلاع
+    await Promise.all([updateEMA200(), updateSuperTrend()]);
+    console.log(`📊 فلاتر الاتجاه: EMA200 ${STATE.ema200?.direction || '—'} · السوبر ${STATE.superTrend?.direction || '—'}`);
     await scanAll();
     startBinanceWS();
     setInterval(async () => {
       await scanAll();
     }, 300000);
-    updateEMA200();
     setInterval(updateEMA200, 10 * 60 * 1000);
-    updateSuperTrend();
     setInterval(updateSuperTrend, 10 * 60 * 1000);
     // لا نعيد الفحص إن كانت البيانات المحفوظة أحدث من ٢٤ ساعة —
     // وإلا أعاد كل نشر جديد فحص ٥٢٧ عملة بلا داعٍ
