@@ -84,6 +84,7 @@ const DEFAULT_SETTINGS = {
   lockOn: false,            // المفتاح العام لنظام القفل
   lockMaster: false,        // القفل العام — يمنع تعديل الحد اليومي
   lockMasterDays: 7,        // مدّته بالأيام (٠ = دائم بلا انتهاء)
+  lockAllSettings: false,   // يوسّع القفل ليشمل كل إعدادات البوت لا الحد اليومي وحده
   lockAutoSLon: false,      // (1) ستوب تلقائي للصفقات اليدوية
   lockAutoSLpct: 2,         // نسبة الستوب من السعر %
   lockDailyOn: false,       // (2)+(3) الحد اليومي
@@ -1442,6 +1443,7 @@ function lockPublic() {
     booted: bootBaselineDone,
     masterUntil: STATE.lockState.masterUntil || 0,
     masterActive: !!STATE.settings.lockMaster,
+    allLocked: !!(STATE.settings.lockMaster && STATE.settings.lockAllSettings),
   };
 }
 
@@ -3177,13 +3179,24 @@ async function handleClientMsg(msg, ws) {
         STATE._stslEnabledAt = Date.now();
         STATE._stslTracked = {};
       }
-      // ── القفل العام: يمنع تعديل الحد اليومي (والقفل نفسه) طوال مدّته ──
+      // ── القفل العام: يحمي الإعدادات طوال مدّته ──
+      // الوضع الشامل يمنع أي تعديل على أي إعداد؛ وإلا فالحماية على الحد اليومي وحده.
       if (masterLockActive()) {
-        const PROTECTED = ['lockDailyOn', 'lockDailyAmt', 'lockDailyHours', 'lockMaster', 'lockOn'];
-        const blocked = PROTECTED.filter(k => msg.data[k] !== undefined && msg.data[k] !== STATE.settings[k]);
-        for (const k of blocked) delete msg.data[k];
-        if (blocked.length) {
-          broadcast({ type: 'lockResult', data: { ok: false, error: '🔒 القفل العام مفعّل — إعدادات الحد اليومي محميّة' } });
+        if (STATE.settings.lockAllSettings) {
+          const changed = Object.keys(msg.data).filter(k => JSON.stringify(msg.data[k]) !== JSON.stringify(STATE.settings[k]));
+          if (changed.length) {
+            const until = STATE.lockState.masterUntil || 0;
+            broadcast({ type: 'lockResult', data: { ok: false, error:
+              `🔒 القفل الشامل مفعّل — كل الإعدادات محميّة${until ? ` (ينتهي ${new Date(until).toLocaleString('ar-SA')})` : ' (بلا مدّة)'}` } });
+            break;   // لا نطبّق أي تغيير
+          }
+        } else {
+          const PROTECTED = ['lockDailyOn', 'lockDailyAmt', 'lockDailyHours', 'lockMaster', 'lockOn', 'lockAllSettings'];
+          const blocked = PROTECTED.filter(k => msg.data[k] !== undefined && msg.data[k] !== STATE.settings[k]);
+          for (const k of blocked) delete msg.data[k];
+          if (blocked.length) {
+            broadcast({ type: 'lockResult', data: { ok: false, error: '🔒 القفل العام مفعّل — إعدادات الحد اليومي محميّة' } });
+          }
         }
       }
       // تفعيل القفل العام يضبط تاريخ انتهائه من المدّة المختارة
@@ -3235,6 +3248,10 @@ async function handleClientMsg(msg, ws) {
 
     // إعدادات خاصة لعملة واحدة — تُدمج فوق الإعدادات العامة عند توليد إشارات هذه العملة فقط
     case 'setSymbolSettings': {
+      if (masterLockActive() && STATE.settings.lockAllSettings) {
+        broadcast({ type: 'lockResult', data: { ok: false, error: '🔒 القفل الشامل مفعّل — إعدادات العملات محميّة' } });
+        break;
+      }
       const { symbol, settings } = msg.data || {};
       if (!symbol || !settings || typeof settings !== 'object') break;
       const clean = {};
