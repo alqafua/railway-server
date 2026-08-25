@@ -1453,6 +1453,77 @@ function lockRecordClose(sym, pnlUsd) {
   broadcast({ type: 'lockState', data: lockPublic() });
 }
 
+// مجموع الخسارة العائمة على الصفقات اليدوية المفتوحة.
+// نحسبها من السعر اللحظي لا من تقرير بايننس، فالأخير يتأخّر ١٥ ثانية —
+// وبرافعة عالية تكفي حركة صغيرة لتجاوز الحد في تلك الفترة.
+function manualFloatingLoss() {
+  const master = STATE.copyAccounts.find(a => a.isMaster);
+  if (!master) return 0;
+  let total = 0;
+  for (const p of (master.livePositions || [])) {
+    const amt = parseFloat(p.positionAmt);
+    if (!amt) continue;
+    const sym = p.symbol;
+    if (STATE.lockState.manualSyms?.[sym]?.baseline) continue;
+    if (!isManualPosition(sym, p)) continue;
+    const entry = parseFloat(p.entryPrice) || 0;
+    const px = livePrices[sym] || parseFloat(p.markPrice) || 0;
+    if (!entry || !px) continue;
+    const pnl = (px - entry) * amt;   // amt سالب للشورت فيصحّ الاتجاه تلقائياً
+    if (pnl < 0) total += pnl;
+  }
+  return Math.abs(total);
+}
+
+// الحدّ اليومي يشمل المحقّق والعائم معاً. عند بلوغه تُغلق كل الصفقات اليدوية
+// فوراً ويبدأ الانتظار — لا ينتظر إغلاقها يدوياً.
+let dailyCheckBusy = false, lastDailyCheck = 0;
+async function checkDailyLossLimit() {
+  const S = STATE.settings;
+  if (!S.lockOn || !S.lockDailyOn || dailyCheckBusy) return;
+  const cap = parseFloat(S.lockDailyAmt) || 0;
+  if (cap <= 0) return;
+  if (lockIsLocked()) return;
+  const L = lockWindow();
+  const floating = manualFloatingLoss();
+  const total = (L.realizedLoss || 0) + floating;
+  if (total < cap) return;
+
+  dailyCheckBusy = true;
+  try {
+    const master = STATE.copyAccounts.find(a => a.isMaster);
+    const hrs = Math.max(1, parseFloat(S.lockDailyHours) || 24);
+    L.lockedUntil = Date.now() + hrs * HOUR_MS;
+    L.realizedLoss = cap;          // بلغ الحد
+    lockSave();
+
+    const closed = [], failed = [];
+    for (const p of (master?.livePositions || [])) {
+      const amt = parseFloat(p.positionAmt);
+      if (!amt) continue;
+      const sym = p.symbol;
+      if (STATE.lockState.manualSyms?.[sym]?.baseline) continue;
+      if (!isManualPosition(sym, p)) continue;
+      try { await closeFollower(master, sym, amt); closed.push(sym.replace('USDT', '')); }
+      catch (e) { failed.push(`${sym}: ${e.message}`); }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    lockNotify(
+      `⛔ بلغت الحد اليومي — أُغلقت الصفقات اليدوية\n` +
+      `الخسارة: محقّقة $${(L.realizedLoss - floating > 0 ? L.realizedLoss - floating : 0).toFixed(2)} + عائمة $${floating.toFixed(2)} = $${total.toFixed(2)}\n` +
+      `الحد: $${cap}\n` +
+      (closed.length ? `✅ أُغلقت: ${closed.join(' · ')}\n` : 'ℹ️ لا توجد صفقات يدوية مفتوحة\n') +
+      (failed.length ? `❌ فشل: ${failed.join(' · ')}\n` : '') +
+      `⏳ يفتح بعد ${hrs} ساعة`
+    );
+    broadcast({ type: 'lockState', data: lockPublic() });
+  } catch (e) {
+    addCopyLog('fail', `❌ الحد اليومي: ${e.message}`);
+  } finally {
+    dailyCheckBusy = false;
+  }
+}
+
 function lockPublic() {
   const L = STATE.lockState;
   const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
@@ -1463,6 +1534,7 @@ function lockPublic() {
     cap, hours: hrs, locked: lockIsLocked(),
     windowEnds: L.lockedUntil || (L.windowStart + hrs * HOUR_MS),
     trades: (L.trades || []).slice(0, 20),
+    floating: manualFloatingLoss(),
     diag: L.diag || {},
     diagAt: L.diagAt || 0,
     msgFate: L.msgFate || {},
@@ -2370,6 +2442,8 @@ async function monitorLock() {
       }
     }
 
+    await checkDailyLossLimit();
+
     // ── حارس النسخة: أي إعداد انحرف عن لحظة القفل يُستعاد ──
     if (STATE.settings.lockAllSettings && masterLockActive()) {
       const drift = restoreSnapshot();
@@ -2663,6 +2737,11 @@ function startBinanceWSGroup(interval, syms) {
       livePrices[sym] = close;
       // الوقف الافتراضي يُفحص على السعر اللحظي لا على دورة كل ١٥ ثانية
       checkVStops(sym, close);
+      // الحدّ اليومي (محقّق + عائم) — مخنوق لثانيتين فالحساب يمرّ على كل المراكز
+      if (Date.now() - lastDailyCheck > 2000) {
+        lastDailyCheck = Date.now();
+        checkDailyLossLimit().catch(() => {});
+      }
       if (!candleCache[sym]) candleCache[sym] = [];
 
       if (k.x) {

@@ -140,7 +140,7 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v30-lock';
+const UI_VERSION='v31-lock';
 const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockMasterHours:24,lockAllSettings:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEtrig:'near',lockBEnearPct:1,lockBEoffsetPct:0.1,lockBEminPnl:50,lockAutoTrailOn:false,lockAutoTrailPct:10,lockAutoTrailTrig:'near',lockAutoLossOn:false,lockAutoLossPct:2,lockAutoLossTrig:'flip',lockTgChat:'',lockCloseCmd:'/close',extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
@@ -1130,15 +1130,17 @@ function rLockPage(){
   if(L){
     const ov=el('div',{className:'ov-grid'});
     const mkOV=(lb,v,c='')=>{const card=el('div',{className:'ov-card'});card.appendChild(el('div',{className:'ov-label'},lb));card.appendChild(el('div',{className:'ov-val '+c},v));return card;};
+    const flo=L.floating||0, tot=(L.realizedLoss||0)+flo;
     ov.appendChild(mkOV('الحالة',L.locked?'⛔ مقفل':'✅ مفتوح',L.locked?'c-red':'c-green'));
-    ov.appendChild(mkOV('المتبقي','$'+(L.remaining||0).toFixed(2),L.remaining>0?'c-green':'c-red'));
-    ov.appendChild(mkOV('الخسارة','$'+(L.realizedLoss||0).toFixed(2),'c-red'));
+    ov.appendChild(mkOV('المتبقي','$'+Math.max(0,L.cap-tot).toFixed(2),(L.cap-tot)>0?'c-green':'c-red'));
+    ov.appendChild(mkOV('الخسارة','$'+tot.toFixed(2),'c-red'));
+    if(flo>0)ov.appendChild(mkOV('منها عائمة','$'+flo.toFixed(2),'c-red'));
     ov.appendChild(mkOV('الحد','$'+(L.cap||0)));
     ov.appendChild(mkOV(L.locked?'يفتح بعد':'تجديد بعد',lkFmtLeft((L.windowEnds||0)-Date.now()),'c-confirmed'));
     page.appendChild(ov);
     if(L.cap>0){
       const track=el('div',{style:{height:'8px',background:'var(--bg3)',borderRadius:'4px',overflow:'hidden',marginBottom:'14px'}});
-      const usedPct=Math.min(100,((L.realizedLoss||0)/L.cap)*100);
+      const usedPct=Math.min(100,(((L.realizedLoss||0)+(L.floating||0))/L.cap)*100);
       track.appendChild(el('div',{style:{width:usedPct+'%',height:'100%',background:usedPct>=100?'var(--red)':usedPct>60?'var(--orange)':'var(--green)',transition:'width .3s'}}));
       page.appendChild(track);
     }
