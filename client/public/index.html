@@ -140,8 +140,8 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v20-lock';
-const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',lockMsgSyms:[],lockProbe:[],sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEnearPct:1,lockBEoffsetPct:0.1,lockTgChat:'',lockCornixSync:false,lockCornixMode:'reply',lockCxBEtpl:'SL to entry',lockCxSLtpl:'New stop loss: {price}',lockCxTrailTpl:'Trailing stop: {pct}%',extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
+const UI_VERSION='v21-lock';
+const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',lockMsgSyms:[],lockProbe:[],sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEtrig:'near',lockBEnearPct:1,lockBEoffsetPct:0.1,lockAutoTrailOn:false,lockAutoTrailPct:10,lockAutoTrailTrig:'near',lockAutoLossOn:false,lockAutoLossPct:2,lockAutoLossTrig:'flip',lockTgChat:'',lockCornixSync:false,lockCornixMode:'reply',lockCxBEtpl:'SL to entry',lockCxSLtpl:'New stop loss: {price}',lockCxTrailTpl:'Trailing stop: {pct}%',extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
 const MIN_SIG_SAMPLE=10; // أقل عدد إشارات لاعتماد نسبة الاحترام في "الإعداد النهائي المُحسَّن"
@@ -1249,13 +1249,41 @@ function rLockPage(){
   page.appendChild(sM);
 
   // ── (4) بريك إيفن تلقائي ──
-  const s4=S('🟡 ٤ — بريك إيفن تلقائي عند انعكاس الاتجاه','var(--yellow)');
-  s4.appendChild(el('div',{style:{fontSize:'11px',color:'var(--text2)',lineHeight:'1.7',marginBottom:'6px'}},'يراقب سعر BTC مقابل خط السوبر تريند و EMA200 العام. عند الانعكاس — أو قبله حين يقترب السعر من الخط بالنسبة المحددة — ينقل وقف كل الصفقات الرابحة إلى نقطة التعادل.'));
-  s4.appendChild(TOG('تفعيل البريك إيفن التلقائي','lockAutoBEon'));
+  const s4=S('🤖 ٤ — التنفيذ التلقائي عند انعكاس الاتجاه','var(--yellow)');
+  s4.appendChild(el('div',{style:{fontSize:'11px',color:'var(--text2)',lineHeight:'1.7',marginBottom:'6px'}},'يراقب سعر BTC مقابل خط السوبر تريند و EMA200 العام. كل ميزة أدناه تعمل يدوياً بالأزرار، أو تلقائياً عند تحقّق الشرط الذي تختاره لها.'));
+  // اختيار المحفّز — مشترك بين الميزات الثلاث
+  const TRIG=(key)=>{
+    const row=el('div',{style:{margin:'6px 0 4px'}});
+    row.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginBottom:'4px'}},'متى يشتغل؟'));
+    const bar=el('div',{style:{display:'flex',gap:'4px',flexWrap:'wrap'}});
+    [['near','⚠️ قرب الانعكاس'],['flip','🔄 انعكاس فعلي'],['both','🔀 الاثنان']].forEach(([v,lb])=>{
+      const on=(C.settings[key]||'near')===v;
+      bar.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'3px 10px',fontWeight:on?'800':'600',background:on?'rgba(0,229,255,.12)':'var(--bg3)',borderColor:on?'var(--accent)':'var(--border)',color:on?'var(--accent)':'var(--text2)'},onClick:()=>save({[key]:v})},lb));
+    });
+    row.appendChild(bar);return row;
+  };
+  s4.appendChild(TOG('تفعيل البريك إيفن التلقائي','lockAutoBEon','مطفأ = يدوي بالأزرار فقط'));
   if(C.settings.lockAutoBEon){
+    s4.appendChild(TRIG('lockBEtrig'));
     const g=G();
     g.appendChild(NUM('قرب الانعكاس %','lockBEnearPct',{step:'0.1',min:'0.1'},false,'كلما زادت، بكّر التفعيل'));
     g.appendChild(NUM('نسبة البريك إيفن %','lockBEoffsetPct',{step:'0.05',min:'0'},false,'فوق الدخول لتغطية العمولات'));
+    s4.appendChild(g);
+  }
+  // تريلنج تلقائي
+  s4.appendChild(el('div',{style:{height:'1px',background:'var(--border)',margin:'12px 0'}}));
+  s4.appendChild(TOG('تريلنج تلقائي للرابحات','lockAutoTrailOn','مطفأ = يدوي من زر ⑦ بالأسفل'));
+  if(C.settings.lockAutoTrailOn){
+    s4.appendChild(TRIG('lockAutoTrailTrig'));
+    const g=G();g.appendChild(NUM('نسبة التريلنج %','lockAutoTrailPct',{step:'0.5',min:'0.1'},false,'يتابعه البوت — بلا حدّ ٥٪'));
+    s4.appendChild(g);
+  }
+  // وقف خسارة تلقائي
+  s4.appendChild(el('div',{style:{height:'1px',background:'var(--border)',margin:'12px 0'}}));
+  s4.appendChild(TOG('وقف خسارة تلقائي للخاسرات','lockAutoLossOn','مطفأ = يدوي من زر ⑥ بالأسفل'));
+  if(C.settings.lockAutoLossOn){
+    s4.appendChild(TRIG('lockAutoLossTrig'));
+    const g=G();g.appendChild(NUM('نسبة الوقف %','lockAutoLossPct',{step:'0.1',min:'0.1'},false,'من السعر وقت التفعيل'));
     s4.appendChild(g);
   }
   const stD=C.superTrend?.direction,emD=C.ema200?.direction;

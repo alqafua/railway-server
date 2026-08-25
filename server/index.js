@@ -89,8 +89,17 @@ const DEFAULT_SETTINGS = {
   lockDailyAmt: 10,         // الحد بالدولار (هامش الصفقة + سقف الخسارة اليومية)
   lockDailyHours: 24,       // مدة النافذة / الانتظار بالساعات
   lockAutoBEon: false,      // (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه
-  lockBEnearPct: 1,         // قرب السعر من خط السوبر/EMA لتفعيل البريك إيفن %
+  lockBEtrig: 'near',       // متى يشتغل: near = قرب الانعكاس · flip = انعكاس فعلي · both
+  lockBEnearPct: 1,         // قرب السعر من خط السوبر/EMA لاعتباره "قرب انعكاس" %
   lockBEoffsetPct: 0.1,     // نسبة البريك إيفن فوق الدخول (تغطية العمولات) %
+  // تريلنج تلقائي عند شرط الاتجاه (وإلا فهو يدوي من الأزرار)
+  lockAutoTrailOn: false,
+  lockAutoTrailPct: 10,
+  lockAutoTrailTrig: 'near',
+  // وقف خسارة تلقائي للخاسرات عند شرط الاتجاه
+  lockAutoLossOn: false,
+  lockAutoLossPct: 2,
+  lockAutoLossTrig: 'flip',
   lockTgChat: process.env.TG_CHAT_LOCK || '-1004312421634',   // قناة إشعارات نظام القفل
   // مزامنة كورنكس: يعدّل رسالة الإشارة الأصلية بالوقف/التريلنج الجديد.
   // الوضع 'edit' لأن الرد بأوامر نصية جُرِّب بخمس صيغ ولم ينفّذه كورنكس.
@@ -2069,28 +2078,45 @@ async function applyTrailing(acc, syms, pct) {
   return results;
 }
 
-// هل الاتجاه العام (BTC) انعكس أو اقترب من الانعكاس؟
+// حالة الاتجاه العام (BTC): نفصل "قرب الانعكاس" عن "الانعكاس الفعلي"
+// كي تختار كل ميزة أيّهما يشغّلها.
 function trendReversalStatus() {
   const nearPct = parseFloat(STATE.settings.lockBEnearPct) || 1;
   const btc = STATE.superTrend?.btcPrice || STATE.ema200?.btcPrice || livePrices['BTCUSDT'] || 0;
-  if (!btc) return { trigger: false };
-  const reasons = [];
+  if (!btc) return { near: false, flipped: false, trigger: false, reasons: [] };
+  const nearReasons = [], flipReasons = [];
+
   const stVal = STATE.superTrend?.value;
   if (stVal) {
     const dist = Math.abs((btc - stVal) / btc) * 100;
-    if (dist <= nearPct) reasons.push(`السعر على بُعد ${dist.toFixed(2)}% من خط السوبر`);
+    if (dist <= nearPct) nearReasons.push(`على بُعد ${dist.toFixed(2)}% من خط السوبر`);
   }
   const emaVal = STATE.ema200?.value;
   if (emaVal) {
     const dist = Math.abs((btc - emaVal) / btc) * 100;
-    if (dist <= nearPct) reasons.push(`السعر على بُعد ${dist.toFixed(2)}% من EMA200`);
+    if (dist <= nearPct) nearReasons.push(`على بُعد ${dist.toFixed(2)}% من EMA200`);
   }
-  // انعكاس فعلي: تغيّر اتجاه السوبر عن آخر قراءة محفوظة
+  // انعكاس فعلي: تغيّر اتجاه السوبر العام عن آخر قراءة
   const prevDir = STATE._lastGlobalSTdir;
   const curDir = STATE.superTrend?.direction;
-  if (curDir && prevDir && curDir !== prevDir) reasons.push(`السوبر العام انقلب إلى ${curDir === 'up' ? 'صاعد' : 'نازل'}`);
+  if (curDir && prevDir && curDir !== prevDir) {
+    flipReasons.push(`السوبر العام انقلب إلى ${curDir === 'up' ? 'صاعد' : 'نازل'}`);
+  }
   if (curDir) STATE._lastGlobalSTdir = curDir;
-  return { trigger: reasons.length > 0, reasons };
+
+  const near = nearReasons.length > 0, flipped = flipReasons.length > 0;
+  return {
+    near, flipped, trigger: near || flipped,
+    nearReasons, flipReasons,
+    reasons: [...flipReasons, ...nearReasons],
+  };
+}
+
+// هل يشغّل هذا الحدث ميزةً مضبوطة على 'near' أو 'flip' أو 'both'؟
+function trigMatches(trig, st) {
+  if (trig === 'flip') return st.flipped;
+  if (trig === 'both') return st.near || st.flipped;
+  return st.near || st.flipped;   // 'near' الافتراضي: القرب أو الانعكاس
 }
 
 // المراقب الدوري لنظام القفل
@@ -2256,16 +2282,40 @@ async function monitorLock() {
       }
     }
 
-    // ── (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه العام ──
-    if (STATE.settings.lockAutoBEon) {
-      const status = trendReversalStatus();
-      if (status.trigger) {
-        const pending = positions.filter(p => {
-          if (L.beDone[p.symbol]) return false;
-          return (parseFloat(p.unRealizedProfit) || 0) > 0;
-        }).map(p => p.symbol);
-        if (pending.length) {
-          await applyBreakEven(master, pending, STATE.settings.lockBEoffsetPct, status.reasons.join(' · '));
+    // ── التنفيذ التلقائي عند شرط الاتجاه العام ──
+    // كل ميزة تختار محفّزها: قرب الانعكاس أو الانعكاس الفعلي أو كليهما.
+    // ما كان له وقف افتراضي نشط لا يُعاد تسجيله.
+    {
+      const S = STATE.settings;
+      if (S.lockAutoBEon || S.lockAutoTrailOn || S.lockAutoLossOn) {
+        const status = trendReversalStatus();
+        if (status.trigger) {
+          const vs = STATE.lockState.vStops || {};
+          const why = status.reasons.join(' · ');
+          const winners = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) > 0).map(p => p.symbol);
+          const losers = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) < 0).map(p => p.symbol);
+
+          // بريك إيفن للرابحات
+          if (S.lockAutoBEon && trigMatches(S.lockBEtrig, status)) {
+            const pend = winners.filter(s => !L.beDone[s] && !vs[s]);
+            if (pend.length) await applyBreakEven(master, pend, S.lockBEoffsetPct, `تلقائي — ${why}`);
+          }
+          // تريلنج للرابحات
+          if (S.lockAutoTrailOn && trigMatches(S.lockAutoTrailTrig, status)) {
+            const pend = winners.filter(s => !vs[s]);
+            if (pend.length) {
+              lockNotify(`📉 تريلنج تلقائي ${S.lockAutoTrailPct}%\nالسبب: ${why}\nالعملات: ${pend.map(x => x.replace('USDT', '')).join(' · ')}`);
+              await applyTrailing(master, pend, S.lockAutoTrailPct);
+            }
+          }
+          // وقف خسارة للخاسرات
+          if (S.lockAutoLossOn && trigMatches(S.lockAutoLossTrig, status)) {
+            const pend = losers.filter(s => !vs[s]);
+            if (pend.length) {
+              lockNotify(`🛑 وقف تلقائي ${S.lockAutoLossPct}%\nالسبب: ${why}\nالعملات: ${pend.map(x => x.replace('USDT', '')).join(' · ')}`);
+              await applyLossStop(master, pend, S.lockAutoLossPct);
+            }
+          }
         }
       }
     }
