@@ -1554,7 +1554,7 @@ function lockPublic() {
     vStops: L.vStops || {},
     booted: bootBaselineDone,
     masterUntil: STATE.lockState.masterUntil || 0,
-    masterActive: !!STATE.settings.lockMaster,
+    masterActive: masterLockActive(),   // يفحص الانتهاء ويرفع القفل عند حلوله
     allLocked: !!(STATE.settings.lockMaster && STATE.settings.lockAllSettings),
   };
 }
@@ -2458,7 +2458,8 @@ async function monitorLock() {
     await checkDailyLossLimit();
 
     // ── حارس النسخة: أي إعداد انحرف عن لحظة القفل يُستعاد ──
-    if (STATE.settings.lockAllSettings && masterLockActive()) {
+    const mActive = masterLockActive();   // يفحص الانتهاء في كل دورة
+    if (STATE.settings.lockAllSettings && mActive) {
       const drift = restoreSnapshot();
       if (drift) {
         lockNotify(
