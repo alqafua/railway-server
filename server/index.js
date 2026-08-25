@@ -779,8 +779,21 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
 const BATCH = 5, BDEL = 300;
 let scanRunning = false;
 
+const TZ = 'Asia/Aden';   // توقيت صنعاء
+
 function nowStr() {
-  return new Date().toLocaleTimeString('ar-EG', { hour12: false, timeZone: 'Asia/Aden' });
+  return new Date().toLocaleTimeString('ar-EG', { hour12: false, timeZone: TZ });
+}
+
+// تاريخ ووقت بالميلادي وبتوقيت صنعاء.
+// ملاحظة: ar-SA يستخدم التقويم الهجري ويتجاهل المنطقة الزمنية إن لم تُحدَّد،
+// فكان الوقت يظهر بتوقيت الخادم وبتاريخ هجري.
+function fmtDateTime(ts) {
+  return new Date(ts).toLocaleString('ar-EG', {
+    timeZone: TZ, calendar: 'gregory', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  });
 }
 
 function isLiquid(sym) {
@@ -3305,7 +3318,7 @@ async function handleClientMsg(msg, ws) {
           if (changed.length) {
             const until = STATE.lockState.masterUntil || 0;
             broadcast({ type: 'lockResult', data: { ok: false, error:
-              `🔒 القفل الشامل مفعّل — كل الإعدادات محميّة${until ? ` (ينتهي ${new Date(until).toLocaleString('ar-SA')})` : ' (بلا مدّة)'}` } });
+              `🔒 القفل الشامل مفعّل — كل الإعدادات محميّة${until ? ` (ينتهي ${fmtDateTime(until)})` : ' (بلا مدّة)'}` } });
             // أعد بث الإعدادات الحقيقية كي تتراجع الواجهة عمّا أظهرته
             broadcast({ type: 'settings', data: STATE.settings });
             lockNotify(
@@ -4028,7 +4041,7 @@ async function handleClientMsg(msg, ws) {
       db.saveSettings(STATE.settings);
       lockSave();
       lockNotify(hrs > 0
-        ? `🔐 فُعّل القفل العام لمدّة ${fmtHours(hrs)}\nينتهي: ${new Date(STATE.lockState.masterUntil).toLocaleString('ar-SA')}\n💾 حُفظت نسخة من كل الإعدادات`
+        ? `🔐 فُعّل القفل العام لمدّة ${fmtHours(hrs)}\nينتهي: ${fmtDateTime(STATE.lockState.masterUntil)}\n💾 حُفظت نسخة من كل الإعدادات`
         : '🔐 فُعّل القفل العام بلا مدّة — لا ينتهي تلقائياً\n💾 حُفظت نسخة من كل الإعدادات');
       broadcast({ type: 'settings', data: STATE.settings });
       broadcast({ type: 'lockState', data: lockPublic() });
