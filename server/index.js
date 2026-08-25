@@ -92,10 +92,9 @@ const DEFAULT_SETTINGS = {
   lockBEtrig: 'near',       // متى يشتغل: near = قرب الانعكاس · flip = انعكاس فعلي · both
   lockBEnearPct: 1,         // قرب السعر من خط السوبر/EMA لاعتباره "قرب انعكاس" %
   lockBEoffsetPct: 0.1,     // نسبة البريك إيفن فوق الدخول (تغطية العمولات) %
-  // مسافة أمان إضافية فوق مستوى البريك إيفن قبل تطبيقه.
-  // صفر = الشرط الأساسي وحده: الربح الحالي يتجاوز مستوى التعادل
-  // (يبقى حدّ أدنى ضمني = ١٫٥ ضعف نسبة البريك إيفن، وإلا أُقفلت الصفقة على أول حركة).
-  lockBEminMove: 0,
+  // أقل ربح (PnL على الهامش) لتطبيق البريك إيفن — نفس النسبة التي تظهر في بايننس.
+  // دونه تُترك الصفقة وشأنها، فمستوى التعادل يقع عندها فوق السعر فتُقفل فور تسجيلها.
+  lockBEminPnl: 50,
   // تريلنج تلقائي عند شرط الاتجاه (وإلا فهو يدوي من الأزرار)
   lockAutoTrailOn: false,
   lockAutoTrailPct: 10,
@@ -1963,14 +1962,17 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
     const bePrice = isLong ? entry * (1 + offset / 100) : entry * (1 - offset / 100);
 
     // الغرض حماية ربح قائم، لا إقفال صفقة بالكاد دخلت الربح.
-    // صفقة تحرّكت أقل من مستوى التعادل يقع مستواها فوق سعرها الحالي،
-    // فتُقفل لحظة تسجيلها — لذا نشترط حركة كافية أولاً.
+    // نقيس الربح على الهامش (نفس نسبة بايننس) ونقارنه بالحدّ الذي يحدّده المستخدم.
     const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
+    const lev = parseFloat(pos.leverage) || 1;
+    const margin = mark ? (Math.abs(parseFloat(pos.positionAmt)) * mark) / lev : 0;
+    const roi = margin ? (pnl / margin) * 100 : 0;
+    const minPnl = parseFloat(STATE.settings.lockBEminPnl);
+    const needPnl = isFinite(minPnl) ? minPnl : 0;
+    // حدّ ضمني: مستوى التعادل يجب أن يبقى تحت السعر بهامش، وإلا أُقفلت على أول حركة
     const movePct = mark ? ((mark - entry) / entry) * 100 * (isLong ? 1 : -1) : 0;
-    const minMove = parseFloat(STATE.settings.lockBEminMove);
-    const need = Math.max(isFinite(minMove) ? minMove : 0, offset * 1.5);
-    if (movePct < need) {
-      results.skipped.push(`${sym}: تحرّكت ${movePct.toFixed(2)}% فقط (المطلوب ${need.toFixed(2)}%)`);
+    if (roi < needPnl || movePct < offset * 1.5) {
+      results.skipped.push(`${sym}: ربح ${roi.toFixed(0)}% (المطلوب ${needPnl}%)`);
       continue;
     }
     try {
@@ -2329,13 +2331,13 @@ async function monitorLock() {
           const why = status.reasons.join(' · ');
           // الرابحة = ربح موجب. أما البريك إيفن فيشترط حركة كافية إضافةً لذلك،
           // وإلا أقفل صفقةً بالكاد دخلت الربح
-          const minMove = parseFloat(S.lockBEminMove) || 0;
+          const minPnl = parseFloat(S.lockBEminPnl) || 0;
           const movedEnough = (p) => {
-            const e = parseFloat(p.entryPrice) || 0;
             const m = parseFloat(p.markPrice) || livePrices[p.symbol] || 0;
-            if (!e || !m) return false;
-            const mv = ((m - e) / e) * 100 * (parseFloat(p.positionAmt) > 0 ? 1 : -1);
-            return mv >= minMove;
+            const lv = parseFloat(p.leverage) || 1;
+            const mg = m ? (Math.abs(parseFloat(p.positionAmt)) * m) / lv : 0;
+            if (!mg) return false;
+            return ((parseFloat(p.unRealizedProfit) || 0) / mg) * 100 >= minPnl;
           };
           const winners = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) > 0).map(p => p.symbol);
           const beReady = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) > 0 && movedEnough(p)).map(p => p.symbol);
