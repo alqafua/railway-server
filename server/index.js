@@ -92,7 +92,10 @@ const DEFAULT_SETTINGS = {
   lockBEnearPct: 1,         // قرب السعر من خط السوبر/EMA لتفعيل البريك إيفن %
   lockBEoffsetPct: 0.1,     // نسبة البريك إيفن فوق الدخول (تغطية العمولات) %
   lockTgChat: process.env.TG_CHAT_LOCK || '-1004312421634',   // قناة إشعارات نظام القفل
-  lockCornixSync: false,    // مزامنة الأوامر مع كورنكس عبر الرد على رسالة الإشارة
+  // مزامنة كورنكس: يعدّل رسالة الإشارة الأصلية بالوقف/التريلنج الجديد.
+  // الوضع 'edit' لأن الرد بأوامر نصية جُرِّب بخمس صيغ ولم ينفّذه كورنكس.
+  lockCornixSync: true,
+  lockCornixMode: 'edit',   // edit | reply | both
   lockCxBEtpl: 'SL to entry',
   lockCxSLtpl: 'New stop loss: {price}',
   lockCxTrailTpl: 'Trailing stop: {pct}%',
@@ -1288,6 +1291,11 @@ async function placeOrUpdateSTSL(acc, sym, pos, slPrice) {
     };
     await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', params);
     addCopyLog('success', `🛡️ ST SL: ${sym} وقف عند ${slPrice}`);
+    // حدّث رسالة الإشارة بالوقف الجديد كي تبقى مطابقة لما على المنصّة
+    await cornixSync(sym, {
+      cmd: (STATE.settings.lockCxSLtpl || 'New stop loss: {price}').replace('{price}', String(slPrice)),
+      stop: slPrice,
+    });
   } catch (e) {
     addCopyLog('fail', `❌ ST SL أمر ${sym}: ${e.message}`);
   }
@@ -1676,7 +1684,7 @@ async function cornixSync(sym, { cmd, stop, trailPct } = {}) {
   if (!STATE.settings.lockCornixSync) return null;
   const rec = STATE.sentMsgIds[sym];
   if (!rec?.id) return null;
-  const mode = STATE.settings.lockCornixMode || 'reply';
+  const mode = STATE.settings.lockCornixMode || 'edit';
   const out = [];
   if (mode === 'reply' || mode === 'both') {
     if (cmd) { await tgSend(cmd, rec.chat || STATE.settings.cxChat, { replyTo: rec.id }); out.push('رد'); }
@@ -1771,7 +1779,7 @@ async function placeStop(acc, sym, pos, stopPrice, tag) {
 
 // (4)+(5) بريك إيفن للصفقات الرابحة — سعر الوقف فوق الدخول بقليل لتغطية العمولات
 async function applyBreakEven(acc, syms, offsetPct, reason) {
-  const results = { done: [], skipped: [], failed: [] };
+  const results = { done: [], skipped: [], failed: [], synced: [] };
   const positions = (acc.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   const off = parseFloat(offsetPct);
   const offset = isFinite(off) ? off : 0.1;
@@ -1788,7 +1796,8 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
       const px = await placeStop(acc, sym, pos, bePrice, 'بريك إيفن');
       STATE.lockState.beDone[sym] = Date.now();
       results.done.push(`${sym} @ ${px}`);
-      await cornixSync(sym, { cmd: STATE.settings.lockCxBEtpl || 'SL to entry', stop: px });
+      const s = await cornixSync(sym, { cmd: STATE.settings.lockCxBEtpl || 'SL to entry', stop: px });
+      if (s) results.synced.push(`${sym}: ${s}`);
     } catch (e) {
       results.failed.push(`${sym}: ${e.message}`);
     }
@@ -1800,6 +1809,7 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
       `🟡 بريك إيفن (${reason})\nنسبة فوق الدخول: ${offset}%\n` +
       (results.done.length ? `✅ طُبّق: ${results.done.join(' · ')}\n` : '') +
       (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
+      (results.synced?.length ? `📨 الرسالة: ${results.synced.join(' · ')}\n` : '') +
       (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
     );
   }
@@ -1808,7 +1818,7 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
 
 // (6) وقف خسارة للصفقات الخاسرة — بنسبة من السعر الحالي
 async function applyLossStop(acc, syms, pct) {
-  const results = { done: [], skipped: [], failed: [] };
+  const results = { done: [], skipped: [], failed: [], synced: [] };
   const positions = (acc.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   const d = parseFloat(pct);
   if (!isFinite(d) || d <= 0) return results;
@@ -1824,10 +1834,11 @@ async function applyLossStop(acc, syms, pct) {
     try {
       const px = await placeStop(acc, sym, pos, slPrice, 'وقف خسارة');
       results.done.push(`${sym} @ ${px}`);
-      await cornixSync(sym, {
+      const s2 = await cornixSync(sym, {
         cmd: (STATE.settings.lockCxSLtpl || 'New stop loss: {price}').replace('{price}', String(px)),
         stop: px,
       });
+      if (s2) results.synced.push(`${sym}: ${s2}`);
     } catch (e) {
       results.failed.push(`${sym}: ${e.message}`);
     }
@@ -1838,6 +1849,7 @@ async function applyLossStop(acc, syms, pct) {
       `🛑 وقف الخسارة (${d}% من السعر الحالي)\n` +
       (results.done.length ? `✅ طُبّق: ${results.done.join(' · ')}\n` : '') +
       (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
+      (results.synced?.length ? `📨 الرسالة: ${results.synced.join(' · ')}\n` : '') +
       (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
     );
   }
@@ -1848,7 +1860,7 @@ async function applyLossStop(acc, syms, pct) {
 // ملاحظة: بايننس يقبل callbackRate بين 0.1% و5% فقط — ما فوقها يُطبَّق على كورنكس فقط
 const BINANCE_TRAIL_MAX = 5;
 async function applyTrailing(acc, syms, pct) {
-  const results = { done: [], skipped: [], failed: [], cornixOnly: [] };
+  const results = { done: [], skipped: [], failed: [], cornixOnly: [], synced: [] };
   const positions = (acc.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   const rate = parseFloat(pct);
   if (!isFinite(rate) || rate <= 0) return results;
@@ -1881,7 +1893,8 @@ async function applyTrailing(acc, syms, pct) {
       rememberOurStop(sym, tr?.orderId);
       results.done.push(`${sym} @ ${rate}%`);
       addCopyLog('success', `📉 تريلنج: ${sym} @ ${rate}%`);
-      await cornixSync(sym, { cmd: tpl, trailPct: rate });
+      const s3 = await cornixSync(sym, { cmd: tpl, trailPct: rate });
+      if (s3) results.synced.push(`${sym}: ${s3}`);
     } catch (e) {
       results.failed.push(`${sym}: ${e.message}`);
     }
@@ -1893,6 +1906,7 @@ async function applyTrailing(acc, syms, pct) {
       (results.done.length ? `✅ على بايننس: ${results.done.join(' · ')}\n` : '') +
       (results.cornixOnly.length ? `📨 كورنكس فقط (>${BINANCE_TRAIL_MAX}% غير مدعوم ببايننس): ${results.cornixOnly.join(' · ')}\n` : '') +
       (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
+      (results.synced?.length ? `📨 الرسالة: ${results.synced.join(' · ')}\n` : '') +
       (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
     );
   }
