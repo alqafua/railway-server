@@ -552,15 +552,24 @@ function chatLabel(chat) {
   return 'قناة غير معروفة';
 }
 
-// قنوات فشلت بـ "chat not found" — نتوقف عن مراسلتها بدل تكرار الخطأ مع كل إشارة
+// قنوات فشلت بـ "chat not found" — نتوقف عن مراسلتها بدل تكرار الخطأ مع كل إشارة.
+// لكن نعيد المحاولة بعد فترة: قد يُضاف البوت إلى القناة بعد أول فشل،
+// وبدون هذه المهلة تبقى القناة معطّلة إلى أن يُعاد تشغيل السيرفر.
 const deadChats = new Map();   // chat -> { at, label }
+const DEAD_CHAT_RETRY_MS = 10 * 60000;
+function isDeadChat(chat) {
+  const rec = deadChats.get(String(chat));
+  if (!rec) return false;
+  if (Date.now() - rec.at > DEAD_CHAT_RETRY_MS) { deadChats.delete(String(chat)); return false; }
+  return true;
+}
 
 async function drainTgQueue() {
   tgSending = true;
   while (tgQueue.length) {
     const item = tgQueue.shift();
     const { text, chat, token, trackSym, replyTo, editId } = item;
-    if (deadChats.has(String(chat))) continue;   // قناة معطوبة — تخطَّ بصمت
+    if (isDeadChat(chat)) continue;   // قناة معطوبة — تخطَّ (تُعاد المحاولة بعد ١٠ دقائق)
     try {
       // editId → تعديل رسالة قائمة بدل إرسال جديدة
       const method = editId ? 'editMessageText' : 'sendMessage';
@@ -4196,6 +4205,57 @@ app.get('/api/lock/diag', async (req, res) => {
     P(`توكن البوت: ${STATE.settings.cxToken ? 'موجود ✓' : 'مفقود ✗'}`);
     P(`قناة الإشارات: ${STATE.settings.cxChat || '(فارغة)'}`);
     P('');
+
+    // ── فحص كل قناة: هل يستطيع البوت المراسلة فيها فعلاً؟ ──
+    P('── فحص القنوات ──');
+    const chats = [
+      ['الإشارات', STATE.settings.cxChat],
+      ['نظام القفل', STATE.settings.lockTgChat],
+      ['إغلاق الصفقات', STATE.settings.cxChatClose],
+      ['إعدادات الصفقات', STATE.settings.cxChatSettings],
+      ['الباك تيست', STATE.settings.cxChatBT],
+      ['محاكاة ST', STATE.settings.cxChatSTSim],
+    ];
+    for (const [name, id] of chats) {
+      if (!id) { P(`  ${name}: (فارغة)`); continue; }
+      try {
+        const r = await fetch(`https://api.telegram.org/bot${STATE.settings.cxToken}/getChat?chat_id=${encodeURIComponent(id)}`);
+        const b = await r.text().catch(() => '');
+        if (r.ok) {
+          let title = '';
+          try { const j = JSON.parse(b); title = j?.result?.title || j?.result?.username || ''; } catch (e) {}
+          P(`  ${name}: ${id} ✓ ${title ? '— ' + title : ''}`);
+        } else {
+          let d = b; try { d = JSON.parse(b).description || b; } catch (e) {}
+          P(`  ${name}: ${id} ✗ ${String(d).slice(0, 60)}`);
+          if (/chat not found/i.test(String(d))) P('      → الرقم غير صحيح، أو البوت ليس عضواً/مشرفاً في القناة');
+        }
+      } catch (e) { P(`  ${name}: ${id} ⚠️ ${e.message}`); }
+      await new Promise(r2 => setTimeout(r2, 200));
+    }
+    if (deadChats.size) {
+      P('');
+      P('قنوات موقوفة مؤقتاً (تُعاد المحاولة بعد ١٠ دقائق):');
+      for (const [c, r] of deadChats) P(`  ${c} — ${r.label}`);
+    }
+    P('');
+
+    // &lock=1 → يرسل رسالة تجريبية لقناة نظام القفل ويعرض رد تلغرام الحرفي
+    if (req.query.lock === '1') {
+      const lc = STATE.settings.lockTgChat || STATE.settings.cxChat;
+      P('── إرسال تجريبي لقناة نظام القفل ──');
+      P(`الوجهة: ${lc}`);
+      try {
+        const r = await fetch(`https://api.telegram.org/bot${STATE.settings.cxToken}/sendMessage`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: lc, text: '🔒 اختبار قناة نظام القفل — وصلت ✓' }),
+        });
+        const b = await r.text().catch(() => '');
+        if (r.ok) { deadChats.delete(String(lc)); P('النتيجة: وصلت ✓ — افتح القناة وتأكد'); }
+        else { let d = b; try { d = JSON.parse(b).description || b; } catch (e) {} P(`النتيجة: فشل ✗ — ${d}`); }
+      } catch (e) { P(`النتيجة: استثناء — ${e.message}`); }
+      return res.type('text/plain; charset=utf-8').send(L.join('\n'));
+    }
 
     const all = Object.entries(STATE.sentMsgIds || {});
     P(`الرسائل المحفوظة: ${all.length}`);
