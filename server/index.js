@@ -4146,6 +4146,73 @@ async function handleClientMsg(msg, ws) {
 // ══════════════════════════════════════════════
 app.get('/api/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
+// صفحة تشخيص تُفتح من المتصفح مباشرة — تتجاوز الويب سوكت والواجهة،
+// فتُظهر ما يحدث فعلاً حين تعذّر تتبّعه عبر الأزرار.
+//   /api/lock/diag?pw=<كلمة المرور>          → عرض الحالة فقط
+//   /api/lock/diag?pw=<...>&edit=1           → ينفّذ التعديل ويعرض رد تلغرام الحرفي
+app.get('/api/lock/diag', async (req, res) => {
+  if (!bcrypt.compareSync(String(req.query.pw || ''), ADMIN_PASS_HASH)) {
+    return res.status(401).type('text/plain; charset=utf-8').send('كلمة مرور خاطئة');
+  }
+  const L = [];
+  const P = (s) => L.push(s);
+  try {
+    P('═══ تشخيص تعديل الرسائل ═══');
+    P(`الوقت: ${nowStr()}`);
+    P(`توكن البوت: ${STATE.settings.cxToken ? 'موجود ✓' : 'مفقود ✗'}`);
+    P(`قناة الإشارات: ${STATE.settings.cxChat || '(فارغة)'}`);
+    P('');
+
+    const all = Object.entries(STATE.sentMsgIds || {});
+    P(`الرسائل المحفوظة: ${all.length}`);
+    if (!all.length) {
+      P('لا توجد رسائل محفوظة. التعديل يعمل فقط على إشارات أرسلها البوت بعد آخر تحديث.');
+      return res.type('text/plain; charset=utf-8').send(L.join('\n'));
+    }
+    const sorted = all.sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
+    for (const [sym, r] of sorted.slice(0, 10)) {
+      const ageH = ((Date.now() - (r.ts || 0)) / 3600000).toFixed(1);
+      const ok = (Date.now() - (r.ts || 0)) < TG_EDIT_WINDOW_MS;
+      P(`  ${sym}  #${r.id}  قناة ${r.chat}  عمر ${ageH}س  ${r.text ? 'نص✓' : 'نص✗'}  ${ok ? 'قابلة للتعديل ✓' : 'أقدم من ٤٨س ✗'}`);
+    }
+    P('');
+
+    const cand = sorted.find(([, r]) => r?.id && r?.text && Date.now() - (r.ts || 0) < TG_EDIT_WINDOW_MS);
+    if (!cand) { P('لا توجد رسالة صالحة للتعديل.'); return res.type('text/plain; charset=utf-8').send(L.join('\n')); }
+    const [sym, rec] = cand;
+    const parsed = parseSignalMsg(rec.text);
+    P(`المرشّحة: ${sym} #${rec.id}`);
+    P(`  الاتجاه: ${parsed.side || '؟'} · الدخول: ${parsed.entry ?? '؟'} · الوقف الحالي: ${parsed.stop ?? '؟'}`);
+
+    if (req.query.edit !== '1') {
+      P('');
+      P('لتنفيذ التعديل فعلياً أضف &edit=1 إلى الرابط.');
+      return res.type('text/plain; charset=utf-8').send(L.join('\n'));
+    }
+
+    const px = suggestTestStop(rec.text);
+    P(`  الوقف الجديد المقترح: ${fmtSignalPrice(px)}`);
+    P('');
+    P('── تنفيذ التعديل ──');
+    const newText = replaceStopInMsg(rec.text, fmtSignalPrice(px));
+    if (!newText) { P('✗ تعذّر إيجاد سطر Stop Targets في النص المحفوظ.'); P(''); P(rec.text); return res.type('text/plain; charset=utf-8').send(L.join('\n')); }
+    const r = await tgEditDirect(rec.chat || STATE.settings.cxChat, rec.id, newText);
+    P(`رد تلغرام: ${r.ok ? 'نجح ✓' : 'فشل ✗'}`);
+    if (!r.ok) P(`الخطأ الحرفي: ${r.error}`);
+    else {
+      rec.text = newText;
+      saveSentMsgIdsDebounced();
+      P(`عُدّلت الرسالة #${rec.id} — الوقف ${parsed.stop} ← ${fmtSignalPrice(px)}`);
+      P('افتح القناة وتأكد أن السطر تغيّر.');
+    }
+    res.type('text/plain; charset=utf-8').send(L.join('\n'));
+  } catch (e) {
+    P('');
+    P(`استثناء: ${e.message}`);
+    res.type('text/plain; charset=utf-8').send(L.join('\n'));
+  }
+});
+
 app.post('/api/login', async (req, res) => {
   // إصلاح أمني — Rate limiting بعد 5 محاولات فاشلة
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
