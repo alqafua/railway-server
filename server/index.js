@@ -1328,10 +1328,17 @@ const HOUR_MS = 3600000;
 
 function lockSave() { db.saveLockState(STATE.lockState); }
 
-// إشعار لقناة نظام القفل (وإن لم تُضبط تُستخدم القناة الأساسية)
+// إشعار لقناة نظام القفل. إن تعذّر الوصول إليها نُحوّل لقناة الإشارات
+// بدل ضياع الإشعار بصمت — مع تنبيه يوضّح السبب.
 function lockNotify(text) {
-  const chat = STATE.settings.lockTgChat || STATE.settings.cxChat;
-  if (chat) tgSend('🔒 نظام القفل\n' + text, chat);
+  const lock = STATE.settings.lockTgChat;
+  const main = STATE.settings.cxChat;
+  if (lock && !isDeadChat(lock)) { tgSend('🔒 نظام القفل\n' + text, lock); return; }
+  if (lock && main) {
+    tgSend(`🔒 نظام القفل\n${text}\n\n⚠️ تعذّر الوصول لقناة القفل (${lock}) — تأكّد أن البوت مشرف فيها وله صلاحية نشر الرسائل.`, main);
+    return;
+  }
+  if (main) tgSend('🔒 نظام القفل\n' + text, main);
 }
 
 // يدوّر النافذة اليومية إذا انتهت مدّتها، ويُرجع الحالة الحالية
