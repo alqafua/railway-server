@@ -1636,9 +1636,9 @@ async function verifySignalMsg(sym) {
       saveSentMsgIdsDebounced();
       detail += ` · البديل على الأرجح #${alt}`;
     }
-  } else if (/can't be edited|MESSAGE_AUTHOR_REQUIRED|not enough rights/i.test(err)) {
+  } else if (/can't be edited|MESSAGE_AUTHOR_REQUIRED|MESSAGE_ID_INVALID|not enough rights/i.test(err)) {
     verdict = 'foreign';
-    detail = 'موجودة لكن البوت لا يملك حق تعديلها';
+    detail = 'موجودة لكن ليست رسالة البوت — لا يمكن تعديلها';
   } else {
     verdict = 'unknown';
     detail = err.slice(0, 80);
@@ -3700,7 +3700,7 @@ async function handleClientMsg(msg, ws) {
       if (r.ok) verdict = '✅✅ نجح! البوت يستطيع تعديل رسالة كورنكس — الحل ممكن';
       else if (/not modified/i.test(err)) verdict = '✅ الرسالة موجودة والبوت يملك حق تعديلها';
       else if (/not found/i.test(err)) verdict = '❌ لا توجد رسالة بهذا الرقم';
-      else if (/can't be edited|MESSAGE_AUTHOR_REQUIRED|not enough rights/i.test(err)) verdict = '⛔ موجودة لكن تلغرام يمنع البوت من تعديل رسالة غيره — الطريق مسدود';
+      else if (/can't be edited|MESSAGE_AUTHOR_REQUIRED|MESSAGE_ID_INVALID|not enough rights/i.test(err)) verdict = '⛔ رسالة كورنكس — تلغرام يمنع البوت من تعديل رسالة غيره حتى لو كان مشرفاً';
       else verdict = '⚠️ ' + err.slice(0, 80);
       broadcast({ type: 'lockResult', data: { ok: true, action: 'tryedit', done: [`#${mid} في ${chat}:`, verdict], skipped: [], failed: [], verbose: true } });
       break;
