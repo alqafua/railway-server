@@ -1711,10 +1711,15 @@ async function cancelOurStops(acc, sym) {
   if (ids.length) { delete store[sym]; lockSave(); }
 }
 
-function rememberOurStop(sym, orderId) {
+function rememberOurStop(sym, orderId, px) {
   if (!orderId) return;
   const store = STATE.lockState.ourStops || (STATE.lockState.ourStops = {});
   store[sym] = [orderId];
+  // نحفظ السعر أيضاً كي يستطيع الحارس إعادة الأمر إن ألغاه كورنكس
+  if (px != null) {
+    const pxs = STATE.lockState.stopPx || (STATE.lockState.stopPx = {});
+    pxs[sym] = px;
+  }
   lockSave();
 }
 
@@ -1765,7 +1770,7 @@ async function placeStop(acc, sym, pos, stopPrice, tag) {
   for (const params of attempts) {
     try {
       const r = await bFetch(acc.apiKey, acc.apiSecret, 'POST', '/fapi/v1/order', params);
-      rememberOurStop(sym, r?.orderId);
+      rememberOurStop(sym, r?.orderId, px);
       addCopyLog('success', `🛡️ ${tag}: ${sym} وقف حدّي @ ${px}`);
       return px;
     } catch (e) {
@@ -1995,6 +2000,34 @@ async function monitorLock() {
       positions = (master.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
     }
 
+    // ── حارس الوقف: كورنكس يعيد فرض أوامره وقد يلغي وقفنا ──
+    // نتحقّق أن كل وقف وضعناه ما زال قائماً، ونعيده إن اختفى والصفقة مفتوحة.
+    // بلا هذا قد تبقى الصفقة بلا حماية دون أن يشعر أحد.
+    if (L.ourStops && Object.keys(L.ourStops).length) {
+      for (const pos of positions) {
+        const sym = pos.symbol;
+        const ids = (L.ourStops[sym] || []).map(String);
+        if (!ids.length) continue;
+        try {
+          const orders = await bFetch(master.apiKey, master.apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
+          if (!Array.isArray(orders)) continue;
+          const stillThere = orders.some(o => ids.includes(String(o.orderId)));
+          if (stillThere) continue;
+          // اختفى وقفنا والصفقة ما زالت مفتوحة — أعده بنفس السعر المسجّل
+          const px = L.stopPx?.[sym];
+          if (!px) { delete L.ourStops[sym]; lockSave(); continue; }
+          const re = await placeStop(master, sym, pos, px, 'إعادة وقف');
+          lockNotify(
+            `♻️ أُعيد وضع الوقف — #${sym.replace('USDT', '/USDT')}\n` +
+            `اختفى أمر الوقف الذي وضعه النظام (غالباً ألغاه كورنكس) فأُعيد عند ${re}`
+          );
+        } catch (e) {
+          addCopyLog('fail', `❌ حارس الوقف ${sym}: ${e.message}`);
+        }
+        await new Promise(r => setTimeout(r, 250));
+      }
+    }
+
     // ── (2) تقليم الزيادة فوق الحد اليومي للصفقات اليدوية ──
     if (STATE.settings.lockDailyOn && !lockIsLocked()) {
       const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
@@ -2103,6 +2136,7 @@ async function monitorLock() {
     }
     for (const s of Object.keys(L.beDone)) if (!openSyms.has(s)) { delete L.beDone[s]; changed = true; }
     if (L.ourStops) for (const s of Object.keys(L.ourStops)) if (!openSyms.has(s)) { delete L.ourStops[s]; changed = true; }
+    if (L.stopPx) for (const s of Object.keys(L.stopPx)) if (!openSyms.has(s)) { delete L.stopPx[s]; changed = true; }
     if (changed) lockSave();
 
     // تشخيص كل دورة ثانية (كل ٣٠ ثانية) لتخفيف الضغط على الـ API
