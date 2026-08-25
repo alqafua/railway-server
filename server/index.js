@@ -83,6 +83,7 @@ const DEFAULT_SETTINGS = {
   // ── نظام القفل ─────────────────────────────────────────
   lockOn: false,            // المفتاح العام لنظام القفل
   lockMaster: false,        // القفل العام — يمنع تعديل الحد اليومي
+  lockMasterDays: 7,        // مدّته بالأيام (٠ = دائم بلا انتهاء)
   lockAutoSLon: false,      // (1) ستوب تلقائي للصفقات اليدوية
   lockAutoSLpct: 2,         // نسبة الستوب من السعر %
   lockDailyOn: false,       // (2)+(3) الحد اليومي
@@ -1332,6 +1333,25 @@ const HOUR_MS = 3600000;
 
 function lockSave() { db.saveLockState(STATE.lockState); }
 
+// القفل العام: نشط طوال مدّته، وينتهي وحده بعدها.
+// المدّة صفر = دائم (لا ينتهي إلا بتغيير الإعداد من الخادم).
+function masterLockActive() {
+  if (!STATE.settings.lockMaster) return false;
+  const until = STATE.lockState.masterUntil || 0;
+  if (!until) return true;                 // دائم
+  if (Date.now() >= until) {
+    // انتهت المدّة — نرفع القفل تلقائياً
+    STATE.settings.lockMaster = false;
+    STATE.lockState.masterUntil = 0;
+    db.saveSettings(STATE.settings);
+    lockSave();
+    lockNotify('🔓 انتهت مدّة القفل العام — عادت إعدادات الحد اليومي قابلة للتعديل');
+    broadcast({ type: 'settings', data: STATE.settings });
+    return false;
+  }
+  return true;
+}
+
 // إشعار لقناة نظام القفل. إن تعذّر الوصول إليها نُحوّل لقناة الإشارات
 // بدل ضياع الإشعار بصمت — مع تنبيه يوضّح السبب.
 function lockNotify(text) {
@@ -1420,6 +1440,8 @@ function lockPublic() {
     msgFate: L.msgFate || {},
     vStops: L.vStops || {},
     booted: bootBaselineDone,
+    masterUntil: STATE.lockState.masterUntil || 0,
+    masterActive: !!STATE.settings.lockMaster,
   };
 }
 
@@ -3155,8 +3177,8 @@ async function handleClientMsg(msg, ws) {
         STATE._stslEnabledAt = Date.now();
         STATE._stslTracked = {};
       }
-      // ── القفل العام: يمنع تعديل الحد اليومي (والقفل نفسه) بعد تفعيله ──
-      if (STATE.settings.lockMaster) {
+      // ── القفل العام: يمنع تعديل الحد اليومي (والقفل نفسه) طوال مدّته ──
+      if (masterLockActive()) {
         const PROTECTED = ['lockDailyOn', 'lockDailyAmt', 'lockDailyHours', 'lockMaster', 'lockOn'];
         const blocked = PROTECTED.filter(k => msg.data[k] !== undefined && msg.data[k] !== STATE.settings[k]);
         for (const k of blocked) delete msg.data[k];
@@ -3164,6 +3186,16 @@ async function handleClientMsg(msg, ws) {
           broadcast({ type: 'lockResult', data: { ok: false, error: '🔒 القفل العام مفعّل — إعدادات الحد اليومي محميّة' } });
         }
       }
+      // تفعيل القفل العام يضبط تاريخ انتهائه من المدّة المختارة
+      if (msg.data.lockMaster === true && !STATE.settings.lockMaster) {
+        const days = parseFloat(msg.data.lockMasterDays ?? STATE.settings.lockMasterDays) || 0;
+        STATE.lockState.masterUntil = days > 0 ? Date.now() + days * 24 * HOUR_MS : 0;
+        lockSave();
+        lockNotify(days > 0
+          ? `🔐 فُعّل القفل العام لمدّة ${days} يوم\nينتهي: ${new Date(STATE.lockState.masterUntil).toLocaleString('ar-SA')}`
+          : '🔐 فُعّل القفل العام بلا مدّة — لا ينتهي تلقائياً');
+      }
+
       // عند تفعيل نظام القفل نسجّل الصفقات القائمة كخط أساس فلا تُقلَّم ولا تُغلق
       if (msg.data.lockOn === true && !STATE.settings.lockOn) {
         STATE.lockState.enabledAt = Date.now();
@@ -3848,7 +3880,7 @@ async function handleClientMsg(msg, ws) {
 
     case 'lockReset': {
       // إعادة فتح التداول يدوياً — ممنوع إن كان القفل العام مفعّلاً
-      if (STATE.settings.lockMaster) {
+      if (masterLockActive()) {
         broadcast({ type: 'lockResult', data: { ok: false, error: '🔒 القفل العام مفعّل — لا يمكن إعادة الضبط' } });
         break;
       }
