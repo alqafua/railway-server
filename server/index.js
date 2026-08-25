@@ -101,6 +101,7 @@ const DEFAULT_SETTINGS = {
   lockAutoLossPct: 2,
   lockAutoLossTrig: 'flip',
   lockTgChat: process.env.TG_CHAT_LOCK || '-1004312421634',   // قناة إشعارات نظام القفل
+  lockCloseCmd: '/close',   // أمر إغلاق الصفقة عبر الرد على الإشارة (مؤكَّد عملياً)
   // مزامنة كورنكس: يعدّل رسالة الإشارة الأصلية بالوقف/التريلنج الجديد.
   // الوضع 'edit' لأن الرد بأوامر نصية جُرِّب بخمس صيغ ولم ينفّذه كورنكس.
   lockCornixSync: true,
@@ -1729,15 +1730,18 @@ function armVStop(sym, { kind, side, pct, price, entry, reason }) {
   return v;
 }
 
-// يردّ على رسالة الإشارة بأمر الإغلاق — الأمر الوحيد الذي يوثّقه كورنكس
+// يردّ على رسالة الإشارة بأمر الإغلاق.
+// الصيغة "/close" مؤكَّدة عملياً على هذه القناة (جُرِّبت يدوياً فأغلقت الصفقة).
 async function cornixClose(sym) {
   const rec = STATE.sentMsgIds[sym];
   if (!rec?.id) return { ok: false, why: 'لا توجد رسالة إشارة محفوظة لهذا الرمز' };
   const chat = rec.chat || STATE.settings.cxChat;
-  await tgSend('close', chat, { replyTo: rec.id });
-  // نجرّب رسالة كورنكس أيضاً إن عُرف رقمها — أيّهما اعتبره الإشارة الأصلية
-  if (rec.cornixId) await tgSend('close', chat, { replyTo: rec.cornixId });
-  return { ok: true, ids: [rec.id, rec.cornixId].filter(Boolean) };
+  const cmd = STATE.settings.lockCloseCmd || '/close';
+  await tgSend(cmd, chat, { replyTo: rec.id });
+  // نردّ على رسالة كورنكس أيضاً إن عُرف رقمها — لا نعرف أيّهما يعتبرها الأصلية،
+  // وأمر إغلاق مكرّر على صفقة مغلقة لا يضرّ
+  if (rec.cornixId) await tgSend(cmd, chat, { replyTo: rec.cornixId });
+  return { ok: true, ids: [rec.id, rec.cornixId].filter(Boolean), cmd };
 }
 
 // يُنفَّذ عند بلوغ المستوى: إغلاق على بايننس + أمر إغلاق لكورنكس
@@ -1765,7 +1769,7 @@ async function fireVStop(sym, v, price) {
 
   // ٢) أمر إغلاق لكورنكس ليغلق لدى المتابعين
   const cr = await cornixClose(sym);
-  lines.push(cr.ok ? `📨 أُرسل أمر الإغلاق لكورنكس (رد على ${cr.ids.map(i => '#' + i).join(' و ')})`
+  lines.push(cr.ok ? `📨 أُرسل «${cr.cmd}» رداً على ${cr.ids.map(i => '#' + i).join(' و ')}`
                    : `⚠️ لم يُرسل لكورنكس: ${cr.why}`);
 
   lockNotify(
