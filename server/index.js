@@ -139,6 +139,7 @@ const STATE = {
     beDone: {},          // sym -> true (بريك إيفن مطبّق)
     ourStops: {},        // sym -> [orderId] أوامر الوقف التي وضعها النظام (لا نلغي غيرها)
     manualOverride: {},  // sym -> 'manual' | 'bot' — تصنيف يدوي يغلب الاستنتاج التلقائي
+    vStops: {},          // sym -> وقف افتراضي يتابعه البوت ويغلق بأمر close عند بلوغه
     msgFate: {},         // sym -> مصير رسالة الإشارة بعد إرسالها (هل بقيت؟ هل يملكها البوت؟)
     trades: [],          // سجل مختصر لصفقات النافذة
   },
@@ -1397,6 +1398,7 @@ function lockPublic() {
     diag: L.diag || {},
     diagAt: L.diagAt || 0,
     msgFate: L.msgFate || {},
+    vStops: L.vStops || {},
     booted: bootBaselineDone,
   };
 }
@@ -1670,6 +1672,129 @@ async function verifySignalMsg(sym) {
   broadcast({ type: 'lockState', data: lockPublic() });
 }
 
+// ══════════════════════════════════════════════
+//  الوقف الافتراضي — يتابعه البوت ويغلق بأمر close
+// ══════════════════════════════════════════════
+// كورنكس لا يقبل أمراً نصياً لتغيير الوقف، ولا يقرأ تعديل الرسالة.
+// الأمر الوحيد المدعوم هو الإغلاق (close/cancel/exit). لذا يتتبّع البوت
+// المستوى بنفسه على السعر اللحظي، وعند بلوغه يردّ على الإشارة بأمر إغلاق
+// فيُغلق كورنكس الصفقة لدى كل المتابعين.
+
+const VSTOP_KINDS = {
+  trail: 'تريلنج',
+  be: 'بريك إيفن',
+  sl: 'وقف خسارة',
+};
+
+function vStopsStore() {
+  return STATE.lockState.vStops || (STATE.lockState.vStops = {});
+}
+
+// يسجّل وقفاً افتراضياً لعملة. للتريلنج نبدأ التتبّع من السعر الحالي.
+function armVStop(sym, { kind, side, pct, price, entry, reason }) {
+  const store = vStopsStore();
+  const isLong = side === 'LONG';
+  const v = {
+    kind, side, pct: parseFloat(pct), entry,
+    startPrice: price, peak: price,
+    armedAt: Date.now(), reason: reason || '',
+    triggered: false,
+  };
+  // مستوى الإغلاق: ثابت للبريك إيفن والوقف، ومتحرّك للتريلنج
+  if (kind === 'be') {
+    v.level = isLong ? entry * (1 + v.pct / 100) : entry * (1 - v.pct / 100);
+  } else if (kind === 'sl') {
+    v.level = isLong ? price * (1 - v.pct / 100) : price * (1 + v.pct / 100);
+  } else {
+    v.level = isLong ? price * (1 - v.pct / 100) : price * (1 + v.pct / 100);
+  }
+  store[sym] = v;
+  lockSave();
+  return v;
+}
+
+// يردّ على رسالة الإشارة بأمر الإغلاق — الأمر الوحيد الذي يوثّقه كورنكس
+async function cornixClose(sym) {
+  const rec = STATE.sentMsgIds[sym];
+  if (!rec?.id) return { ok: false, why: 'لا توجد رسالة إشارة محفوظة لهذا الرمز' };
+  const chat = rec.chat || STATE.settings.cxChat;
+  await tgSend('close', chat, { replyTo: rec.id });
+  // نجرّب رسالة كورنكس أيضاً إن عُرف رقمها — أيّهما اعتبره الإشارة الأصلية
+  if (rec.cornixId) await tgSend('close', chat, { replyTo: rec.cornixId });
+  return { ok: true, ids: [rec.id, rec.cornixId].filter(Boolean) };
+}
+
+// يُنفَّذ عند بلوغ المستوى: إغلاق على بايننس + أمر إغلاق لكورنكس
+async function fireVStop(sym, v, price) {
+  v.triggered = true;
+  lockSave();
+  const pair = sym.replace('USDT', '/USDT');
+  const lines = [];
+  const isLong = v.side === 'LONG';
+  const movePct = v.entry ? ((price - v.entry) / v.entry) * 100 * (isLong ? 1 : -1) : 0;
+
+  // ١) إغلاق فعلي على بايننس — لا ينتظر استجابة كورنكس
+  const master = STATE.copyAccounts.find(a => a.isMaster);
+  const pos = (master?.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  if (master?.apiKey && pos) {
+    try {
+      await closeFollower(master, sym, parseFloat(pos.positionAmt));
+      lines.push('✅ أُغلقت على بايننس');
+    } catch (e) {
+      lines.push(`❌ إغلاق بايننس فشل: ${e.message}`);
+    }
+  } else {
+    lines.push('ℹ️ لا يوجد مركز مفتوح على الماستر');
+  }
+
+  // ٢) أمر إغلاق لكورنكس ليغلق لدى المتابعين
+  const cr = await cornixClose(sym);
+  lines.push(cr.ok ? `📨 أُرسل أمر الإغلاق لكورنكس (رد على ${cr.ids.map(i => '#' + i).join(' و ')})`
+                   : `⚠️ لم يُرسل لكورنكس: ${cr.why}`);
+
+  lockNotify(
+    `🔔 ${VSTOP_KINDS[v.kind] || v.kind} — #${pair}\n` +
+    `${isLong ? '🟢 LONG' : '🔴 SHORT'} · دخول ${fmtSignalPrice(v.entry)}\n` +
+    (v.kind === 'trail'
+      ? `📈 أعلى نقطة: ${fmtSignalPrice(v.peak)} · ارتد ${v.pct}% → ${fmtSignalPrice(v.level)}\n`
+      : `🎯 المستوى: ${fmtSignalPrice(v.level)} (${v.pct}%)\n`) +
+    `💰 سعر الإغلاق: ${fmtSignalPrice(price)} · ${movePct >= 0 ? '+' : ''}${movePct.toFixed(2)}%\n` +
+    (v.reason ? `📝 ${v.reason}\n` : '') +
+    lines.join('\n')
+  );
+
+  delete vStopsStore()[sym];
+  lockSave();
+  broadcast({ type: 'lockState', data: lockPublic() });
+}
+
+// يُستدعى مع كل تحديث سعر — خفيف لأنه يمرّ على العملات المسجّلة فقط
+let vStopBusy = false;
+function checkVStops(sym, price) {
+  const store = STATE.lockState.vStops;
+  if (!store) return;
+  const v = store[sym];
+  if (!v || v.triggered || !price) return;
+  const isLong = v.side === 'LONG';
+
+  if (v.kind === 'trail') {
+    // لاحق القمة (أو القاع للشورت) وحرّك المستوى معها
+    const better = isLong ? price > v.peak : price < v.peak;
+    if (better) {
+      v.peak = price;
+      v.level = isLong ? price * (1 - v.pct / 100) : price * (1 + v.pct / 100);
+      return;   // لا نحفظ على القرص مع كل تحديث — يُحفظ عند الإطلاق
+    }
+  }
+
+  const hit = isLong ? price <= v.level : price >= v.level;
+  if (!hit) return;
+  if (vStopBusy) return;
+  vStopBusy = true;
+  fireVStop(sym, v, price).catch(e => addCopyLog('fail', `❌ وقف افتراضي ${sym}: ${e.message}`))
+    .finally(() => { vStopBusy = false; });
+}
+
 // قائمة الإشارات المحفوظة مع عمرها وقابليتها للتعديل
 function msgSymsList() {
   const now = Date.now();
@@ -1810,6 +1935,11 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
       const px = await placeStop(acc, sym, pos, bePrice, 'بريك إيفن');
       STATE.lockState.beDone[sym] = Date.now();
       results.done.push(`${sym} @ ${px}`);
+      // وقف افتراضي موازٍ: يردّ على الإشارة بأمر إغلاق ليتبعه كورنكس والمشتركون
+      armVStop(sym, { kind: 'be', side: isLong ? 'LONG' : 'SHORT', pct: offset,
+                      price: parseFloat(pos.markPrice) || livePrices[sym] || entry,
+                      entry, reason: `بريك إيفن (${reason})` });
+      results.armed.push(`${sym} @ ${fmtSignalPrice(bePrice)}`);
       const s = await cornixSync(sym, { cmd: STATE.settings.lockCxBEtpl || 'SL to entry', stop: px });
       if (s) results.synced.push(`${sym}: ${s}`);
     } catch (e) {
@@ -1823,7 +1953,7 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
       `🟡 بريك إيفن (${reason})\nنسبة فوق الدخول: ${offset}%\n` +
       (results.done.length ? `✅ طُبّق: ${results.done.join(' · ')}\n` : '') +
       (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
-      (results.synced?.length ? `📨 الرسالة: ${results.synced.join(' · ')}\n` : '') +
+      (results.armed?.length ? `👁 يتابعها البوت: ${results.armed.join(' · ')}\n` : '') +
       (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
     );
   }
@@ -1848,6 +1978,10 @@ async function applyLossStop(acc, syms, pct) {
     try {
       const px = await placeStop(acc, sym, pos, slPrice, 'وقف خسارة');
       results.done.push(`${sym} @ ${px}`);
+      armVStop(sym, { kind: 'sl', side: isLong ? 'LONG' : 'SHORT', pct: d,
+                      price: mark, entry: parseFloat(pos.entryPrice) || mark,
+                      reason: `وقف ${d}% من ${fmtSignalPrice(mark)}` });
+      results.armed.push(`${sym} @ ${fmtSignalPrice(slPrice)}`);
       const s2 = await cornixSync(sym, {
         cmd: (STATE.settings.lockCxSLtpl || 'New stop loss: {price}').replace('{price}', String(px)),
         stop: px,
@@ -1863,7 +1997,7 @@ async function applyLossStop(acc, syms, pct) {
       `🛑 وقف الخسارة (${d}% من السعر الحالي)\n` +
       (results.done.length ? `✅ طُبّق: ${results.done.join(' · ')}\n` : '') +
       (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
-      (results.synced?.length ? `📨 الرسالة: ${results.synced.join(' · ')}\n` : '') +
+      (results.armed?.length ? `👁 يتابعها البوت: ${results.armed.join(' · ')}\n` : '') +
       (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
     );
   }
@@ -1874,7 +2008,7 @@ async function applyLossStop(acc, syms, pct) {
 // ملاحظة: بايننس يقبل callbackRate بين 0.1% و5% فقط — ما فوقها يُطبَّق على كورنكس فقط
 const BINANCE_TRAIL_MAX = 5;
 async function applyTrailing(acc, syms, pct) {
-  const results = { done: [], skipped: [], failed: [], cornixOnly: [], synced: [] };
+  const results = { done: [], skipped: [], failed: [], cornixOnly: [], synced: [], armed: [] };
   const positions = (acc.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   const rate = parseFloat(pct);
   if (!isFinite(rate) || rate <= 0) return results;
@@ -1885,13 +2019,21 @@ async function applyTrailing(acc, syms, pct) {
     const pnl = parseFloat(pos.unRealizedProfit) || 0;
     if (pnl <= 0) { results.skipped.push(`${sym}: خاسرة`); continue; }
     const tpl = (STATE.settings.lockCxTrailTpl || 'Trailing stop: {pct}%').replace('{pct}', String(rate));
+    // تريلنج يتابعه البوت: يبدأ من السعر الحالي ويلاحق القمة،
+    // وعند الارتداد بالنسبة يردّ على الإشارة بأمر إغلاق.
+    // هذا يتجاوز حدّ بايننس (٥٪) ويعمل بأي نسبة.
+    const isLong = parseFloat(pos.positionAmt) > 0;
+    const mk = parseFloat(pos.markPrice) || livePrices[sym] || 0;
+    const ent = parseFloat(pos.entryPrice) || mk;
+    if (mk) {
+      armVStop(sym, { kind: 'trail', side: isLong ? 'LONG' : 'SHORT', pct: rate,
+                      price: mk, entry: ent, reason: `تريلنج ${rate}% من ${fmtSignalPrice(mk)}` });
+      results.armed.push(`${sym} @ ${rate}% من ${fmtSignalPrice(mk)}`);
+    }
     if (overMax) {
-      // لا يمكن وضعه على بايننس — نكتفي بمزامنة كورنكس
-      const r = await cornixSync(sym, { cmd: tpl, trailPct: rate });
-      results.cornixOnly.push(sym + (r ? '' : ' (بدون كورنكس)'));
+      // فوق حدّ بايننس — التتبّع الافتراضي وحده يكفي
       continue;
     }
-    const isLong = parseFloat(pos.positionAmt) > 0;
     const qty = roundQty(Math.abs(parseFloat(pos.positionAmt)), sym);
     try {
       await ensureLotSize(sym);
@@ -1920,7 +2062,7 @@ async function applyTrailing(acc, syms, pct) {
       (results.done.length ? `✅ على بايننس: ${results.done.join(' · ')}\n` : '') +
       (results.cornixOnly.length ? `📨 كورنكس فقط (>${BINANCE_TRAIL_MAX}% غير مدعوم ببايننس): ${results.cornixOnly.join(' · ')}\n` : '') +
       (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
-      (results.synced?.length ? `📨 الرسالة: ${results.synced.join(' · ')}\n` : '') +
+      (results.armed?.length ? `👁 يتابعها البوت: ${results.armed.join(' · ')}\n` : '') +
       (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
     );
   }
@@ -2146,6 +2288,7 @@ async function monitorLock() {
     for (const s of Object.keys(L.beDone)) if (!openSyms.has(s)) { delete L.beDone[s]; changed = true; }
     if (L.ourStops) for (const s of Object.keys(L.ourStops)) if (!openSyms.has(s)) { delete L.ourStops[s]; changed = true; }
     if (L.stopPx) for (const s of Object.keys(L.stopPx)) if (!openSyms.has(s)) { delete L.stopPx[s]; changed = true; }
+    if (L.vStops) for (const s of Object.keys(L.vStops)) if (!openSyms.has(s)) { delete L.vStops[s]; changed = true; }
     if (changed) lockSave();
 
     // تشخيص كل دورة ثانية (كل ٣٠ ثانية) لتخفيف الضغط على الـ API
@@ -2357,6 +2500,8 @@ function startBinanceWSGroup(interval, syms) {
       if (!m.data?.k) return;
       const k = m.data.k, sym = k.s, close = parseFloat(k.c);
       livePrices[sym] = close;
+      // الوقف الافتراضي يُفحص على السعر اللحظي لا على دورة كل ١٥ ثانية
+      checkVStops(sym, close);
       if (!candleCache[sym]) candleCache[sym] = [];
 
       if (k.x) {
