@@ -3617,9 +3617,17 @@ async function handleClientMsg(msg, ws) {
       }
       const before = parseSignalMsg(rec.text).stop;
       const r = await cornixEditSignal(s, { stop: px });
+      const pair = s.replace('USDT', '/USDT');
       broadcast({ type: 'lockResult', data: r.ok
-        ? { ok: true, action: 'testEdit', done: [`${s.replace('USDT', '/USDT')}: الوقف ${before} → ${fmtSignalPrice(px)}`], skipped: [], failed: [] }
-        : { ok: false, error: `${s.replace('USDT', '/USDT')}: ${r.why}` } });
+        ? { ok: true, action: 'testEdit', verbose: true, skipped: [], failed: [], done: [
+            `✅ عُدّلت رسالة ${pair} (#${rec.id})`,
+            `الوقف: ${before} → ${fmtSignalPrice(px)}`,
+            `افتح القناة وتأكد أن السطر تغيّر، ثم افتح كورنكس.`,
+          ] }
+        : { ok: true, action: 'testEdit', verbose: true, skipped: [], failed: [], done: [
+            `❌ لم تُعدَّل رسالة ${pair} (#${rec.id})`,
+            `السبب: ${r.why}`,
+          ] } });
       // حدّث القائمة (قد تكون رسائل انتهت صلاحيتها)
       broadcast({ type: 'lockMsgSyms', data: msgSymsList() });
       break;
