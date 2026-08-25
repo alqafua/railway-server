@@ -3325,19 +3325,11 @@ async function handleClientMsg(msg, ws) {
           }
         }
       }
-      // تفعيل القفل العام يضبط تاريخ انتهائه من المدّة المختارة
-      if (msg.data.lockMaster === true && !STATE.settings.lockMaster) {
-        const hrs = parseFloat(msg.data.lockMasterHours ?? STATE.settings.lockMasterHours) || 0;
-        STATE.lockState.masterUntil = hrs > 0 ? Date.now() + hrs * HOUR_MS : 0;
-        // نسخة كاملة من الإعدادات وقت القفل — أي انحراف عنها لاحقاً يُستعاد منها
-        // نثبّت مفاتيح القفل صراحةً: نسخةٌ تحمل lockMaster=false ستطفئ القفل
-        // عند أول استعادة، فلا نترك ذلك لترتيب الدمج
-        STATE.lockState.snapshot = { ...STATE.settings, ...msg.data, lockMaster: true };
-        lockSave();
-        lockNotify(hrs > 0
-          ? `🔐 فُعّل القفل العام لمدّة ${fmtHours(hrs)}\nينتهي: ${new Date(STATE.lockState.masterUntil).toLocaleString('ar-SA')}\n💾 حُفظت نسخة من كل الإعدادات`
-          : '🔐 فُعّل القفل العام بلا مدّة — لا ينتهي تلقائياً\n💾 حُفظت نسخة من كل الإعدادات');
-      }
+      // القفل العام لا يُسلَّح من هنا إطلاقاً.
+      // الواجهة ترسل كل الإعدادات مع أي تعديل، فبعد انتهاء القفل كانت نسخة
+      // المتصفح القديمة (lockMaster=true) تعيد تسليحه من تلقاء نفسه.
+      // التسليح صار عبر رسالة مخصّصة (lockArm) لا تُرسَل إلا بضغطة صريحة.
+      delete msg.data.lockMaster;
 
       // عند تفعيل نظام القفل نسجّل الصفقات القائمة كخط أساس فلا تُقلَّم ولا تُغلق
       if (msg.data.lockOn === true && !STATE.settings.lockOn) {
@@ -4022,6 +4014,24 @@ async function handleClientMsg(msg, ws) {
       const r = await applyTrailing(master, syms, pct);
       broadcast({ type: 'lockResult', data: { ok: true, action: 'trail', ...r } });
       broadcast({ type: 'accounts', data: getSafeAccounts() });
+      break;
+    }
+
+    // تسليح القفل العام — المسار الوحيد الذي يفعّله، بضغطة صريحة من المستخدم
+    case 'lockArm': {
+      if (masterLockActive()) { broadcast({ type: 'lockResult', data: { ok: false, error: 'القفل مفعّل بالفعل' } }); break; }
+      const hrs = parseFloat(msg.data?.hours ?? STATE.settings.lockMasterHours) || 0;
+      STATE.settings.lockMaster = true;
+      STATE.settings.lockMasterHours = hrs;
+      STATE.lockState.masterUntil = hrs > 0 ? Date.now() + hrs * HOUR_MS : 0;
+      STATE.lockState.snapshot = { ...STATE.settings, lockMaster: true };
+      db.saveSettings(STATE.settings);
+      lockSave();
+      lockNotify(hrs > 0
+        ? `🔐 فُعّل القفل العام لمدّة ${fmtHours(hrs)}\nينتهي: ${new Date(STATE.lockState.masterUntil).toLocaleString('ar-SA')}\n💾 حُفظت نسخة من كل الإعدادات`
+        : '🔐 فُعّل القفل العام بلا مدّة — لا ينتهي تلقائياً\n💾 حُفظت نسخة من كل الإعدادات');
+      broadcast({ type: 'settings', data: STATE.settings });
+      broadcast({ type: 'lockState', data: lockPublic() });
       break;
     }
 
