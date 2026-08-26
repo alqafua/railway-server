@@ -107,9 +107,9 @@ const DEFAULT_SETTINGS = {
   lockAutoLossTrig: 'flip',
   lockTgChat: process.env.TG_CHAT_LOCK || '-1004312421634',   // قناة إشعارات نظام القفل
   lockCloseCmd: '/close',   // أمر إغلاق الصفقة عبر الرد على الإشارة (مؤكَّد عملياً)
-  // مزامنة كورنكس: يعدّل رسالة الإشارة الأصلية بالوقف/التريلنج الجديد.
-  // الوضع 'edit' لأن الرد بأوامر نصية جُرِّب بخمس صيغ ولم ينفّذه كورنكس.
-  lockCornixSync: true,
+  // مزامنة كورنكس بتعديل الرسالة — معطّلة افتراضياً:
+  // التعديل يمسح أزرار كورنكس من الإشارة، والإغلاق يتم بأمر /close بدلاً عنه.
+  lockCornixSync: false,
   lockCornixMode: 'edit',   // edit | reply | both
   lockCxBEtpl: 'SL to entry',
   lockCxSLtpl: 'New stop loss: {price}',
@@ -604,8 +604,9 @@ async function drainTgQueue() {
               // نحفظ النص أيضاً — لازم لتعديل الرسالة لاحقاً بنفس صيغتها
               STATE.sentMsgIds[trackSym] = { id: mid, chat, ts: Date.now(), text };
               saveSentMsgIdsDebounced();
-              // بعد دقيقة: هل بقيت الرسالة؟ يحسم آلياً هل يحذفها كورنكس
-              setTimeout(() => { verifySignalMsg(trackSym).catch(() => {}); }, 60000);
+              // لا نعدّل رسالة الإشارة تلقائياً بعد إرسالها:
+              // editMessageText يمسح الأزرار المضافة (أزرار كورنكس) ما لم تُعَد معه،
+              // فكان الفحص الدوري يجرّد الإشارات من أزرار المتابعة.
             }
           } catch (e) {}
         }
@@ -1659,6 +1660,10 @@ function isManualPosition(sym, pos) { return manualCheck(sym, pos).manual; }
 const TG_EDIT_WINDOW_MS = 48 * HOUR_MS;
 
 // تعديل مباشر (خارج الطابور) — يُرجع نتيجة تلغرام الحقيقية بدل ابتلاع الخطأ
+// تحذير: editMessageText يمسح لوحة الأزرار المرفقة بالرسالة ما لم تُمرَّر معه.
+// أزرار كورنكس (View Signal / One Click Follow) تُضاف بعد النشر، فأي تعديل
+// لاحق على الإشارة يجرّدها منها. لا تستدعِ هذه الدالة على رسالة إشارة
+// إلا بنيّة صريحة وقبولٍ لفقد الأزرار.
 async function tgEditDirect(chat, messageId, text) {
   const token = STATE.settings.cxToken;
   if (!token) return { ok: false, error: 'لا يوجد توكن بوت' };
