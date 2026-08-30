@@ -4029,7 +4029,7 @@ async function handleClientMsg(msg, ws) {
     }
 
     case 'addToQueue': {
-      const { sym, side, label, emoji, color, signalType } = msg.data || {};
+      const { sym, side, label, emoji, color, signalType, tf } = msg.data || {};
       if (!sym || !side) break;
       if (STATE.waitQueue.some(q => q.symbol === sym)) break;
       const typeKey = ['a70','b70'].includes(signalType) ? 'ob' : ['b30','a30'].includes(signalType) ? 'os' : ['cl','cs'].includes(signalType) ? 'conf' : 'trail';
@@ -4037,6 +4037,8 @@ async function handleClientMsg(msg, ws) {
         id: Date.now() + Math.random(), symbol: sym, side,
         signalType: typeKey, signalPrice: livePrices[sym] || 0,
         addedTs: Date.now(), addedTime: nowStr(),
+        // الفريم يأتي من الإشارة المضافة؛ وإن غاب نستخدم الفريم الفعّال للعملة
+        tf: tf || settingsFor(sym).interval || null,
         label: label || '', emoji: emoji || '', color: color || ''
       });
       db.saveWaitQueue(STATE.waitQueue);
