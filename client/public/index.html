@@ -140,8 +140,8 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v36-lock';
-const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockMasterHours:24,lockAllSettings:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEtrig:'near',lockBEnearPct:1,lockBEoffsetPct:0.1,lockBEminPnl:50,lockAutoTrailOn:false,lockAutoTrailPct:10,lockAutoTrailTrig:'near',lockAutoLossOn:false,lockAutoLossPct:2,lockAutoLossTrig:'flip',lockTgChat:'',lockCloseCmd:'/close',lockCornixSync:false,extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
+const UI_VERSION='v37-queue';
+const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',wqOpen:false,sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,queueRevAutoOn:false,queueRevAutoPct:10,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockMasterHours:24,lockAllSettings:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockBEtrig:'near',lockBEnearPct:1,lockBEoffsetPct:0.1,lockBEminPnl:50,lockAutoTrailOn:false,lockAutoTrailPct:10,lockAutoTrailTrig:'near',lockAutoLossOn:false,lockAutoLossPct:2,lockAutoLossTrig:'flip',lockTgChat:'',lockCloseCmd:'/close',lockCornixSync:false,extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
 const MIN_SIG_SAMPLE=10; // أقل عدد إشارات لاعتماد نسبة الاحترام في "الإعداد النهائي المُحسَّن"
@@ -1061,6 +1061,15 @@ function rTrades(body){
 }
 function rStats2(body){const tabs=el('div',{className:'stabs'});[['today','اليوم'],['week','أسبوع'],['month','شهر'],['all','الكل']].forEach(([k,lb])=>{tabs.appendChild(el('div',{className:'stab '+(C.statsPeriod===k?'active':''),onClick:()=>{C.statsPeriod=k;render();}},lb));});body.appendChild(tabs);const st=getPStats(C.statsPeriod);const g=el('div',{className:'sgrid2'});const mkSC=(lb,v,c='')=>{const c2=el('div',{className:'sc2'});c2.appendChild(el('label',{},lb));c2.appendChild(el('div',{className:'v '+c},v));return c2;};g.appendChild(mkSC('إجمالي',String(st.total)));g.appendChild(mkSC('نجاح',st.wr.toFixed(1)+'%','c-confirmed'));g.appendChild(mkSC('رابحة',String(st.wins),'c-green'));g.appendChild(mkSC('خاسرة',String(st.losses),'c-red'));g.appendChild(mkSC('الأداء',(st.tot>=0?'+':'')+st.tot.toFixed(2)+'%',st.tot>=0?'c-green':'c-red'));body.appendChild(g);st.trades.slice(0,20).forEach(t=>{const item=el('div',{className:'ai '+(t.pct>=0?'green':'red'),style:{padding:'8px'}});const top=el('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:'2px'}});top.appendChild(el('span',{style:{fontWeight:'700',fontSize:'12px'}},(t.side==='LONG'?'🟢':'🔴')+' '+symStar(t.symbol)+t.symbol));const pnlDiv=el('div',{style:{textAlign:'right'}});pnlDiv.appendChild(el('div',{className:t.pct>=0?'c-green':'c-red',style:{fontWeight:'800'}},(t.pct>=0?'+':'')+t.pct.toFixed(2)+'%'));if(t.pnl!=null)pnlDiv.appendChild(el('div',{style:{fontSize:'10px',color:t.pnl>=0?'var(--green)':'var(--red)'}},(t.pnl>=0?'+':'')+' $'+t.pnl.toFixed(2)));top.appendChild(pnlDiv);item.appendChild(top);body.appendChild(item);});}
 // ════════════════ نظام القفل ════════════════
+// عمر عنصر قائمة الانتظار منذ إضافته
+function wqAge(ts){
+  if(!ts)return'—';
+  const m=Math.floor((Date.now()-ts)/60000);
+  if(m<1)return'الآن';
+  if(m<60)return m+' د';
+  const h=Math.floor(m/60);
+  return h<24?(h+' س '+(m%60)+' د'):(Math.floor(h/24)+' ي '+(h%24)+' س');
+}
 function lkFmtLeft(ms){if(ms<=0)return'—';const m=Math.floor(ms/60000);if(m<60)return m+' دقيقة';const h=Math.floor(m/60);return h+' س '+(m%60)+' د';}
 function lkMasterPositions(){
   const m=C.accounts.find(a=>a.isMaster);
@@ -1464,7 +1473,60 @@ if(C.waitQueue&&C.waitQueue.length){
   const sorted=[...C.waitQueue].map(q=>{
     return{...q,reversalPct:q.reversalPct||0};
   }).sort((a,b)=>b.reversalPct-a.reversalPct);
-  sorted.forEach(q=>{
+
+  // مجاميع النسب لكل اتجاه: مع الإشارة (سالبة) وضدها (موجبة)
+  {
+    const agg={LONG:{with:0,against:0,n:0},SHORT:{with:0,against:0,n:0}};
+    sorted.forEach(q=>{
+      const a=agg[q.side]; if(!a)return; a.n++;
+      if(q.reversalPct>0)a.against+=q.reversalPct; else a.with+=Math.abs(q.reversalPct);
+    });
+    const box=el('div',{style:{display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'10px'}});
+    [['LONG','🟢','var(--green)'],['SHORT','🔴','var(--red)']].forEach(([sd,ic,col])=>{
+      const a=agg[sd];
+      const c=el('div',{style:{flex:'1',minWidth:'150px',background:'var(--bg3)',border:'1px solid '+col+'44',borderRadius:'10px',padding:'8px 11px'}});
+      c.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'800',color:col,marginBottom:'5px'}},ic+' '+sd+' ('+a.n+')'));
+      const r=el('div',{style:{display:'flex',gap:'12px'}});
+      const mk=(lb,v,cc)=>{const w=el('div',{});
+        w.appendChild(el('div',{style:{fontSize:'9px',color:'var(--text2)'}},lb));
+        w.appendChild(el('div',{style:{fontSize:'13px',fontWeight:'800',color:cc}},v.toFixed(1)+'%'));return w;};
+      r.appendChild(mk('📈 مع الإشارة',a.with,'var(--green)'));
+      r.appendChild(mk('📉 ضدها',a.against,'var(--orange)'));
+      c.appendChild(r);box.appendChild(c);
+    });
+    wqSec.appendChild(box);
+  }
+
+  // إرسال تلقائي عند بلوغ الانعكاس نسبةً محدّدة — يتجاوز حدّ الصفقات المفتوحة
+  {
+    const on=!!C.settings.queueRevAutoOn;
+    const bar=el('div',{style:{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',padding:'9px 11px',marginBottom:'10px',borderRadius:'10px',background:on?'rgba(46,213,115,.07)':'var(--bg3)',border:'1px solid '+(on?'rgba(46,213,115,.4)':'var(--border)')}});
+    const sw=el('div',{style:{width:'40px',height:'22px',borderRadius:'11px',background:on?'var(--green)':'var(--bg2)',border:'1px solid '+(on?'var(--green)':'var(--border)'),position:'relative',cursor:'pointer',flexShrink:'0'}});
+    sw.appendChild(el('div',{style:{width:'16px',height:'16px',borderRadius:'50%',background:'#fff',position:'absolute',top:'2px',[on?'left':'right']:'3px'}}));
+    sw.onclick=()=>sendSettings({queueRevAutoOn:!on});
+    bar.appendChild(sw);
+    const tx=el('div',{style:{flex:'1',minWidth:'140px'}});
+    tx.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'800',color:on?'var(--green)':'var(--text)'}},'📤 إرسال تلقائي عند الانعكاس'));
+    tx.appendChild(el('div',{style:{fontSize:'9px',color:'var(--text2)',marginTop:'2px'}},'يرسل كل ما بلغ النسبة — بلا نظر لحدّ الصفقات المفتوحة'));
+    bar.appendChild(tx);
+    const pw=el('div',{style:{display:'flex',alignItems:'center',gap:'4px'}});
+    const pi=el('input',{type:'number',className:'ninp',value:String(C.settings.queueRevAutoPct??10),step:'0.5',min:'0.1',style:{width:'64px'}});
+    pi.onchange=()=>sendSettings({queueRevAutoPct:parseFloat(pi.value)||10});
+    pw.appendChild(pi);pw.appendChild(el('span',{style:{fontSize:'11px',color:'var(--text2)'}},'%'));
+    bar.appendChild(pw);
+    wqSec.appendChild(bar);
+    if(on){
+      const need=parseFloat(C.settings.queueRevAutoPct)||10;
+      const ready=sorted.filter(q=>q.reversalPct>=need);
+      if(ready.length)wqSec.appendChild(el('div',{style:{fontSize:'10px',color:'var(--green)',fontWeight:'700',marginBottom:'8px'}},
+        '⚡ '+ready.length+' بلغت '+need+'% — تُرسَل خلال ثوانٍ'));
+    }
+  }
+
+  // ثلاث ظاهرة والباقي في قائمة منسدلة مقفلة
+  const VISIBLE=3;
+  const head=sorted.slice(0,VISIBLE), rest=sorted.slice(VISIBLE);
+  const mkRow=(q)=>{
     const typeLabel={ob:'🔴 OB',os:'🔵 OS',conf:'⚡ أكيدة',trail:'🟣 Trail'}[q.signalType]||'';
     const row=el('div',{style:{display:'flex',alignItems:'center',gap:'8px',padding:'8px 12px',background:'rgba(255,165,2,.04)',border:'1px solid rgba(255,165,2,.15)',borderRadius:'10px',marginBottom:'6px',flexWrap:'wrap'}});
     const info=el('div',{style:{flex:'1',minWidth:'120px'}});
@@ -1473,14 +1535,32 @@ if(C.waitQueue&&C.waitQueue.length){
     if(q.reversalPct>0)info.appendChild(el('div',{style:{fontSize:'10px',color:'var(--orange)',fontWeight:'700',marginTop:'1px'}},'📉 انعكاس '+q.reversalPct.toFixed(2)+'%'));
     else if(q.reversalPct<0)info.appendChild(el('div',{style:{fontSize:'10px',color:'var(--green)',fontWeight:'700',marginTop:'1px'}},'📈 مع الإشارة '+Math.abs(q.reversalPct).toFixed(2)+'%'));
     else info.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',fontWeight:'700',marginTop:'1px'}},'⏸ ثابت 0.00%'));
+    // عمر الإشارة في القائمة وفريمها
+    const meta=el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'2px',display:'flex',gap:'9px',flexWrap:'wrap'}});
+    meta.appendChild(el('span',{},'⏱ '+wqAge(q.addedTs)));
+    meta.appendChild(el('span',{style:{color:q.tf?'var(--accent)':'var(--text2)',fontWeight:q.tf?'700':'400'}},'🕐 '+(q.tf||'—')));
+    info.appendChild(meta);
     row.appendChild(info);
     const rowBtns=el('div',{style:{display:'flex',gap:'5px'}});
     const sndBtn=el('button',{style:{padding:'4px 12px',background:'rgba(0,229,255,.1)',border:'1px solid var(--accent)',color:'var(--accent)',borderRadius:'8px',fontSize:'11px',cursor:'pointer',fontWeight:'700'}});
     sndBtn.textContent='📤 إرسال';sndBtn.onclick=()=>{if(confirm('إرسال '+q.symbol+' الآن بالسعر الحالي؟')){send('sendQueueItem',{id:q.id});sndBtn.textContent='⏳';}};
     const delBtn=el('button',{style:{padding:'4px 8px',background:'rgba(255,71,87,.1)',border:'1px solid var(--red)',color:'var(--red)',borderRadius:'8px',fontSize:'11px',cursor:'pointer'}});
     delBtn.textContent='✕';delBtn.onclick=()=>send('removeQueueItem',{id:q.id});
-    rowBtns.appendChild(sndBtn);rowBtns.appendChild(delBtn);row.appendChild(rowBtns);wqSec.appendChild(row);
-  });
+    rowBtns.appendChild(sndBtn);rowBtns.appendChild(delBtn);row.appendChild(rowBtns);
+    return row;
+  };
+  head.forEach(q=>wqSec.appendChild(mkRow(q)));
+  if(rest.length){
+    const tog=el('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',gap:'8px',padding:'8px',marginTop:'2px',borderRadius:'10px',background:'var(--bg3)',border:'1px dashed rgba(255,165,2,.4)',cursor:'pointer',fontSize:'11px',fontWeight:'800',color:'var(--orange)'}});
+    tog.textContent=(C.wqOpen?'▲ إخفاء':'▼ عرض')+' الباقي ('+rest.length+')';
+    tog.onclick=()=>{C.wqOpen=!C.wqOpen;render();};
+    wqSec.appendChild(tog);
+    if(C.wqOpen){
+      const box=el('div',{style:{marginTop:'6px'}});
+      rest.forEach(q=>box.appendChild(mkRow(q)));
+      wqSec.appendChild(box);
+    }
+  }
   page.appendChild(wqSec);
 }
 const csw=el('div',{className:'csw '+(C.copyOn?'on':'off'),onClick:()=>send('toggleCopy')});const tog=el('div',{className:'csw-tog '+(C.copyOn?'on':'off')});tog.appendChild(el('div',{className:'csw-knob '+(C.copyOn?'on':'off')}));csw.appendChild(tog);const txt=el('div',{});txt.appendChild(el('div',{style:{fontSize:'15px',fontWeight:'800',color:C.copyOn?'var(--green)':'var(--red)'}},C.copyOn?'Copy Trading: تشغيل ✅':'Copy Trading: متوقف ⏸'));txt.appendChild(el('div',{style:{fontSize:'11px',color:'var(--text2)',marginTop:'3px'}},C.copyOn?`يفحص كل 1.5s • ${ena} حساب`:'اضغط للبدء'));csw.appendChild(txt);page.appendChild(csw);

@@ -60,6 +60,10 @@ const DEFAULT_SETTINGS = {
   revMode: 'candles', revCount: 1, rsiGap: 1,
   dataMode: 'ws', soundEnabled: true,
   maxOpenTrades: 0,
+  // إرسال تلقائي من قائمة الانتظار عند بلوغ الانعكاس نسبةً محدّدة.
+  // استثناء صريح من حدّ الصفقات المفتوحة — النسبة الكبيرة هي المبرّر.
+  queueRevAutoOn: false,
+  queueRevAutoPct: 10,
   sigQueueFilters: { ob: true, os: true, conf: true, trail: true },
   ema200TF: '4h',
   ema200FilterOn: false,
@@ -740,7 +744,7 @@ function buildSettingsMsg(sym, side, st, lv) {
   ].join('\n');
 }
 
-async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabel = '', st = STATE.settings) {
+async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabel = '', st = STATE.settings, tf = null) {
   if (fromQueue) {
     // القائمة الذكية: تعتمد على sigFilters.queue فقط، مش autoSend
     if (st.sigFilters?.queue === false) return;
@@ -762,7 +766,9 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   const origPrice = overridePrice ? livePrices[sym] : null;
   if (overridePrice) livePrices[sym] = overridePrice;
   const prefix = fromQueue && queueLabel ? `⏳ قائمة الانتظار | ${queueLabel}\n` : '';
-  const text = prefix + buildMsg(sym, side, st) + note;
+  // الفريم يوضع في ذيل الرسالة بعد بنود كورنكس، حيث لا يدخل في التحليل
+  const tfTag = tf ? `\n(${tf})` : '';
+  const text = prefix + buildMsg(sym, side, st) + note + tfTag;
   if (origPrice !== null) livePrices[sym] = origPrice;
   st.cxLev = origLev;
   // trackSym: نحفظ message_id لنستطيع الرد عليها لاحقاً بأوامر تحديث كورنكس (بريك إيفن/وقف/تريلنج)
@@ -929,7 +935,7 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
       STATE.waitQueue.push({
         id: Date.now() + Math.random(), symbol: sym, side: sig.side,
         signalType: typeKey, signalPrice: livePrices[sym] || 0,
-        addedTs: Date.now(), addedTime: nowStr(),
+        addedTs: Date.now(), addedTime: nowStr(), tf,
         label: sig.label, emoji: sig.emoji, color: sig.color
       });
       db.saveWaitQueue(STATE.waitQueue);
@@ -946,7 +952,7 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
       STATE.waitQueue.push({
         id: Date.now() + Math.random(), symbol: sym, side: sig.side,
         signalType: typeKey, signalPrice: livePrices[sym] || 0,
-        addedTs: Date.now(), addedTime: nowStr(),
+        addedTs: Date.now(), addedTime: nowStr(), tf,
         label: sig.label, emoji: sig.emoji, color: sig.color
       });
       db.saveWaitQueue(STATE.waitQueue);
@@ -1024,7 +1030,7 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
     } catch (e) {}
   }
 
-  sendSignal(sym, sig.side, null, false, '', st);
+  sendSignal(sym, sig.side, null, false, '', st, tf);
 }
 
 function queueWithReversals() {
@@ -1037,12 +1043,39 @@ function queueWithReversals() {
   }).sort((a, b) => b.reversalPct - a.reversalPct);
 }
 
+// يرسل كل عنصر بلغ انعكاسه النسبة المحدّدة.
+// لا يفحص حدّ الصفقات المفتوحة: القائمة نشأت أصلاً بسبب الحد، والغرض هنا
+// اقتناص الدخول الأفضل بعد الارتداد بغضّ النظر عن امتلاء الحد.
+let revAutoBusy = false;
+async function autoSendOnReversal() {
+  const st = STATE.settings;
+  if (!st.queueRevAutoOn || revAutoBusy) return;
+  const need = parseFloat(st.queueRevAutoPct);
+  if (!isFinite(need) || need <= 0) return;
+  const ready = queueWithReversals().filter(q => q.reversalPct >= need);
+  if (!ready.length) return;
+  revAutoBusy = true;
+  try {
+    for (const q of ready) {
+      // قد يكون أُرسل في دورة سابقة
+      if (!STATE.waitQueue.some(x => x.id === q.id)) continue;
+      await sendQueueItemNow(q, livePrices[q.symbol]);
+      addCopyLog('success', `📤 انعكاس ${q.reversalPct}% ≥ ${need}% — أُرسلت ${q.symbol}`);
+      await new Promise(r => setTimeout(r, 1200));   // مباعدة تحترم حدود تلغرام
+    }
+  } catch (e) {
+    addCopyLog('fail', `❌ إرسال الانعكاس: ${e.message}`);
+  } finally {
+    revAutoBusy = false;
+  }
+}
+
 async function sendQueueItemNow(qItem, currentPrice) {
   STATE.waitQueue = STATE.waitQueue.filter(q => q.id !== qItem.id);
   db.saveWaitQueue(STATE.waitQueue);
   broadcast({ type: 'waitQueue', data: queueWithReversals() });
   const label = qItem.emoji ? `${qItem.emoji} ${qItem.label}` : qItem.label || qItem.signalType || '';
-  await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol], true, label, settingsFor(qItem.symbol));
+  await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol], true, label, settingsFor(qItem.symbol), qItem.tf || null);
 }
 
 function autoSendFromQueue() {
@@ -1495,7 +1528,7 @@ function manualFloatingLoss() {
 
 // الحدّ اليومي يشمل المحقّق والعائم معاً. عند بلوغه تُغلق كل الصفقات اليدوية
 // فوراً ويبدأ الانتظار — لا ينتظر إغلاقها يدوياً.
-let dailyCheckBusy = false, lastDailyCheck = 0;
+let dailyCheckBusy = false, lastDailyCheck = 0, lastRevCheck = 0;
 async function checkDailyLossLimit() {
   const S = STATE.settings;
   if (!S.lockOn || !S.lockDailyOn || dailyCheckBusy) return;
@@ -2764,6 +2797,11 @@ function startBinanceWSGroup(interval, syms) {
       if (Date.now() - lastDailyCheck > 2000) {
         lastDailyCheck = Date.now();
         checkDailyLossLimit().catch(() => {});
+      }
+      // إرسال ما بلغ نسبة الانعكاس — مخنوق ٣ ثوانٍ
+      if (STATE.settings.queueRevAutoOn && Date.now() - lastRevCheck > 3000) {
+        lastRevCheck = Date.now();
+        autoSendOnReversal().catch(() => {});
       }
       if (!candleCache[sym]) candleCache[sym] = [];
 
