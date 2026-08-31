@@ -140,7 +140,7 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v45-trendside';
+const UI_VERSION='v46-stopfmt';
 const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',wqOpen:false,sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,queueRevAutoOn:false,queueRevAutoPct:10,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockMasterHours:24,lockAllSettings:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockTrendTF:'1h',lockTrendTFst:'4h',lockTrendTFema:'1h',lockTrendInd:'both',lockBEtrig:'near',lockBEnearPct:1,lockBEoffsetPct:0.1,lockBEminPnl:50,lockAutoTrailOn:false,lockAutoTrailPct:10,lockAutoTrailTrig:'near',lockAutoLossOn:false,lockAutoLossPct:2,lockAutoLossTrig:'flip',lockTgChat:'',lockCloseCmd:'/close',lockCornixSync:false,extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
@@ -194,6 +194,13 @@ function send(type,data){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringi
 // كي لا يفترق الرقمان.
 // الحكم يأتي محسوباً من الخادم لكل جهة (LONG/SHORT) — لا نعيد اشتقاقه هنا
 // كي لا تفترق الواجهة عمّا ينفّذه البوت فعلاً.
+// سعر مختصر للعرض — يقصّ ذيل الفاصلة العائمة (0.009589899999999998)
+function fPx(n){
+  const v=parseFloat(n);
+  if(!isFinite(v))return String(n??'—');
+  const d=v>=100?2:v>=1?4:v>=0.1?5:v>=0.001?6:8;
+  return String(parseFloat(v.toFixed(d)));
+}
 function trendRemaining(side){
   const SD=C.lockState?.trendSides;
   const R=SD&&SD[side||'LONG'];
@@ -1247,9 +1254,9 @@ function rLockPage(){
       top.appendChild(el('span',{style:{fontSize:'10px',fontWeight:'700',padding:'2px 8px',borderRadius:'6px',background:col+'22',color:col,border:'1px solid '+col+'55'}},ic+' '+nm+' '+v.pct+'%'));
       row.appendChild(top);
       const info=el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'5px',display:'flex',gap:'10px',flexWrap:'wrap'}});
-      info.appendChild(el('span',{},(v.side==='LONG'?'🟢':'🔴')+' دخول '+v.entry));
-      if(v.kind==='trail')info.appendChild(el('span',{},'📈 أعلى '+v.peak));
-      info.appendChild(el('span',{style:{color:col,fontWeight:'800'}},'🎯 يغلق عند '+v.level));
+      info.appendChild(el('span',{},(v.side==='LONG'?'🟢':'🔴')+' دخول '+fPx(v.entry)));
+      if(v.kind==='trail')info.appendChild(el('span',{},'📈 أعلى '+fPx(v.peak)));
+      info.appendChild(el('span',{style:{color:col,fontWeight:'800'}},'🎯 يغلق عند '+fPx(v.level)));
       row.appendChild(info);
       if(v.reason)row.appendChild(el('div',{style:{fontSize:'9px',color:'var(--text2)',marginTop:'3px'}},v.reason));
       sV.appendChild(row);
@@ -1284,6 +1291,7 @@ function rLockPage(){
       if(d.stopPx)info.appendChild(el('span',{style:{color:'var(--accent)'}},'🛑 أقرب وقف '+d.stopPx));
       row.appendChild(info);
       if(d.blocked)row.appendChild(el('div',{style:{fontSize:'10px',color:'var(--orange)',marginTop:'4px'}},'⏭ لا يُقلَّم/يُغلق: '+d.blocked));
+      if(d.vGuard)row.appendChild(el('div',{style:{fontSize:'10px',color:'var(--orange)',marginTop:'4px'}},'👁 '+d.vGuard));
       if(d.lastErr)row.appendChild(el('div',{style:{fontSize:'10px',color:'var(--red)',marginTop:'4px'}},'❌ آخر خطأ: '+d.lastErr));
       // تصنيف يدوي — الاستنتاج التلقائي يخطئ حين يكون للرمز إشارة قديمة
       const kr=el('div',{style:{display:'flex',gap:'4px',marginTop:'6px',alignItems:'center',flexWrap:'wrap'}});

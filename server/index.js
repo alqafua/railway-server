@@ -1728,11 +1728,15 @@ async function buildLockDiag(master, positions) {
     let blocked = null;
     if (!chk.manual) blocked = chk.why;
     else if (rec?.baseline) blocked = 'خط أساس — لا تُقلَّم ولا تُغلق (الستوب يُطبَّق)';
+    // الخطأ يخصّ محاولةً انتهت: ما دامت الصفقة محميّة الآن (أمر قائم أو وقف
+    // يتابعه البوت) فعرضه بالأحمر يوهم بخلل مستمرّ
+    const guarded = hasStop === true || !!(L.vStops || {})[sym];
     diag[sym] = {
       manual: chk.manual, why: chk.why, baseline: !!rec?.baseline,
       slPlaced: !!rec?.slPlaced, hasStop, ourStop, stopPx, margin: parseFloat(margin.toFixed(2)),
       lev, pnl: parseFloat(pos.unRealizedProfit) || 0, blocked,
-      lastErr: rec?.lastErr || null,
+      lastErr: guarded ? null : (rec?.lastErr || null),
+      vGuard: guarded && hasStop !== true ? 'محميّة بوقف يتابعه البوت (الأمر الحدّي مرفوض)' : null,
       override: L.manualOverride?.[sym] || null,
     };
     await new Promise(r => setTimeout(r, 120));
@@ -1997,14 +2001,13 @@ function armVStop(sym, { kind, side, pct, price, entry, reason }) {
     armedAt: Date.now(), reason: reason || '',
     triggered: false,
   };
-  // مستوى الإغلاق: ثابت للبريك إيفن والوقف، ومتحرّك للتريلنج
-  if (kind === 'be') {
-    v.level = isLong ? entry * (1 + v.pct / 100) : entry * (1 - v.pct / 100);
-  } else if (kind === 'sl') {
-    v.level = isLong ? price * (1 - v.pct / 100) : price * (1 + v.pct / 100);
-  } else {
-    v.level = isLong ? price * (1 - v.pct / 100) : price * (1 + v.pct / 100);
-  }
+  // مستوى الإغلاق: ثابت للبريك إيفن والوقف، ومتحرّك للتريلنج.
+  // يُقرَّب على خطوة سعر العملة نفسها، وإلا خرج برقم عائم طويل
+  // (0.009589899999999998) لا يشبه ما تعرضه بايننس.
+  const raw = kind === 'be'
+    ? (isLong ? entry * (1 + v.pct / 100) : entry * (1 - v.pct / 100))
+    : (isLong ? price * (1 - v.pct / 100) : price * (1 + v.pct / 100));
+  v.level = roundPrice(raw, sym);
   // حارس: مستوىً مُبلَّغ عند التسجيل يعني إغلاقاً فورياً — نرفضه بدل تنفيذه.
   // يحمي من خطأ في الحساب أو من تسجيل بريك إيفن على صفقة لم تربح كفاية.
   const hitNow = isLong ? price <= v.level : price >= v.level;
@@ -2088,7 +2091,7 @@ function checkVStops(sym, price) {
     const better = isLong ? price > v.peak : price < v.peak;
     if (better) {
       v.peak = price;
-      v.level = isLong ? price * (1 - v.pct / 100) : price * (1 + v.pct / 100);
+      v.level = roundPrice(isLong ? price * (1 - v.pct / 100) : price * (1 + v.pct / 100), sym);
       return;   // لا نحفظ على القرص مع كل تحديث — يُحفظ عند الإطلاق
     }
   }
@@ -2598,6 +2601,27 @@ async function monitorLock() {
         }
         await new Promise(r => setTimeout(r, 250));
       }
+    }
+
+    // ── إشعار بفتح صفقة يدوية جديدة ──
+    // يُرسل مرّةً واحدة لكل عملة، قبل أي تصرّف، كي تعرف أن النظام رآها
+    for (const pos of positions) {
+      const sym = pos.symbol;
+      if (!isManualPosition(sym, pos)) continue;
+      const rec = L.manualSyms[sym];
+      if (rec?.opened || rec?.baseline) continue;
+      const amt = Math.abs(parseFloat(pos.positionAmt));
+      const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
+      const lev = parseFloat(pos.leverage) || 1;
+      if (!mark || !amt) continue;
+      const isLong = parseFloat(pos.positionAmt) > 0;
+      L.manualSyms[sym] = { ...(rec || { ts: Date.now() }), opened: true };
+      lockSave();
+      lockNotify(
+        `🆕 صفقة يدوية — #${sym.replace('USDT', '/USDT')}\n` +
+        `${isLong ? '🟢 LONG' : '🔴 SHORT'} · دخول ${fmtSignalPrice(parseFloat(pos.entryPrice) || mark)}\n` +
+        `هامش $${((amt * mark) / lev).toFixed(2)} · رافعة ${lev}x`
+      );
     }
 
     // ── (2) تقليم الزيادة فوق الحد اليومي للصفقات اليدوية ──
