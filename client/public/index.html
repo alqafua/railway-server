@@ -140,7 +140,7 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v46-stopfmt';
+const UI_VERSION='v47-lockresult';
 const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',wqOpen:false,sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,queueRevAutoOn:false,queueRevAutoPct:10,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockMasterHours:24,lockAllSettings:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockTrendTF:'1h',lockTrendTFst:'4h',lockTrendTFema:'1h',lockTrendInd:'both',lockBEtrig:'near',lockBEnearPct:1,lockBEoffsetPct:0.1,lockBEminPnl:50,lockAutoTrailOn:false,lockAutoTrailPct:10,lockAutoTrailTrig:'near',lockAutoLossOn:false,lockAutoLossPct:2,lockAutoLossTrig:'flip',lockTgChat:'',lockCloseCmd:'/close',lockCornixSync:false,extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
@@ -186,6 +186,7 @@ function startAutoBackup(){
   autoBackupTimer=setInterval(()=>{if(ws?.readyState===WebSocket.OPEN)send('exportData',{});},h*3600*1000);
 }
 function stopAutoBackup(){if(autoBackupTimer){clearInterval(autoBackupTimer);autoBackupTimer=null;}}
+let lockWatch=null;
 function connectWS(){if(ws)return;ws=new WebSocket(getWsUrl());ws.onopen=()=>{C.wsConn=true;render();};ws.onclose=()=>{C.wsConn=false;ws=null;render();wsReconn=setTimeout(connectWS,3000);};ws.onerror=()=>{};ws.onmessage=(ev)=>{try{handleServerMsg(JSON.parse(ev.data));}catch(e){}}}
 function send(type,data){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type,data}));}
 // القفل يُعتبر منتهياً فور مرور وقته حتى قبل أن يبثّ الخادم التحديث،
@@ -372,8 +373,10 @@ function handleServerMsg(msg){
     case 'lockState':C.lockState=msg.data;needRender=true;break;
     case 'lockMsgSyms':C.lockMsgSyms=msg.data||[];if(C.page==='lock')needRender=true;break;
     case 'lockResult':{
-      C.lockBusy='';
+      C.lockBusy='';clearTimeout(lockWatch);
       const d=msg.data||{};
+      // النتيجة تبقى معروضة — التنبيه العابر كان يختفي قبل أن تُقرأ
+      if(!d.verbose)C.lockLast={...d,at:Date.now(),label:C.lockSent?.label||''};
       if(!d.ok){showNotif('❌ '+(d.error||'فشل'),4000);}
       else if(d.verbose){C.lockProbe=d.done||[];showNotif('✅ اكتمل الفحص — النتيجة بالأسفل',3000);}
       else{
@@ -1546,12 +1549,27 @@ function rLockPage(){
       ctl.appendChild(lbl);ctl.appendChild(inp);
       const btn=el('button',{className:'btn',style:{fontSize:'11px',fontWeight:'800',background:'transparent',borderColor:color,color}});
       btn.textContent='▶ نفّذ';
+      // تأكيد داخل الصفحة بدل نافذة confirm — النافذة الأصلية تُجمّد المتصفح
+      // على الجوال أحياناً فلا تعود الصفحة تستجيب ولا تُحدَّث
+      let armedAt=0;
       btn.onclick=()=>{
         const v=parseFloat(inp.value);
         if(!isFinite(v)||v<0){showNotif('❌ أدخل نسبة صحيحة',2500);return;}
-        if(!confirm(label+' بنسبة '+v+'% على '+(C.lockSel.length===0?'كل الصفقات ('+positions.length+')':C.lockSel.length+' صفقة')+'؟'))return;
+        const target=C.lockSel.length===0?'كل الصفقات ('+positions.length+')':C.lockSel.length+' صفقة';
+        if(Date.now()-armedAt>6000){
+          armedAt=Date.now();
+          btn.textContent='⚠️ اضغط للتأكيد — '+v+'% على '+target;
+          setTimeout(()=>{if(!btn.disabled&&Date.now()-armedAt>=6000)btn.textContent='▶ نفّذ';},6200);
+          return;
+        }
         C.lockBusy=label;btn.textContent='⏳ ينفّذ...';btn.disabled=true;
+        C.lockSent={label,at:Date.now()};
         onRun(v);
+        // حارس: لو لم يصل ردّ، لا يبقى الزر معلّقاً بلا خبر
+        clearTimeout(lockWatch);
+        lockWatch=setTimeout(()=>{
+          if(C.lockBusy){C.lockBusy='';C.lockLast={at:Date.now(),label,ok:false,error:'لم يصل ردّ من الخادم خلال ٦٠ ثانية — قد تكون العملية نُفِّذت. راجع بايننس والسجل قبل إعادة المحاولة.'};render();}
+        },60000);
       };
       ctl.appendChild(btn);row.appendChild(ctl);return row;
     };
@@ -1564,6 +1582,34 @@ function rLockPage(){
 
     s567.appendChild(mkAction('📉','٧ — تعديل التريلنج للرابحة','يستبدل التريلنج الحالي بالنسبة الجديدة للصفقات الرابحة. بايننس يقبل ٠٫١٪–٥٪ فقط؛ أي نسبة أكبر تُرسَل لكورنكس فقط.','var(--purple)','نسبة التريلنج %',C.settings.cxTrailPct||0.5,0.1,
       v=>send('lockTrailing',{syms:C.lockSel,pct:v})));
+
+    // نتيجة آخر أمر — تبقى حتى الأمر التالي
+    {
+      const R=C.lockLast;
+      if(R){
+        const col=R.ok===false?'var(--red)':(R.failed?.length?'var(--orange)':'var(--green)');
+        const box=el('div',{style:{marginTop:'10px',padding:'10px 12px',borderRadius:'10px',background:'var(--bg3)',border:'1px solid '+col+'66'}});
+        const hd=el('div',{style:{display:'flex',justifyContent:'space-between',gap:'8px',flexWrap:'wrap',marginBottom:'6px'}});
+        hd.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'800',color:col}},'🧾 نتيجة آخر أمر'+(R.label?' — '+R.label:'')));
+        hd.appendChild(el('div',{style:{fontSize:'9px',color:'var(--text2)'}},new Date(R.at).toLocaleTimeString('ar-EG',{hour12:false})));
+        box.appendChild(hd);
+        const li=(icon,arr,c)=>{
+          if(!arr||!arr.length)return;
+          box.appendChild(el('div',{style:{fontSize:'10px',color:c,marginTop:'3px',lineHeight:'1.7',wordBreak:'break-word'}},icon+' '+arr.join(' · ')));
+        };
+        if(R.ok===false)box.appendChild(el('div',{style:{fontSize:'10px',color:'var(--red)',lineHeight:'1.7'}},'❌ '+(R.error||'فشل')));
+        li('✅ نُفِّذت على بايننس:',R.done,'var(--green)');
+        li('👁 يتابعها البوت:',R.armed,'var(--orange)');
+        li('📨 كورنكس فقط:',R.cornixOnly,'var(--accent)');
+        li('❌ فشلت:',R.failed,'var(--red)');
+        li('⏭ تُخطّيت:',R.skipped,'var(--text2)');
+        if(R.ok!==false&&!R.done?.length&&!R.failed?.length&&!R.skipped?.length&&!R.armed?.length)
+          box.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)'}},'لا توجد صفقات مطابقة للشرط'));
+        s567.appendChild(box);
+      } else if(C.lockBusy){
+        s567.appendChild(el('div',{style:{marginTop:'10px',padding:'9px 12px',borderRadius:'10px',background:'var(--bg3)',border:'1px solid var(--accent)66',fontSize:'11px',color:'var(--accent)',fontWeight:'700'}},'⏳ '+C.lockBusy+' — بانتظار ردّ الخادم…'));
+      }
+    }
   }
   page.appendChild(s567);
 

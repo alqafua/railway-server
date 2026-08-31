@@ -551,7 +551,15 @@ async function bFetch(apiKey, apiSecret, method, ep, params = {}, base = BASE) {
   const q = Object.entries({ ...params, timestamp: t }).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
   const sig = await hmac256(apiSecret, q);
   const url = `${base}${ep}?${q}&signature=${sig}`;
-  const res = await fetch(url, { method, headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } });
+  // مهلة صريحة: طلب معلّق بلا مهلة كان يوقف العملية كلها بلا ردّ ولا خطأ
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 15000);
+  let res;
+  try {
+    res = await fetch(url, { method, signal: ac.signal, headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } });
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? `انتهت مهلة ${ep} (١٥ ثانية)` : e.message);
+  } finally { clearTimeout(timer); }
   const d = await res.json();
   // رقم الخطأ يُذكر مع نصّه — النصّ وحده لا يكفي لتمييز سبب الرفض
   if (d.code && d.code < 0) {
@@ -2246,7 +2254,7 @@ async function placeStop(acc, sym, pos, stopPrice, tag) {
 
 // (4)+(5) بريك إيفن للصفقات الرابحة — سعر الوقف فوق الدخول بقليل لتغطية العمولات
 async function applyBreakEven(acc, syms, offsetPct, reason) {
-  const results = { done: [], skipped: [], failed: [], synced: [] };
+  const results = { done: [], skipped: [], failed: [], synced: [], armed: [] };
   const positions = (acc.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   const off = parseFloat(offsetPct);
   const offset = isFinite(off) ? off : 0.1;
@@ -2305,7 +2313,7 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
 
 // (6) وقف خسارة للصفقات الخاسرة — بنسبة من السعر الحالي
 async function applyLossStop(acc, syms, pct) {
-  const results = { done: [], skipped: [], failed: [], synced: [] };
+  const results = { done: [], skipped: [], failed: [], synced: [], armed: [] };
   const positions = (acc.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   const d = parseFloat(pct);
   if (!isFinite(d) || d <= 0) return results;
@@ -4293,8 +4301,13 @@ async function handleClientMsg(msg, ws) {
       const master = STATE.copyAccounts.find(a => a.isMaster);
       if (!master?.apiKey) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لا يوجد حساب ماستر' } }); break; }
       try { master.livePositions = await getPositions(master); } catch (e) {}
-      const r = await applyBreakEven(master, syms, pct ?? STATE.settings.lockBEoffsetPct, 'يدوي');
-      broadcast({ type: 'lockResult', data: { ok: true, action: 'be', ...r } });
+      // أي فشل هنا كان يُبتلع فيبقى الزر «ينفّذ...» إلى الأبد — الردّ مضمون الآن
+      try {
+        const r = await applyBreakEven(master, syms, pct ?? STATE.settings.lockBEoffsetPct, 'يدوي');
+        broadcast({ type: 'lockResult', data: { ok: true, action: 'be', ...r } });
+      } catch (e) {
+        broadcast({ type: 'lockResult', data: { ok: false, action: 'be', error: e.message } });
+      }
       broadcast({ type: 'accounts', data: getSafeAccounts() });
       break;
     }
@@ -4304,8 +4317,13 @@ async function handleClientMsg(msg, ws) {
       const master = STATE.copyAccounts.find(a => a.isMaster);
       if (!master?.apiKey) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لا يوجد حساب ماستر' } }); break; }
       try { master.livePositions = await getPositions(master); } catch (e) {}
-      const r = await applyLossStop(master, syms, pct);
-      broadcast({ type: 'lockResult', data: { ok: true, action: 'sl', ...r } });
+      // أي فشل هنا كان يُبتلع فيبقى الزر «ينفّذ...» إلى الأبد — الردّ مضمون الآن
+      try {
+        const r = await applyLossStop(master, syms, pct);
+        broadcast({ type: 'lockResult', data: { ok: true, action: 'sl', ...r } });
+      } catch (e) {
+        broadcast({ type: 'lockResult', data: { ok: false, action: 'sl', error: e.message } });
+      }
       broadcast({ type: 'accounts', data: getSafeAccounts() });
       break;
     }
@@ -4315,8 +4333,13 @@ async function handleClientMsg(msg, ws) {
       const master = STATE.copyAccounts.find(a => a.isMaster);
       if (!master?.apiKey) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لا يوجد حساب ماستر' } }); break; }
       try { master.livePositions = await getPositions(master); } catch (e) {}
-      const r = await applyTrailing(master, syms, pct);
-      broadcast({ type: 'lockResult', data: { ok: true, action: 'trail', ...r } });
+      // أي فشل هنا كان يُبتلع فيبقى الزر «ينفّذ...» إلى الأبد — الردّ مضمون الآن
+      try {
+        const r = await applyTrailing(master, syms, pct);
+        broadcast({ type: 'lockResult', data: { ok: true, action: 'trail', ...r } });
+      } catch (e) {
+        broadcast({ type: 'lockResult', data: { ok: false, action: 'trail', error: e.message } });
+      }
       broadcast({ type: 'accounts', data: getSafeAccounts() });
       break;
     }
