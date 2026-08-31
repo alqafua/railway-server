@@ -95,6 +95,9 @@ const DEFAULT_SETTINGS = {
   lockDailyAmt: 10,         // الحد بالدولار (هامش الصفقة + سقف الخسارة اليومية)
   lockDailyHours: 24,       // مدة النافذة / الانتظار بالساعات
   lockAutoBEon: false,      // (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه
+  // فريم ومؤشّر مستقلّان لهذا القسم — لا يمسّان فريم الماسح ولا السوبر العام
+  lockTrendTF: '1h',
+  lockTrendInd: 'both',     // ema | st | both (both = ينتظر اقتراب الاثنين معاً)
   lockBEtrig: 'near',       // متى يشتغل: near = قرب الانعكاس · flip = انعكاس فعلي · both
   lockBEnearPct: 1,         // قرب السعر من خط السوبر/EMA لاعتباره "قرب انعكاس" %
   lockBEoffsetPct: 0.1,     // نسبة البريك إيفن فوق الدخول (تغطية العمولات) %
@@ -1591,6 +1594,7 @@ function lockPublic() {
     msgFate: L.msgFate || {},
     vStops: L.vStops || {},
     booted: bootBaselineDone,
+    trend: STATE.lockTrend || null,
     masterUntil: STATE.lockState.masterUntil || 0,
     masterActive: masterLockActive(),   // يفحص الانتهاء ويرفع القفل عند حلوله
     allLocked: !!(STATE.settings.lockMaster && STATE.settings.lockAllSettings),
@@ -2293,38 +2297,72 @@ async function applyTrailing(acc, syms, pct) {
   return results;
 }
 
-// حالة الاتجاه العام (BTC): نفصل "قرب الانعكاس" عن "الانعكاس الفعلي"
-// كي تختار كل ميزة أيّهما يشغّلها.
+// ── اتجاه BTC على فريم هذا القسم وحده ──
+// يُحسب مستقلاً عن فلاتر الإشارات، فتغيير فريم هنا لا يمسّ الماسح ولا السوبر العام.
+// فترة السوبر ومضاعفه مستعارة من الإعداد العام.
+let lockTrendBusy = false;
+async function updateLockTrend() {
+  if (lockTrendBusy) return;
+  const tf = STATE.settings.lockTrendTF || '1h';
+  lockTrendBusy = true;
+  try {
+    const period = parseInt(STATE.settings.stPeriod) || 10;
+    const mult = parseFloat(STATE.settings.stMult) || 3;
+    const klines = await fetchBinance(`/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=210`);
+    if (!Array.isArray(klines) || klines.length < 201) return;
+    const closes = klines.map(k => parseFloat(k[4]));
+    const btc = closes[closes.length - 1];
+    const st = calcSuperTrend(klines, period, mult);
+    const ema = calcEMA(closes, 200);
+    const prev = STATE.lockTrend || {};
+    const emaSide = ema ? (btc > ema ? 'above' : 'below') : null;
+    STATE.lockTrend = {
+      tf, btcPrice: btc,
+      stValue: st?.value ?? null, stDir: st?.direction ?? null,
+      emaValue: ema ?? null, emaSide,
+      // نحتفظ بالقراءة السابقة لكشف الانقلاب — وتُهمَل إن تغيّر الفريم
+      prevStDir: prev.tf === tf ? (prev.stDir ?? null) : null,
+      prevEmaSide: prev.tf === tf ? (prev.emaSide ?? null) : null,
+      at: Date.now(),
+    };
+  } catch (e) {
+    addCopyLog('fail', `❌ اتجاه القفل (${tf}): ${e.message}`);
+  } finally { lockTrendBusy = false; }
+}
+
+// حالة الاتجاه: نفصل "قرب الانعكاس" عن "الانعكاس الفعلي".
+// المؤشّر المختار وحده هو الحَكَم؛ و'both' يشترط تحقّق الاثنين معاً.
 function trendReversalStatus() {
   const nearPct = parseFloat(STATE.settings.lockBEnearPct) || 1;
-  const btc = STATE.superTrend?.btcPrice || STATE.ema200?.btcPrice || livePrices['BTCUSDT'] || 0;
-  if (!btc) return { near: false, flipped: false, trigger: false, reasons: [] };
-  const nearReasons = [], flipReasons = [];
+  const ind = STATE.settings.lockTrendInd || 'both';
+  const T = STATE.lockTrend;
+  if (!T?.btcPrice) return { near: false, flipped: false, trigger: false, reasons: [] };
+  const btc = T.btcPrice;
 
-  const stVal = STATE.superTrend?.value;
-  if (stVal) {
-    const dist = Math.abs((btc - stVal) / btc) * 100;
-    if (dist <= nearPct) nearReasons.push(`على بُعد ${dist.toFixed(2)}% من خط السوبر`);
-  }
-  const emaVal = STATE.ema200?.value;
-  if (emaVal) {
-    const dist = Math.abs((btc - emaVal) / btc) * 100;
-    if (dist <= nearPct) nearReasons.push(`على بُعد ${dist.toFixed(2)}% من EMA200`);
-  }
-  // انعكاس فعلي: تغيّر اتجاه السوبر العام عن آخر قراءة
-  const prevDir = STATE._lastGlobalSTdir;
-  const curDir = STATE.superTrend?.direction;
-  if (curDir && prevDir && curDir !== prevDir) {
-    flipReasons.push(`السوبر العام انقلب إلى ${curDir === 'up' ? 'صاعد' : 'نازل'}`);
-  }
-  if (curDir) STATE._lastGlobalSTdir = curDir;
+  const stNear = T.stValue ? Math.abs((btc - T.stValue) / btc) * 100 : null;
+  const emaNear = T.emaValue ? Math.abs((btc - T.emaValue) / btc) * 100 : null;
+  const stIsNear = stNear !== null && stNear <= nearPct;
+  const emaIsNear = emaNear !== null && emaNear <= nearPct;
+  const stFlip = !!(T.stDir && T.prevStDir && T.stDir !== T.prevStDir);
+  const emaFlip = !!(T.emaSide && T.prevEmaSide && T.emaSide !== T.prevEmaSide);
 
-  const near = nearReasons.length > 0, flipped = flipReasons.length > 0;
-  return {
-    near, flipped, trigger: near || flipped,
-    nearReasons, flipReasons,
-    reasons: [...flipReasons, ...nearReasons],
-  };
+  let near, flipped;
+  if (ind === 'st') { near = stIsNear; flipped = stFlip; }
+  else if (ind === 'ema') { near = emaIsNear; flipped = emaFlip; }
+  else { near = stIsNear && emaIsNear; flipped = stFlip && emaFlip; }
+
+  const reasons = [];
+  if (flipped) {
+    if (ind !== 'ema' && stFlip) reasons.push(`السوبر انقلب إلى ${T.stDir === 'up' ? 'صاعد' : 'نازل'}`);
+    if (ind !== 'st' && emaFlip) reasons.push(`السعر عبر EMA200 إلى ${T.emaSide === 'above' ? 'فوقه' : 'تحته'}`);
+  }
+  if (near) {
+    if (ind !== 'ema' && stIsNear) reasons.push(`${stNear.toFixed(2)}% من خط السوبر`);
+    if (ind !== 'st' && emaIsNear) reasons.push(`${emaNear.toFixed(2)}% من EMA200`);
+  }
+  if (reasons.length) reasons.push(`(${T.tf})`);
+
+  return { near, flipped, trigger: near || flipped, reasons };
 }
 
 // هل يشغّل هذا الحدث ميزةً مضبوطة على 'near' أو 'flip' أو 'both'؟
@@ -3415,9 +3453,12 @@ async function handleClientMsg(msg, ws) {
           deadChats.delete(String(msg.data[k]));
         }
       }
+      const trendTFChanged = msg.data.lockTrendTF !== undefined && msg.data.lockTrendTF !== STATE.settings.lockTrendTF;
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
       broadcast({ type: 'settings', data: STATE.settings });
+      // فريم جديد يجعل القراءة السابقة بلا معنى — نعيد الحساب قبل أي قرار
+      if (trendTFChanged) updateLockTrend();
       if (msg.data.ema200TF !== undefined) updateEMA200();
       if (msg.data.stTF !== undefined || msg.data.stPeriod !== undefined || msg.data.stMult !== undefined) updateSuperTrend();
       // إعادة تشغيل WS عند تغيير الفريم الزمني العام، أو تفعيل/تعطيل استخدام إعدادات العملات
@@ -5099,6 +5140,23 @@ async function init() {
       if (STATE.settings.stSLon) await monitorSTSL();
     } catch {}
   }, 30000);
+
+  // اتجاه القفل: التحديث يتناسب مع الفريم — فريم دقائق يحتاج متابعة أسرع
+  {
+    const period = () => {
+      const tf = STATE.settings.lockTrendTF || '1h';
+      if (/^\d+m$/.test(tf)) return parseInt(tf) <= 5 ? 60000 : 120000;
+      if (tf === '1d') return 600000;
+      return 300000;
+    };
+    let tick = 0;
+    updateLockTrend();
+    setInterval(() => {
+      if (!STATE.settings.lockOn) return;
+      tick += 30000;
+      if (tick >= period()) { tick = 0; updateLockTrend(); }
+    }, 30000);
+  }
 
   // مراقب نظام القفل — كل ١٥ ثانية (يعمل سواء كان النسخ شغالاً أو لا)
   setInterval(async () => {
