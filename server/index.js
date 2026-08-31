@@ -496,6 +496,7 @@ async function resolveLeverage(sym, requestedLev) {
 
 const lotSizeCache = {}; // sym -> stepSize (from exchangeInfo)
 const tickSizeCache = {}; // sym -> tickSize (PRICE_FILTER) — لازم لأوامر الوقف
+const orderTypesCache = {}; // sym -> أنواع الأوامر التي تقبلها العملة
 
 // جلب stepSize ديناميكياً إذا ما كان في الكاش (للعملات التي لم تُحمَّل عند البدء)
 // تنبيه: /fapi/v1/exchangeInfo في العقود الآجلة لا يقبل وسيط symbol — يعيد
@@ -512,8 +513,9 @@ async function ensureLotSize(sym) {
   } catch (e) {}
 }
 
-// يخزّن خطوة الكمية وخطوة السعر لعملة واحدة من صفّها في exchangeInfo
+// يخزّن خطوة الكمية وخطوة السعر وأنواع الأوامر المسموحة لعملة واحدة
 function cacheFilters(row) {
+  if (Array.isArray(row.orderTypes)) orderTypesCache[row.symbol] = row.orderTypes;
   const filters = row.filters || [];
   const lot = filters.find(f => f.filterType === 'LOT_SIZE');
   const pf = filters.find(f => f.filterType === 'PRICE_FILTER');
@@ -551,7 +553,12 @@ async function bFetch(apiKey, apiSecret, method, ep, params = {}) {
   const url = `${BASE}${ep}?${q}&signature=${sig}`;
   const res = await fetch(url, { method, headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } });
   const d = await res.json();
-  if (d.code && d.code < 0) throw new Error(d.msg || `code:${d.code}`);
+  // رقم الخطأ يُذكر مع نصّه — النصّ وحده لا يكفي لتمييز سبب الرفض
+  if (d.code && d.code < 0) {
+    const e = new Error(`${d.msg || 'خطأ'} [${d.code}]`);
+    e.bnCode = d.code;
+    throw e;
+  }
   return d;
 }
 
@@ -2172,15 +2179,27 @@ async function placeStop(acc, sym, pos, stopPrice, tag) {
 
   // بعض الحسابات/العملات ترفض closePosition على /fapi/v1/order وتردّ
   // "Order type not supported for this endpoint" — نسقط عندها إلى صيغة
-  // الكمية + reduceOnly، وهي الصيغة المستخدمة في باقي البوت.
-  const attempts = [
-    { symbol: sym, side, type: 'STOP_MARKET', stopPrice: String(px), closePosition: 'true', positionSide: posSide },
-    (() => {
-      const q = { symbol: sym, side, type: 'STOP_MARKET', stopPrice: String(px), quantity: roundQty(Math.abs(amt), sym), positionSide: posSide };
-      if (mode !== 'hedge') q.reduceOnly = 'true';
-      return q;
-    })(),
-  ];
+  // الكمية + reduceOnly، ثم إلى صيغة مجرّدة بلا positionSide، فبعض
+  // الحسابات تعترض على إرساله أصلاً في الوضع الأحادي.
+  const qty = roundQty(Math.abs(amt), sym);
+  const base = { symbol: sym, side, type: 'STOP_MARKET', stopPrice: String(px) };
+  const attempts = mode === 'hedge'
+    ? [
+        { ...base, closePosition: 'true', positionSide: isLong ? 'LONG' : 'SHORT' },
+        { ...base, quantity: qty, positionSide: isLong ? 'LONG' : 'SHORT' },
+      ]
+    : [
+        { ...base, closePosition: 'true', positionSide: 'BOTH' },
+        { ...base, quantity: qty, reduceOnly: 'true', positionSide: 'BOTH' },
+        { ...base, closePosition: 'true' },
+        { ...base, quantity: qty, reduceOnly: 'true' },
+      ];
+
+  // العملة نفسها قد لا تقبل هذا النوع أصلاً — نقولها بدل أن نعمي على السبب
+  const allowed = orderTypesCache[sym];
+  if (Array.isArray(allowed) && allowed.length && !allowed.includes('STOP_MARKET')) {
+    throw new Error(`${sym} لا تقبل STOP_MARKET — المسموح: ${allowed.join('، ')}`);
+  }
 
   let lastErr = null;
   for (const params of attempts) {
@@ -2191,8 +2210,10 @@ async function placeStop(acc, sym, pos, stopPrice, tag) {
       return px;
     } catch (e) {
       lastErr = e;
-      // أخطاء لا تُصلحها إعادة المحاولة بصيغة أخرى
-      if (!/not supported for this endpoint|Algo Order/i.test(e.message)) throw e;
+      addCopyLog('fail', `⛔ ${sym} وقف — رُفضت الصيغة {${Object.keys(params).filter(k => !['symbol', 'side', 'type', 'stopPrice'].includes(k)).join(',') || 'مجرّدة'}} · وضع ${mode}: ${e.message}`);
+      // نُكمل فقط على أخطاء شكل الطلب — أما رفض حقيقي (رصيد، سعر يُفعَّل
+      // فوراً، صلاحيات) فإعادة المحاولة بصيغة أخرى لا تُصلحه
+      if (!/not supported for this endpoint|Algo Order|positionSide|reduceOnly|not required|Mandatory parameter/i.test(e.message)) throw e;
     }
   }
   throw lastErr || new Error('تعذّر وضع الوقف');
@@ -2629,6 +2650,24 @@ async function monitorLock() {
           // نحفظ آخر خطأ ليظهر في لوحة التشخيص بدل الصمت
           L.manualSyms[sym] = { ...(L.manualSyms[sym] || { ts: Date.now() }), lastErr: e.message, lastErrAt: Date.now() };
           lockSave();
+          // شبكة أمان: إن رفضت المنصّة الأمر الحدّي، لا تُترك الصفقة عارية.
+          // الوقف الافتراضي يتابعه البوت على السعر اللحظي ويغلق عند بلوغه —
+          // أضعف من أمر قائم (يحتاج البوت حيّاً) فيُقال صراحةً لا يُخفى.
+          if (!(STATE.lockState.vStops || {})[sym]) {
+            const isLong = parseFloat(pos.positionAmt) > 0;
+            const px = livePrices[sym] || parseFloat(pos.markPrice) || 0;
+            const entry = parseFloat(pos.entryPrice) || px;
+            if (px) {
+              const r = armVStop(sym, { kind: 'sl', side: isLong ? 'LONG' : 'SHORT', pct: slPct, price: px, entry, reason: 'تعذّر الأمر الحدّي' });
+              if (!r?.rejected) {
+                lockNotify(
+                  `⚠️ ستوب افتراضي — #${sym.replace('USDT', '/USDT')}\n` +
+                  `رفضت بايننس الأمر الحدّي: ${e.message}\n` +
+                  `يتابعه البوت عند ${slPct}% ويغلق بأمر سوق — يعمل ما دام البوت شغّالاً`
+                );
+              }
+            }
+          }
         }
         await new Promise(r => setTimeout(r, 300));
       }
