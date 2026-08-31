@@ -498,16 +498,29 @@ const lotSizeCache = {}; // sym -> stepSize (from exchangeInfo)
 const tickSizeCache = {}; // sym -> tickSize (PRICE_FILTER) — لازم لأوامر الوقف
 
 // جلب stepSize ديناميكياً إذا ما كان في الكاش (للعملات التي لم تُحمَّل عند البدء)
+// تنبيه: /fapi/v1/exchangeInfo في العقود الآجلة لا يقبل وسيط symbol — يعيد
+// القائمة كاملة دائماً. فأخذ symbols[0] كان يعني BTCUSDT لأي عملة كانت،
+// فتُخزَّن خطوته (tick = 0.1) لعملة سعرها سنتات فيصير سعر الوقف صفراً.
+// نبحث بالاسم دائماً، ولا نكتب شيئاً إن لم نجده.
 async function ensureLotSize(sym) {
   if (lotSizeCache[sym] && tickSizeCache[sym]) return;
   try {
-    const info = await fetchBinance(`/fapi/v1/exchangeInfo?symbol=${sym}`);
-    const filters = info.symbols?.[0]?.filters || [];
-    const lot = filters.find(f => f.filterType === 'LOT_SIZE');
-    if (lot) lotSizeCache[sym] = parseFloat(lot.stepSize);
-    const pf = filters.find(f => f.filterType === 'PRICE_FILTER');
-    if (pf) tickSizeCache[sym] = parseFloat(pf.tickSize);
+    const info = await fetchBinance('/fapi/v1/exchangeInfo');
+    const row = (info.symbols || []).find(s => s.symbol === sym);
+    if (!row) return;
+    cacheFilters(row);
   } catch (e) {}
+}
+
+// يخزّن خطوة الكمية وخطوة السعر لعملة واحدة من صفّها في exchangeInfo
+function cacheFilters(row) {
+  const filters = row.filters || [];
+  const lot = filters.find(f => f.filterType === 'LOT_SIZE');
+  const pf = filters.find(f => f.filterType === 'PRICE_FILTER');
+  const step = lot && parseFloat(lot.stepSize);
+  const tick = pf && parseFloat(pf.tickSize);
+  if (step > 0) lotSizeCache[row.symbol] = step;
+  if (tick > 0) tickSizeCache[row.symbol] = tick;
 }
 
 function roundQty(qty, sym) {
@@ -2142,6 +2155,11 @@ async function placeStop(acc, sym, pos, stopPrice, tag) {
   const amt = parseFloat(pos.positionAmt);
   const isLong = amt > 0;
   const mark = parseFloat(pos.markPrice) || livePrices[sym] || 0;
+  // سعر صفر أو غير منطقي يعني أن التقريب أفسده — نقولها صراحةً بدل رسالة
+  // "الوقف تحت السعر" التي تُوهم أن الحساب صحيح والاتجاه خاطئ
+  if (!(px > 0)) {
+    throw new Error(`تقريب سعر الوقف أعطى ${px} (المطلوب ${stopPrice}، خطوة السعر ${tickSizeCache[sym] ?? 'غير معروفة'})`);
+  }
   // بايننس يرفض وقفاً سيُفعَّل فوراً — تحقّق من الاتجاه أولاً
   if (mark > 0) {
     if (isLong && px >= mark) throw new Error(`سعر الوقف ${px} فوق السعر الحالي ${mark}`);
@@ -5098,8 +5116,8 @@ async function init() {
     STATE.symbols = d.symbols
       .filter(s => s.quoteAsset === 'USDT' && s.contractType === 'PERPETUAL' && s.status === 'TRADING')
       .map(s => {
-        const lot = s.filters.find(f => f.filterType === 'LOT_SIZE');
-        if (lot) lotSizeCache[s.symbol] = parseFloat(lot.stepSize);
+        // خطوة السعر تُخزَّن هنا أيضاً — كانت تُترك للجلب المتأخّر فتأتي خاطئة
+        cacheFilters(s);
         return s.symbol;
       }).sort();
     console.log(`✅ Loaded ${STATE.symbols.length} symbols`);
