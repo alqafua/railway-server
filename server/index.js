@@ -546,11 +546,11 @@ async function hmac256(secret, msg) {
   return crypto.createHmac('sha256', secret).update(msg).digest('hex');
 }
 
-async function bFetch(apiKey, apiSecret, method, ep, params = {}) {
+async function bFetch(apiKey, apiSecret, method, ep, params = {}, base = BASE) {
   const t = Date.now();
   const q = Object.entries({ ...params, timestamp: t }).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
   const sig = await hmac256(apiSecret, q);
-  const url = `${BASE}${ep}?${q}&signature=${sig}`;
+  const url = `${base}${ep}?${q}&signature=${sig}`;
   const res = await fetch(url, { method, headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' } });
   const d = await res.json();
   // رقم الخطأ يُذكر مع نصّه — النصّ وحده لا يكفي لتمييز سبب الرفض
@@ -560,6 +560,28 @@ async function bFetch(apiKey, apiSecret, method, ep, params = {}) {
     throw e;
   }
   return d;
+}
+
+// حين ترفض المنصّة أمر الوقف بحجّة "endpoint" فالسبب غالباً في نوع الحساب لا في
+// الطلب. نفحص مرّةً واحدة ونطبع الحقائق: هل الحساب محفظة موحّدة (Portfolio
+// Margin)؟ فيها تذهب الأوامر الشرطية إلى papi لا إلى fapi.
+const PAPI = 'https://papi.binance.com';
+let acctProbed = false;
+async function probeAccount(acc, sym) {
+  if (acctProbed) return;
+  acctProbed = true;
+  const facts = [];
+  try {
+    const a = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v1/account');
+    facts.push(`fapi: تداول=${a.canTrade} · متعدد الأصول=${a.multiAssetsMargin}`);
+  } catch (e) { facts.push(`fapi/account: ${e.message}`); }
+  try {
+    await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/papi/v1/um/account', {}, PAPI);
+    facts.push('⚠️ الحساب محفظة موحّدة (Portfolio Margin) — الأوامر الشرطية تذهب إلى papi لا fapi');
+  } catch (e) { facts.push(`papi: ليست محفظة موحّدة (${e.message})`); }
+  const ot = orderTypesCache[sym];
+  if (ot) facts.push(`${sym} تقبل: ${ot.join('، ')}`);
+  addCopyLog('info', `🔎 فحص الحساب — ${facts.join(' | ')}`);
 }
 
 async function getBalance(acc) {
@@ -2624,6 +2646,9 @@ async function monitorLock() {
         const sym = pos.symbol;
         if (!isManualPosition(sym, pos)) continue;
         if (L.manualSyms[sym]?.slPlaced) continue;
+        // تراجع تدريجي بعد الفشل: المحاولة كل ١٥ ثانية كانت تغرق السجل
+        // بنفس السطر ولا تغيّر شيئاً — الرفض من المنصّة لا يزول بالتكرار
+        if ((L.manualSyms[sym]?.slRetryAt || 0) > Date.now()) continue;
         try {
           const orders = await bFetch(master.apiKey, master.apiSecret, 'GET', '/fapi/v1/openOrders', { symbol: sym });
           const hasStop = Array.isArray(orders) && orders.some(o => o.type === 'STOP_MARKET' || o.type === 'STOP' || o.type === 'TRAILING_STOP_MARKET');
@@ -2646,10 +2671,17 @@ async function monitorLock() {
             `وقف @ ${px} (${slPct}% من السعر ≈ ${(slPct * lev).toFixed(0)}% من الهامش)`
           );
         } catch (e) {
-          addCopyLog('fail', `❌ ستوب تلقائي ${sym}: ${e.message}`);
+          const prev = L.manualSyms[sym] || { ts: Date.now() };
+          // لا نكرّر السطر نفسه في السجل — نكتبه عند تغيّر السبب فقط
+          if (prev.lastErr !== e.message) addCopyLog('fail', `❌ ستوب تلقائي ${sym}: ${e.message}`);
+          const fails = (prev.slFails || 0) + 1;
+          const wait = Math.min(15 * 60000, [15000, 60000, 300000, 900000][Math.min(fails, 3)]);
           // نحفظ آخر خطأ ليظهر في لوحة التشخيص بدل الصمت
-          L.manualSyms[sym] = { ...(L.manualSyms[sym] || { ts: Date.now() }), lastErr: e.message, lastErrAt: Date.now() };
+          L.manualSyms[sym] = { ...prev, lastErr: e.message, lastErrAt: Date.now(), slFails: fails, slRetryAt: Date.now() + wait };
           lockSave();
+          if (/not supported for this endpoint|Algo Order/i.test(e.message)) {
+            probeAccount(master, sym).catch(() => {});
+          }
           // شبكة أمان: إن رفضت المنصّة الأمر الحدّي، لا تُترك الصفقة عارية.
           // الوقف الافتراضي يتابعه البوت على السعر اللحظي ويغلق عند بلوغه —
           // أضعف من أمر قائم (يحتاج البوت حيّاً) فيُقال صراحةً لا يُخفى.
