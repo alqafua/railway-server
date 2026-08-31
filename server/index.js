@@ -166,6 +166,7 @@ const STATE = {
     trades: [],          // سجل مختصر لصفقات النافذة
   },
   sentMsgIds: {},        // sym -> message_id لرسالة الإشارة (لمزامنة كورنكس)
+  revDiag: null,         // آخر نتيجة لفحص الإرسال التلقائي عند الانعكاس — تُعرض في الواجهة
   rsiPeaks: {},          // إصلاح #1 — كان غير معرَّف
   sysStatus: { ok: true, lastError: null, errorLoc: null, errorTs: null },
   symbolSettings: {},    // إعدادات خاصة لكل عملة — تُدمج فوق STATE.settings عند توليد إشاراتها
@@ -748,18 +749,20 @@ function buildSettingsMsg(sym, side, st, lv) {
 }
 
 async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabel = '', st = STATE.settings, tf = null) {
+  // تعيد الدالة true عند الإرسال، أو نصّ السبب عند الامتناع — ليعرف المتصل
+  // (إرسال القائمة تحديداً) أن الرسالة لم تخرج فيعيد العنصر إلى مكانه
   if (fromQueue) {
     // القائمة الذكية: تعتمد على sigFilters.queue فقط، مش autoSend
-    if (st.sigFilters?.queue === false) return;
-    if (!st.cxToken || !st.cxChat) return;
+    if (st.sigFilters?.queue === false) return 'فلتر القائمة مغلق (sigFilters.queue)';
+    if (!st.cxToken || !st.cxChat) return 'توكن أو قناة كورنكس غير مضبوطة';
   } else {
-    if (!st.autoSend || !st.cxToken || !st.cxChat) return;
+    if (!st.autoSend || !st.cxToken || !st.cxChat) return 'الإرسال التلقائي مغلق أو التوكن ناقص';
   }
   // فلتر إرسال التلغرام حسب وجود إعدادات خاصة للعملة (⭐) — لا يؤثر على السجل أو القائمة أو الصفقة، فقط على إرسال التلغرام
   const tgFilter = STATE.settings.tgStarFilter;
-  if (tgFilter === 'star' && !hasSymOverride(sym)) return;
-  if (tgFilter === 'other' && hasSymOverride(sym)) return;
-  if (!overridePrice && STATE.sentSigs[sym]) return;
+  if (tgFilter === 'star' && !hasSymOverride(sym)) return 'فلتر ⭐ يسمح للمميّزة فقط';
+  if (tgFilter === 'other' && hasSymOverride(sym)) return 'فلتر ⭐ يستثني المميّزة';
+  if (!overridePrice && STATE.sentSigs[sym]) return 'أُرسلت من قبل';
   STATE.sentSigs[sym] = Date.now();
   saveSentSigsDebounced();
   if (STATE.settings.stSLon && STATE._stslTracked) STATE._stslTracked[sym] = true;
@@ -781,6 +784,7 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   if (STATE.settings.cxChatSettings) {
     await tgSend(buildSettingsMsg(sym, side, st, lv), STATE.settings.cxChatSettings);
   }
+  return true;
 }
 
 // ══════════════════════════════════════════════
@@ -1049,36 +1053,77 @@ function queueWithReversals() {
 // يرسل كل عنصر بلغ انعكاسه النسبة المحدّدة.
 // لا يفحص حدّ الصفقات المفتوحة: القائمة نشأت أصلاً بسبب الحد، والغرض هنا
 // اقتناص الدخول الأفضل بعد الارتداد بغضّ النظر عن امتلاء الحد.
-let revAutoBusy = false;
+let revAutoBusy = false, revAutoBusySince = 0;
+const REV_STUCK_MS = 90 * 1000;   // حارس: لو علق الإرسال (طلب تلغرام معلّق) لا تُقفل الميزة للأبد
+
+// آخر ما جرى في الفحص — يظهر في الواجهة تحت زرّ الإرسال التلقائي،
+// كي لا يبقى الخلل صامتاً كما حدث سابقاً
+function revNote(txt) {
+  STATE.revDiag = { at: Date.now(), note: txt };
+}
+
 async function autoSendOnReversal() {
   const st = STATE.settings;
-  if (!st.queueRevAutoOn || revAutoBusy) return;
+  if (!st.queueRevAutoOn) return revNote('الميزة مغلقة');
+  if (revAutoBusy) {
+    if (Date.now() - revAutoBusySince > REV_STUCK_MS) {
+      revAutoBusy = false;
+      addCopyLog('fail', '⚠️ إرسال الانعكاس كان عالقاً — أُعيد تشغيله');
+    } else return revNote('جارٍ الإرسال…');
+  }
   const need = parseFloat(st.queueRevAutoPct);
-  if (!isFinite(need) || need <= 0) return;
-  const ready = queueWithReversals().filter(q => q.reversalPct >= need);
-  if (!ready.length) return;
-  revAutoBusy = true;
+  if (!isFinite(need) || need <= 0) return revNote('النسبة غير صالحة');
+  const scored = queueWithReversals();
+  const ready = scored.filter(q => q.reversalPct >= need);
+  if (!ready.length) {
+    const top = scored[0];
+    return revNote(top ? `أعلى انعكاس ${top.reversalPct}% < ${need}%` : 'القائمة فارغة');
+  }
+  revAutoBusy = true; revAutoBusySince = Date.now();
   try {
     for (const q of ready) {
       // قد يكون أُرسل في دورة سابقة
       if (!STATE.waitQueue.some(x => x.id === q.id)) continue;
-      await sendQueueItemNow(q, livePrices[q.symbol]);
-      addCopyLog('success', `📤 انعكاس ${q.reversalPct}% ≥ ${need}% — أُرسلت ${q.symbol}`);
+      const res = await sendQueueItemNow(q, livePrices[q.symbol]);
+      if (res === true) {
+        addCopyLog('success', `📤 انعكاس ${q.reversalPct}% ≥ ${need}% — أُرسلت ${q.symbol}`);
+        revNote(`أُرسلت ${q.symbol} (${q.reversalPct}%)`);
+      } else {
+        addCopyLog('fail', `⛔ ${q.symbol} بلغت ${q.reversalPct}% لكن لم تُرسل: ${res}`);
+        revNote(`${q.symbol} ممنوعة: ${res}`);
+      }
       await new Promise(r => setTimeout(r, 1200));   // مباعدة تحترم حدود تلغرام
     }
   } catch (e) {
     addCopyLog('fail', `❌ إرسال الانعكاس: ${e.message}`);
+    revNote('خطأ: ' + e.message);
   } finally {
     revAutoBusy = false;
   }
 }
 
+// تُعيد true عند الإرسال الفعلي، أو نصّ السبب — والعنصر يعود إلى القائمة
+// إن رفض الإرسال، فلا يضيع بصمت كما كان يحدث
 async function sendQueueItemNow(qItem, currentPrice) {
+  const idx = STATE.waitQueue.findIndex(q => q.id === qItem.id);
+  const orig = idx >= 0 ? STATE.waitQueue[idx] : qItem;
+  // نزيله أولاً كي لا تلتقطه دورة أخرى أثناء انتظار تلغرام
   STATE.waitQueue = STATE.waitQueue.filter(q => q.id !== qItem.id);
   db.saveWaitQueue(STATE.waitQueue);
   broadcast({ type: 'waitQueue', data: queueWithReversals() });
   const label = qItem.emoji ? `${qItem.emoji} ${qItem.label}` : qItem.label || qItem.signalType || '';
-  await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol], true, label, settingsFor(qItem.symbol), qItem.tf || null);
+  let res;
+  try {
+    res = await sendSignal(qItem.symbol, qItem.side, currentPrice || livePrices[qItem.symbol], true, label, settingsFor(qItem.symbol), qItem.tf || null);
+  } catch (e) {
+    res = e.message || 'خطأ في الإرسال';
+  }
+  if (res !== true && !STATE.waitQueue.some(q => q.id === qItem.id)) {
+    STATE.waitQueue.splice(Math.max(0, idx), 0, orig);
+    db.saveWaitQueue(STATE.waitQueue);
+    broadcast({ type: 'waitQueue', data: queueWithReversals() });
+  }
+  return res;
 }
 
 function autoSendFromQueue() {
@@ -1531,7 +1576,7 @@ function manualFloatingLoss() {
 
 // الحدّ اليومي يشمل المحقّق والعائم معاً. عند بلوغه تُغلق كل الصفقات اليدوية
 // فوراً ويبدأ الانتظار — لا ينتظر إغلاقها يدوياً.
-let dailyCheckBusy = false, lastDailyCheck = 0, lastRevCheck = 0;
+let dailyCheckBusy = false, lastDailyCheck = 0;
 async function checkDailyLossLimit() {
   const S = STATE.settings;
   if (!S.lockOn || !S.lockDailyOn || dailyCheckBusy) return;
@@ -2325,6 +2370,8 @@ async function updateLockTrend() {
       prevEmaSide: prev.tf === tf ? (prev.emaSide ?? null) : null,
       at: Date.now(),
     };
+    // الداشبورد تقرأ المسافة من هنا — تُبثّ حتى والنظام مغلق كي لا يتجمّد الرقم
+    broadcast({ type: 'lockState', data: lockPublic() });
   } catch (e) {
     addCopyLog('fail', `❌ اتجاه القفل (${tf}): ${e.message}`);
   } finally { lockTrendBusy = false; }
@@ -2836,11 +2883,6 @@ function startBinanceWSGroup(interval, syms) {
         lastDailyCheck = Date.now();
         checkDailyLossLimit().catch(() => {});
       }
-      // إرسال ما بلغ نسبة الانعكاس — مخنوق ٣ ثوانٍ
-      if (STATE.settings.queueRevAutoOn && Date.now() - lastRevCheck > 3000) {
-        lastRevCheck = Date.now();
-        autoSendOnReversal().catch(() => {});
-      }
       if (!candleCache[sym]) candleCache[sym] = [];
 
       if (k.x) {
@@ -3351,6 +3393,7 @@ function getPublicState() {
     dcaOrders: STATE.dcaOrders,
     pendingOrders: STATE.pendingOrders,
     waitQueue: queueWithReversals(),
+    revDiag: STATE.revDiag,
     sentSigs: STATE.sentSigs,
     sysStatus: STATE.sysStatus,
     ema200: STATE.ema200,
@@ -5054,10 +5097,18 @@ async function init() {
 
   // تحديث نسب الانعكاس في قائمة الانتظار + مراقبة صفقات المحاكاة كل 10 ثوانٍ
   setInterval(() => {
-    if (STATE.waitQueue.length && clients.size)
+    if (STATE.waitQueue.length && clients.size) {
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
+      broadcast({ type: 'revDiag', data: STATE.revDiag });
+    }
     checkSimTrades();
   }, 10000);
+
+  // إرسال ما بلغ نسبة الانعكاس — مؤقّت مستقل.
+  // كان معلّقاً على رسائل الـ WS، فإن تعثّر البثّ توقّفت الميزة بلا أثر
+  setInterval(() => {
+    if (STATE.waitQueue.length) autoSendOnReversal().catch(() => {});
+  }, 3000);
 
   // تحديث مراكز الماستر كل 30 ثانية حتى لو النسخ متوقف
   // يكتشف إغلاق صفقة → يرسل من القائمة تلقائياً
@@ -5152,7 +5203,7 @@ async function init() {
     let tick = 0;
     updateLockTrend();
     setInterval(() => {
-      if (!STATE.settings.lockOn) return;
+      // يعمل دائماً: الداشبورد تعرض المسافة حتى والنظام مغلق، فلا يصحّ أن تتجمّد
       tick += 30000;
       if (tick >= period()) { tick = 0; updateLockTrend(); }
     }, 30000);
