@@ -95,8 +95,12 @@ const DEFAULT_SETTINGS = {
   lockDailyAmt: 10,         // الحد بالدولار (هامش الصفقة + سقف الخسارة اليومية)
   lockDailyHours: 24,       // مدة النافذة / الانتظار بالساعات
   lockAutoBEon: false,      // (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه
-  // فريم ومؤشّر مستقلّان لهذا القسم — لا يمسّان فريم الماسح ولا السوبر العام
-  lockTrendTF: '1h',
+  // فريم ومؤشّر مستقلّان لهذا القسم — لا يمسّان فريم الماسح ولا السوبر العام.
+  // لكل مؤشّر فريمه: السوبر يُقرأ عادةً على أربع ساعات و EMA200 على ساعة،
+  // فلا يصحّ حشرهما في فريم واحد (lockTrendTF القديم يُهاجَر إليهما)
+  lockTrendTF: '1h',        // مهجور — يُستعمل مرةً واحدة لترحيل الإعداد القديم
+  lockTrendTFst: '4h',
+  lockTrendTFema: '1h',
   lockTrendInd: 'both',     // ema | st | both (both = ينتظر اقتراب الاثنين معاً)
   lockBEtrig: 'near',       // متى يشتغل: near = قرب الانعكاس · flip = انعكاس فعلي · both
   lockBEnearPct: 1,         // قرب السعر من خط السوبر/EMA لاعتباره "قرب انعكاس" %
@@ -1640,6 +1644,10 @@ function lockPublic() {
     vStops: L.vStops || {},
     booted: bootBaselineDone,
     trend: STATE.lockTrend || null,
+    // الحكم يُحسب هنا مرةً واحدة لكل جهة، فلا تُعيد الواجهة اشتقاقه وتفترق عن الخادم
+    trendSides: STATE.lockTrend
+      ? { LONG: trendReversalStatus('LONG'), SHORT: trendReversalStatus('SHORT') }
+      : null,
     masterUntil: STATE.lockState.masterUntil || 0,
     masterActive: masterLockActive(),   // يفحص الانتهاء ويرفع القفل عند حلوله
     allLocked: !!(STATE.settings.lockMaster && STATE.settings.lockAllSettings),
@@ -2348,68 +2356,94 @@ async function applyTrailing(acc, syms, pct) {
 let lockTrendBusy = false;
 async function updateLockTrend() {
   if (lockTrendBusy) return;
-  const tf = STATE.settings.lockTrendTF || '1h';
+  const stTf = STATE.settings.lockTrendTFst || '4h';
+  const emaTf = STATE.settings.lockTrendTFema || '1h';
   lockTrendBusy = true;
   try {
     const period = parseInt(STATE.settings.stPeriod) || 10;
     const mult = parseFloat(STATE.settings.stMult) || 3;
-    const klines = await fetchBinance(`/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=210`);
-    if (!Array.isArray(klines) || klines.length < 201) return;
-    const closes = klines.map(k => parseFloat(k[4]));
-    const btc = closes[closes.length - 1];
-    const st = calcSuperTrend(klines, period, mult);
-    const ema = calcEMA(closes, 200);
+    const get = (tf) => fetchBinance(`/fapi/v1/klines?symbol=BTCUSDT&interval=${tf}&limit=210`);
+    // فريم واحد ⇒ طلب واحد يخدم المؤشّرين
+    const stK = await get(stTf);
+    const emaK = emaTf === stTf ? stK : await get(emaTf);
+    const ok = (a) => Array.isArray(a) && a.length >= 201;
+    if (!ok(stK) || !ok(emaK)) return;
+
+    const stCloses = stK.map(k => parseFloat(k[4]));
+    const emaCloses = emaK.map(k => parseFloat(k[4]));
+    const st = calcSuperTrend(stK, period, mult);
+    const ema = calcEMA(emaCloses, 200);
+    const stPrice = stCloses[stCloses.length - 1];
+    const emaPrice = emaCloses[emaCloses.length - 1];
     const prev = STATE.lockTrend || {};
-    const emaSide = ema ? (btc > ema ? 'above' : 'below') : null;
+    const emaSide = ema ? (emaPrice > ema ? 'above' : 'below') : null;
     STATE.lockTrend = {
-      tf, btcPrice: btc,
-      stValue: st?.value ?? null, stDir: st?.direction ?? null,
-      emaValue: ema ?? null, emaSide,
+      btcPrice: emaPrice || stPrice,
+      stTf, stPrice, stValue: st?.value ?? null, stDir: st?.direction ?? null,
+      emaTf, emaPrice, emaValue: ema ?? null, emaSide,
       // نحتفظ بالقراءة السابقة لكشف الانقلاب — وتُهمَل إن تغيّر الفريم
-      prevStDir: prev.tf === tf ? (prev.stDir ?? null) : null,
-      prevEmaSide: prev.tf === tf ? (prev.emaSide ?? null) : null,
+      prevStDir: prev.stTf === stTf ? (prev.stDir ?? null) : null,
+      prevEmaSide: prev.emaTf === emaTf ? (prev.emaSide ?? null) : null,
       at: Date.now(),
     };
     // الداشبورد تقرأ المسافة من هنا — تُبثّ حتى والنظام مغلق كي لا يتجمّد الرقم
     broadcast({ type: 'lockState', data: lockPublic() });
   } catch (e) {
-    addCopyLog('fail', `❌ اتجاه القفل (${tf}): ${e.message}`);
+    addCopyLog('fail', `❌ اتجاه القفل (${stTf}/${emaTf}): ${e.message}`);
   } finally { lockTrendBusy = false; }
 }
 
 // حالة الاتجاه: نفصل "قرب الانعكاس" عن "الانعكاس الفعلي".
 // المؤشّر المختار وحده هو الحَكَم؛ و'both' يشترط تحقّق الاثنين معاً.
-function trendReversalStatus() {
+// المسافة إلى الخط لا تُقاس بقيمة مطلقة، بل حسب جهة الصفقة:
+// خطٌّ عبره السعر أصلاً ليس "انعكاساً قادماً" — الانعكاس فيه قد وقع،
+// وكلما ابتعد السعر عنه صار الرقم أكبر لا أصغر. لذلك لكل مؤشّر حالتان:
+//   مُوافق للصفقة  → المسافة إلى الخط هي مسافة الانعكاس، و"قريب" لها معنى
+//   مُعاكس للصفقة  → انعكس فعلاً، ويُعتبر متحقّقاً مهما كانت المسافة
+function trendReversalStatus(side = 'LONG') {
   const nearPct = parseFloat(STATE.settings.lockBEnearPct) || 1;
   const ind = STATE.settings.lockTrendInd || 'both';
   const T = STATE.lockTrend;
-  if (!T?.btcPrice) return { near: false, flipped: false, trigger: false, reasons: [] };
-  const btc = T.btcPrice;
+  const dead = { tf: null, dist: null, aligned: false, crossed: false, ok: false, left: Infinity };
+  if (!T?.btcPrice) {
+    return { side, ind, need: nearPct, st: dead, ema: dead, near: false, flipped: false, trigger: false, left: Infinity, reasons: [] };
+  }
 
-  const stNear = T.stValue ? Math.abs((btc - T.stValue) / btc) * 100 : null;
-  const emaNear = T.emaValue ? Math.abs((btc - T.emaValue) / btc) * 100 : null;
-  const stIsNear = stNear !== null && stNear <= nearPct;
-  const emaIsNear = emaNear !== null && emaNear <= nearPct;
-  const stFlip = !!(T.stDir && T.prevStDir && T.stDir !== T.prevStDir);
-  const emaFlip = !!(T.emaSide && T.prevEmaSide && T.emaSide !== T.prevEmaSide);
+  const leg = (price, line, alignedNow, tf) => {
+    if (!price || !line) return { ...dead, tf };
+    const dist = Math.abs((price - line) / price) * 100;
+    return alignedNow
+      ? { tf, value: line, dist, aligned: true, crossed: false, ok: dist <= nearPct, left: dist - nearPct }
+      : { tf, value: line, dist, aligned: false, crossed: true, ok: true, left: 0 };
+  };
 
-  let near, flipped;
-  if (ind === 'st') { near = stIsNear; flipped = stFlip; }
-  else if (ind === 'ema') { near = emaIsNear; flipped = emaFlip; }
-  else { near = stIsNear && emaIsNear; flipped = stFlip && emaFlip; }
+  // المسافة تُقاس على السعر اللحظي لا على إغلاق آخر قراءة، وإلا تجمّد الرقم بينهما.
+  // اتجاه السوبر يبقى من الحساب: انقلابه يقع على إغلاق الشمعة لا على اختراق لحظي.
+  // أما EMA200 فلا تأخير فيه — الجهة هي موضع السعر منه الآن.
+  const live = livePrices['BTCUSDT'] || 0;
+  const stPx = live || T.stPrice || T.btcPrice;
+  const emaPx = live || T.emaPrice || T.btcPrice;
+  const emaAbove = T.emaValue ? emaPx > T.emaValue : null;
+  const st = leg(stPx, T.stValue,
+    side === 'LONG' ? T.stDir === 'up' : T.stDir === 'down', T.stTf);
+  const ema = leg(emaPx, T.emaValue,
+    emaAbove === null ? false : (side === 'LONG' ? emaAbove : !emaAbove), T.emaTf);
 
+  let ok, flipped, left;
+  if (ind === 'st') { ok = st.ok; flipped = st.crossed; left = st.left; }
+  else if (ind === 'ema') { ok = ema.ok; flipped = ema.crossed; left = ema.left; }
+  else { ok = st.ok && ema.ok; flipped = st.crossed && ema.crossed; left = Math.max(st.left, ema.left); }
+
+  const say = (name, l) => l.crossed
+    ? `${name} انعكس (عاكس بـ ${l.dist.toFixed(2)}%${l.tf ? ' · ' + l.tf : ''})`
+    : `${l.dist.toFixed(2)}% من ${name}${l.tf ? ' · ' + l.tf : ''}`;
   const reasons = [];
-  if (flipped) {
-    if (ind !== 'ema' && stFlip) reasons.push(`السوبر انقلب إلى ${T.stDir === 'up' ? 'صاعد' : 'نازل'}`);
-    if (ind !== 'st' && emaFlip) reasons.push(`السعر عبر EMA200 إلى ${T.emaSide === 'above' ? 'فوقه' : 'تحته'}`);
+  if (ok) {
+    if (ind !== 'ema' && st.dist !== null) reasons.push(say('السوبر', st));
+    if (ind !== 'st' && ema.dist !== null) reasons.push(say('EMA200', ema));
   }
-  if (near) {
-    if (ind !== 'ema' && stIsNear) reasons.push(`${stNear.toFixed(2)}% من خط السوبر`);
-    if (ind !== 'st' && emaIsNear) reasons.push(`${emaNear.toFixed(2)}% من EMA200`);
-  }
-  if (reasons.length) reasons.push(`(${T.tf})`);
 
-  return { near, flipped, trigger: near || flipped, reasons };
+  return { side, ind, need: nearPct, st, ema, near: ok, flipped, trigger: ok, left, reasons };
 }
 
 // هل يشغّل هذا الحدث ميزةً مضبوطة على 'near' أو 'flip' أو 'both'؟
@@ -2597,16 +2631,22 @@ async function monitorLock() {
       }
     }
 
-    // ── التنفيذ التلقائي عند شرط الاتجاه العام ──
+    // ── التنفيذ التلقائي عند شرط الاتجاه ──
     // كل ميزة تختار محفّزها: قرب الانعكاس أو الانعكاس الفعلي أو كليهما.
+    // الشرط يُقيَّم لكل جهة على حدة: ما يهدّد اللونج هو هبوط الاتجاه،
+    // وما يهدّد الشورت صعوده — فلا تُعامَل الصفقتان بحكم واحد.
     // ما كان له وقف افتراضي نشط لا يُعاد تسجيله.
     {
       const S = STATE.settings;
       if (S.lockAutoBEon || S.lockAutoTrailOn || S.lockAutoLossOn) {
-        const status = trendReversalStatus();
-        if (status.trigger) {
+        const stat = { LONG: trendReversalStatus('LONG'), SHORT: trendReversalStatus('SHORT') };
+        if (stat.LONG.trigger || stat.SHORT.trigger) {
           const vs = STATE.lockState.vStops || {};
-          const why = status.reasons.join(' · ');
+          const sideOf = (p) => (parseFloat(p.positionAmt) || 0) > 0 ? 'LONG' : 'SHORT';
+          const whyFor = (syms) => {
+            const sides = [...new Set(positions.filter(p => syms.includes(p.symbol)).map(sideOf))];
+            return sides.map(sd => (sides.length > 1 ? `${sd}: ` : '') + stat[sd].reasons.join(' · ')).join(' | ');
+          };
           // الرابحة = ربح موجب. أما البريك إيفن فيشترط حركة كافية إضافةً لذلك،
           // وإلا أقفل صفقةً بالكاد دخلت الربح
           const minPnl = parseFloat(S.lockBEminPnl) || 0;
@@ -2617,28 +2657,31 @@ async function monitorLock() {
             if (!mg) return false;
             return ((parseFloat(p.unRealizedProfit) || 0) / mg) * 100 >= minPnl;
           };
-          const winners = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) > 0).map(p => p.symbol);
-          const beReady = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) > 0 && movedEnough(p)).map(p => p.symbol);
-          const losers = positions.filter(p => (parseFloat(p.unRealizedProfit) || 0) < 0).map(p => p.symbol);
+          // لا تدخل الصفقة إلا إذا تحقّق الشرط لجهتها هي
+          const pick = (trig, extra) => positions
+            .filter(p => trigMatches(trig, stat[sideOf(p)]) && extra(p))
+            .map(p => p.symbol);
+          const isWin = (p) => (parseFloat(p.unRealizedProfit) || 0) > 0;
+          const isLoss = (p) => (parseFloat(p.unRealizedProfit) || 0) < 0;
 
           // بريك إيفن للرابحات
-          if (S.lockAutoBEon && trigMatches(S.lockBEtrig, status)) {
-            const pend = beReady.filter(s => !L.beDone[s] && !vs[s]);
-            if (pend.length) await applyBreakEven(master, pend, S.lockBEoffsetPct, `تلقائي — ${why}`);
+          if (S.lockAutoBEon) {
+            const pend = pick(S.lockBEtrig, p => isWin(p) && movedEnough(p)).filter(s => !L.beDone[s] && !vs[s]);
+            if (pend.length) await applyBreakEven(master, pend, S.lockBEoffsetPct, `تلقائي — ${whyFor(pend)}`);
           }
           // تريلنج للرابحات
-          if (S.lockAutoTrailOn && trigMatches(S.lockAutoTrailTrig, status)) {
-            const pend = winners.filter(s => !vs[s]);
+          if (S.lockAutoTrailOn) {
+            const pend = pick(S.lockAutoTrailTrig, isWin).filter(s => !vs[s]);
             if (pend.length) {
-              lockNotify(`📉 تريلنج تلقائي ${S.lockAutoTrailPct}%\nالسبب: ${why}\nالعملات: ${pend.map(x => x.replace('USDT', '')).join(' · ')}`);
+              lockNotify(`📉 تريلنج تلقائي ${S.lockAutoTrailPct}%\nالسبب: ${whyFor(pend)}\nالعملات: ${pend.map(x => x.replace('USDT', '')).join(' · ')}`);
               await applyTrailing(master, pend, S.lockAutoTrailPct);
             }
           }
           // وقف خسارة للخاسرات
-          if (S.lockAutoLossOn && trigMatches(S.lockAutoLossTrig, status)) {
-            const pend = losers.filter(s => !vs[s]);
+          if (S.lockAutoLossOn) {
+            const pend = pick(S.lockAutoLossTrig, isLoss).filter(s => !vs[s]);
             if (pend.length) {
-              lockNotify(`🛑 وقف تلقائي ${S.lockAutoLossPct}%\nالسبب: ${why}\nالعملات: ${pend.map(x => x.replace('USDT', '')).join(' · ')}`);
+              lockNotify(`🛑 وقف تلقائي ${S.lockAutoLossPct}%\nالسبب: ${whyFor(pend)}\nالعملات: ${pend.map(x => x.replace('USDT', '')).join(' · ')}`);
               await applyLossStop(master, pend, S.lockAutoLossPct);
             }
           }
@@ -3496,7 +3539,8 @@ async function handleClientMsg(msg, ws) {
           deadChats.delete(String(msg.data[k]));
         }
       }
-      const trendTFChanged = msg.data.lockTrendTF !== undefined && msg.data.lockTrendTF !== STATE.settings.lockTrendTF;
+      const trendTFChanged = ['lockTrendTFst', 'lockTrendTFema'].some(
+        k => msg.data[k] !== undefined && msg.data[k] !== STATE.settings[k]);
       Object.assign(STATE.settings, msg.data);
       db.saveSettings(STATE.settings);
       broadcast({ type: 'settings', data: STATE.settings });
@@ -4980,6 +5024,14 @@ async function init() {
   // ملاحظة: لا تمسح معرّفات القنوات تلقائياً هنا. القيم المحفوظة تخصّ المستخدم
   // حتى لو طابقت قيمة افتراضية قديمة. القناة التي يتعذّر الإرسال إليها تُعطَّل
   // وقتياً في drainTgQueue مع تسمية الخانة، ويعيدها تعديل الرقم من الواجهة.
+  // ترحيل فريم القفل الواحد إلى فريمين — مرةً واحدة، بنفس القيمة القديمة
+  // كي لا يتغيّر سلوك النظام من تلقاء نفسه عند التحديث
+  {
+    const s = db.loadSettings({});
+    const old = STATE.settings.lockTrendTF;
+    if (old && s.lockTrendTFst === undefined) STATE.settings.lockTrendTFst = old;
+    if (old && s.lockTrendTFema === undefined) STATE.settings.lockTrendTFema = old;
+  }
   STATE.symbolSettings = db.loadSymbolSettings();
   // تحديث إعدادات التلغرام من env vars عند كل تشغيل
   if (process.env.TG_TOKEN) STATE.settings.cxToken = process.env.TG_TOKEN;
@@ -5194,12 +5246,9 @@ async function init() {
 
   // اتجاه القفل: التحديث يتناسب مع الفريم — فريم دقائق يحتاج متابعة أسرع
   {
-    const period = () => {
-      const tf = STATE.settings.lockTrendTF || '1h';
-      if (/^\d+m$/.test(tf)) return parseInt(tf) <= 5 ? 60000 : 120000;
-      if (tf === '1d') return 600000;
-      return 300000;
-    };
+    // الخطوط نفسها لا تتحرّك إلا بإغلاق شمعة (ساعة أو أربع)، فالتحديث كل خمس
+    // دقائق يكفي — والمسافة تُقاس على السعر اللحظي لا على هذه القراءة
+    const period = () => 300000;
     let tick = 0;
     updateLockTrend();
     setInterval(() => {

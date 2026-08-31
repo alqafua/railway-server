@@ -140,8 +140,8 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v44-revhonest';
-const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',wqOpen:false,sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,queueRevAutoOn:false,queueRevAutoPct:10,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockMasterHours:24,lockAllSettings:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockTrendTF:'1h',lockTrendInd:'both',lockBEtrig:'near',lockBEnearPct:1,lockBEoffsetPct:0.1,lockBEminPnl:50,lockAutoTrailOn:false,lockAutoTrailPct:10,lockAutoTrailTrig:'near',lockAutoLossOn:false,lockAutoLossPct:2,lockAutoLossTrig:'flip',lockTgChat:'',lockCloseCmd:'/close',lockCornixSync:false,extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
+const UI_VERSION='v45-trendside';
+const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',wqOpen:false,sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,queueRevAutoOn:false,queueRevAutoPct:10,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockMasterHours:24,lockAllSettings:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockTrendTF:'1h',lockTrendTFst:'4h',lockTrendTFema:'1h',lockTrendInd:'both',lockBEtrig:'near',lockBEnearPct:1,lockBEoffsetPct:0.1,lockBEminPnl:50,lockAutoTrailOn:false,lockAutoTrailPct:10,lockAutoTrailTrig:'near',lockAutoLossOn:false,lockAutoLossPct:2,lockAutoLossTrig:'flip',lockTgChat:'',lockCloseCmd:'/close',lockCornixSync:false,extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
 const MIN_SIG_SAMPLE=10; // أقل عدد إشارات لاعتماد نسبة الاحترام في "الإعداد النهائي المُحسَّن"
@@ -192,19 +192,26 @@ function send(type,data){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringi
 // وإلا ظهر مقفلاً بوقت متبقٍّ فارغ
 // كم بقي حتى يتحقّق شرط الاتجاه؟ يُستخدم في الداشبورد وصفحة القفل معاً
 // كي لا يفترق الرقمان.
-function trendRemaining(){
-  const T=C.lockState?.trend;
-  if(!T?.btcPrice)return null;
-  const dist=v=>v?Math.abs((T.btcPrice-v)/T.btcPrice*100):null;
-  const sD=dist(T.stValue), eD=dist(T.emaValue);
-  const ind=C.settings.lockTrendInd||'both';
-  const need=parseFloat(C.settings.lockBEnearPct)||1;
-  let cur=null;
-  if(ind==='st')cur=sD; else if(ind==='ema')cur=eD;
-  else if(sD!==null&&eD!==null)cur=Math.max(sD,eD);   // الاثنان: الأبعد يحكم
-  if(cur===null)return null;
-  return {cur,sD,eD,ind,need,left:cur-need,ready:cur-need<=0,
-          pct:Math.max(0,Math.min(100,(need/cur)*100))};
+// الحكم يأتي محسوباً من الخادم لكل جهة (LONG/SHORT) — لا نعيد اشتقاقه هنا
+// كي لا تفترق الواجهة عمّا ينفّذه البوت فعلاً.
+function trendRemaining(side){
+  const SD=C.lockState?.trendSides;
+  const R=SD&&SD[side||'LONG'];
+  if(!R)return null;
+  const known=typeof R.left==='number'&&isFinite(R.left);
+  const ready=!!R.trigger;
+  return {...R,known,ready,left:known?R.left:null,
+          pct:ready?100:known?Math.max(0,Math.min(100,(R.need/(R.need+R.left))*100)):0};
+}
+// جهة الصفقات اليدوية المفتوحة — الشارة تخصّ ما هو مفتوح فعلاً
+function openManualSide(){
+  const sides=new Set();
+  C.accounts.forEach(a=>(a.livePositions||[]).forEach(p=>{
+    const amt=parseFloat(p.positionAmt||0);
+    if(Math.abs(amt)>0)sides.add(amt>0?'LONG':'SHORT');
+  }));
+  if(sides.size===1)return [...sides][0];
+  return null;   // لا صفقات أو الجهتان معاً
 }
 function masterOn(){
   if(!C.settings.lockMaster)return false;
@@ -1032,17 +1039,22 @@ function rDashHdr(st){const hdr=el('div',{className:'dash-hdr'});const r1=el('di
   if(C.settings.lockAutoTrailOn)names.push('تريلنج');
   if(C.settings.lockAutoLossOn)names.push('وقف');
   const armed=!!C.settings.lockOn&&names.length>0;
-  const R=trendRemaining();
+  // الشارة تتبع جهة صفقاتك المفتوحة — فما يهدّد اللونج غير ما يهدّد الشورت
+  const side=openManualSide()||'LONG';
+  const R=trendRemaining(side);
   if(R){
-    const col=!armed?'var(--text2)':R.ready?'var(--green)':R.left<=R.need?'var(--orange)':'var(--text2)';
+    const col=!armed?'var(--text2)':R.ready?'var(--green)':(R.known&&R.left<=R.need)?'var(--orange)':'var(--text2)';
     const why=!C.settings.lockOn?'نظام القفل مغلق':!names.length?'لا ميزة تلقائية مفعّلة':null;
-    const pill=el('div',{title:(why?'⚠️ '+why+' — الرقم للعلم فقط\n':'يتفعّل ('+names.join(' · ')+') ')+'عند '+R.need+'%'+(R.ind==='both'?' للاثنين':'')+' — '+(R.ready?'الشرط متحقّق':'باقٍ '+R.left.toFixed(2)+'%'),
+    const leg=(n,g)=>!g||g.dist==null?'':'\n'+n+': '+(g.crossed?'انعكس (عاكس '+g.dist.toFixed(2)+'%)':g.dist.toFixed(2)+'% من الخط')+(g.tf?' · '+g.tf:'');
+    const pill=el('div',{title:(why?'⚠️ '+why+' — الرقم للعلم فقط\n':'يتفعّل ('+names.join(' · ')+') ')
+        +'عند '+R.need+'%'+(R.ind==='both'?' للاثنين':'')+' — جهة '+side
+        +(R.ind!=='ema'?leg('السوبر',R.st):'')+(R.ind!=='st'?leg('EMA200',R.ema):''),
       style:{display:'flex',alignItems:'center',gap:'5px',padding:'3px 9px',borderRadius:'20px',fontSize:'11px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap',flexShrink:'0',
         border:'1px solid '+col+'88',background:armed&&R.ready?'rgba(46,213,115,.12)':'var(--bg3)',color:col,opacity:armed?'1':'.75',
         animation:armed&&R.ready?'blink 1.5s infinite':'none'},
       onClick:()=>{C.page='lock';send('lockRefresh',{});render();}});
     pill.appendChild(el('span',{},armed?'🤖':'💤'));
-    pill.appendChild(el('span',{},R.ready?'⚡ متحقّق':'باقٍ '+R.left.toFixed(2)+'%'));
+    pill.appendChild(el('span',{},R.ready?'⚡ متحقّق':R.known?'باقٍ '+R.left.toFixed(2)+'%':'—'));
     const trk=el('div',{style:{width:'34px',height:'5px',background:'var(--bg2)',borderRadius:'3px',overflow:'hidden',flexShrink:'0'}});
     trk.appendChild(el('div',{style:{width:(R.ready?100:R.pct)+'%',height:'100%',background:col,borderRadius:'3px'}}));
     pill.appendChild(trk);
@@ -1383,13 +1395,18 @@ function rLockPage(){
     const b=el('div',{style:{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:'10px',padding:'10px 12px',marginBottom:'10px'}});
     b.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'800',marginBottom:'7px'}},'⚙️ فريم ومؤشّر هذا القسم'));
     b.appendChild(el('div',{style:{fontSize:'10px',color:'var(--text2)',marginBottom:'8px',lineHeight:'1.6'}},'خاصّان بالتنفيذ التلقائي — لا يمسّان فريم الماسح ولا فلاتر الإشارات.'));
-    const r1=el('div',{style:{display:'flex',gap:'4px',flexWrap:'wrap',marginBottom:'8px',alignItems:'center'}});
-    r1.appendChild(el('span',{style:{fontSize:'10px',color:'var(--text2)'}},'الفريم:'));
-    ['5m','15m','30m','1h','2h','4h','1d'].forEach(v=>{
-      const on=(C.settings.lockTrendTF||'1h')===v;
-      r1.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'3px 9px',fontWeight:on?'800':'600',background:on?'rgba(0,229,255,.12)':'var(--bg2)',borderColor:on?'var(--accent)':'var(--border)',color:on?'var(--accent)':'var(--text2)'},onClick:()=>save({lockTrendTF:v})},v));
-    });
-    b.appendChild(r1);
+    // فريم لكل مؤشّر: السوبر يُقرأ عادةً على ٤ ساعات و EMA200 على ساعة
+    const tfRow=(lbl,key,def)=>{
+      const r=el('div',{style:{display:'flex',gap:'4px',flexWrap:'wrap',marginBottom:'6px',alignItems:'center'}});
+      r.appendChild(el('span',{style:{fontSize:'10px',color:'var(--text2)',minWidth:'74px'}},lbl));
+      ['1h','4h'].forEach(v=>{
+        const on=(C.settings[key]||def)===v;
+        r.appendChild(el('button',{className:'btn',style:{fontSize:'10px',padding:'3px 12px',fontWeight:on?'800':'600',background:on?'rgba(0,229,255,.12)':'var(--bg2)',borderColor:on?'var(--accent)':'var(--border)',color:on?'var(--accent)':'var(--text2)'},onClick:()=>save({[key]:v})},v));
+      });
+      return r;
+    };
+    b.appendChild(tfRow('فريم السوبر:','lockTrendTFst','4h'));
+    b.appendChild(tfRow('فريم EMA200:','lockTrendTFema','1h'));
     const r2=el('div',{style:{display:'flex',gap:'4px',flexWrap:'wrap',alignItems:'center'}});
     r2.appendChild(el('span',{style:{fontSize:'10px',color:'var(--text2)'}},'المؤشّر:'));
     [['ema','EMA200'],['st','سوبر تريند'],['both','الاثنان معاً']].forEach(([v,lb])=>{
@@ -1399,36 +1416,50 @@ function rLockPage(){
     b.appendChild(r2);
     if((C.settings.lockTrendInd||'both')==='both')
       b.appendChild(el('div',{style:{fontSize:'10px',color:'var(--orange)',marginTop:'6px'}},'⚠️ «الاثنان معاً» ينتظر اقتراب السوبر و EMA200 في آنٍ واحد — أندر وأوثق.'));
-    // القراءة الحالية على هذا الفريم
-    const T=L?.trend;
+    // القراءة الحالية — الخطّان كلٌّ على فريمه، والحكم لكل جهة على حدة
+    const T=L?.trend, SD=L?.trendSides;
     if(T?.btcPrice){
-      const dist=(v)=>v?Math.abs((T.btcPrice-v)/T.btcPrice*100):null;
-      const fmt=(v)=>v===null?'—':v.toFixed(2)+'%';
-      const sD=dist(T.stValue), eD=dist(T.emaValue);
-      const st=el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'8px',paddingTop:'8px',borderTop:'1px solid var(--border)',display:'flex',gap:'12px',flexWrap:'wrap'}});
-      st.appendChild(el('span',{},'BTC '+T.btcPrice));
-      st.appendChild(el('span',{style:{color:T.stDir==='up'?'var(--green)':'var(--red)'}},'سوبر '+(T.stDir==='up'?'▲':'▼')+' · '+fmt(sD)));
-      st.appendChild(el('span',{style:{color:T.emaSide==='above'?'var(--green)':'var(--red)'}},'EMA200 '+(T.emaSide==='above'?'▲':'▼')+' · '+fmt(eD)));
-      b.appendChild(st);
-
-      // كم بقي حتى يتحقّق الشرط؟
-      // 'both' يشترط اقتراب الاثنين، فالأبعد هو الذي يحكم
-      const R=trendRemaining();
-      if(R){
-        const {cur,left,ready,pct,need,ind}=R;
-        const bar=el('div',{style:{marginTop:'9px',paddingTop:'9px',borderTop:'1px solid var(--border)'}});
-        const row=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'5px',flexWrap:'wrap',gap:'6px'}});
-        row.appendChild(el('span',{style:{fontSize:'10px',color:'var(--text2)'}},'يتفعّل عند '+need+'%'+(ind==='both'?' للاثنين':'')));
-        row.appendChild(el('span',{style:{fontSize:'13px',fontWeight:'800',color:ready?'var(--green)':left<=need?'var(--orange)':'var(--text2)'}},
-          ready?'⚡ الشرط متحقّق':'باقٍ '+left.toFixed(2)+'%'));
-        bar.appendChild(row);
-        const track=el('div',{style:{height:'7px',background:'var(--bg2)',borderRadius:'4px',overflow:'hidden'}});
-        track.appendChild(el('div',{style:{width:(ready?100:pct)+'%',height:'100%',borderRadius:'4px',background:ready?'var(--green)':pct>60?'var(--orange)':'var(--accent)',transition:'width .3s'}}));
-        bar.appendChild(track);
-        bar.appendChild(el('div',{style:{fontSize:'9px',color:'var(--text2)',marginTop:'4px'}},
-          ind==='both'?('الأبعد الآن: '+fmt(cur)+' — وهو الذي يحكم'):('المسافة الحالية: '+fmt(cur))));
-        b.appendChild(bar);
-      }
+      const line=el('div',{style:{fontSize:'10px',color:'var(--text2)',marginTop:'8px',paddingTop:'8px',borderTop:'1px solid var(--border)',display:'flex',gap:'12px',flexWrap:'wrap'}});
+      line.appendChild(el('span',{},'BTC '+T.btcPrice));
+      if(T.stValue)line.appendChild(el('span',{style:{color:T.stDir==='up'?'var(--green)':'var(--red)'}},
+        'سوبر '+(T.stTf||'')+' '+(T.stDir==='up'?'▲ صاعد':'▼ نازل')+' · '+T.stValue.toFixed(0)));
+      if(T.emaValue)line.appendChild(el('span',{style:{color:T.emaSide==='above'?'var(--green)':'var(--red)'}},
+        'EMA200 '+(T.emaTf||'')+' '+(T.emaSide==='above'?'▲ السعر فوقه':'▼ السعر تحته')+' · '+T.emaValue.toFixed(0)));
+      b.appendChild(line);
+    }
+    if(SD){
+      const ind=C.settings.lockTrendInd||'both';
+      // الخطّ الذي عبره السعر أصلاً ليس انعكاساً قادماً — يُعرض «انعكس» لا مسافة
+      const chip=(name,g)=>{
+        if(!g||g.dist===null||g.dist===undefined)return el('span',{style:{fontSize:'9px',color:'var(--text2)'}},name+' —');
+        const txt=g.crossed?name+' 🔄 انعكس · عاكس '+g.dist.toFixed(2)+'%'
+                 :g.ok?name+' ✓ قريب '+g.dist.toFixed(2)+'%'
+                 :name+' ✗ باقٍ '+g.left.toFixed(2)+'%';
+        const col=g.crossed?'var(--orange)':g.ok?'var(--green)':'var(--text2)';
+        return el('span',{style:{fontSize:'9px',fontWeight:'700',color:col,background:'var(--bg2)',border:'1px solid '+col+'55',borderRadius:'6px',padding:'2px 6px'}},txt);
+      };
+      [['LONG','🟢 صفقات LONG'],['SHORT','🔴 صفقات SHORT']].forEach(([sd,lb])=>{
+        const R=SD[sd];if(!R)return;
+        const known=typeof R.left==='number'&&isFinite(R.left);
+        const ready=!!R.trigger;
+        const pct=ready?100:known?Math.max(0,Math.min(100,(R.need/(R.need+R.left))*100)):0;
+        const box=el('div',{style:{marginTop:'8px',paddingTop:'8px',borderTop:'1px solid var(--border)'}});
+        const top=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'6px',flexWrap:'wrap',marginBottom:'5px'}});
+        top.appendChild(el('span',{style:{fontSize:'10px',fontWeight:'700'}},lb));
+        top.appendChild(el('span',{style:{fontSize:'12px',fontWeight:'800',color:ready?'var(--green)':'var(--text2)'}},
+          ready?'⚡ متحقّق':known?'باقٍ '+R.left.toFixed(2)+'%':'—'));
+        box.appendChild(top);
+        const chips=el('div',{style:{display:'flex',gap:'5px',flexWrap:'wrap',marginBottom:'5px'}});
+        if(ind!=='ema')chips.appendChild(chip('السوبر',R.st));
+        if(ind!=='st')chips.appendChild(chip('EMA200',R.ema));
+        box.appendChild(chips);
+        const track=el('div',{style:{height:'6px',background:'var(--bg2)',borderRadius:'4px',overflow:'hidden'}});
+        track.appendChild(el('div',{style:{width:pct+'%',height:'100%',borderRadius:'4px',background:ready?'var(--green)':pct>60?'var(--orange)':'var(--accent)',transition:'width .3s'}}));
+        box.appendChild(track);
+        b.appendChild(box);
+      });
+      b.appendChild(el('div',{style:{fontSize:'9px',color:'var(--text2)',marginTop:'6px',lineHeight:'1.6'}},
+        'الخطّ الذي عبره السعر يُحتسب «انعكاساً متحقّقاً» — و«الاثنان معاً» ينتظر تحقّق الآخر قبل التنفيذ.'));
     }
     s4.appendChild(b);
   }
