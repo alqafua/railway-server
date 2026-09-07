@@ -160,6 +160,9 @@ function selectSymForSettings(sym){
 }
 let btSecOpen={s1:false,s2:false,s3:false,s4:false,s5info:false,respTbl:false,tunedTbl:false,mgmtTbl:false,sumTbl:false,tradesTbl:false};
 let settingsTab='cornix',showForm=false,formAccId=null,showLog=false,showDCA=false,dcaSym='',dcaSide='LONG';
+// صحيح ما دام فيه تعديل محلي (حقل نصي/تبديل) لم يُحفظ بعد بضغطة "حفظ الإعدادات" —
+// يمنع بثّ الإعدادات القادم من الخادم (من جهاز آخر أو تغيير غير متعلّق) من محو التعديل قبل حفظه
+let settingsDirty=false;
 let showManualOrder=false,manualOrderAccId=null,reportAccId=null;
 let fd={name:'',apiKey:'',apiSecret:'',sizeRatio:'1',tag:'personal',isMaster:false,copyExisting:false};
 let audioCtx=null,toastRef=null,rPend=false,ws=null,wsReconn=null;
@@ -334,7 +337,7 @@ function handleServerMsg(msg){
   switch(msg.type){
     case 'init':
       Object.assign(C,msg.data);
-      if(msg.data.settings)C.settings={...C.settings,...msg.data.settings};
+      if(msg.data.settings&&!settingsDirty)C.settings={...C.settings,...msg.data.settings};
       if(msg.data.settings?.dirFilter&&msg.data.settings.dirFilter!=='all')C.filter=msg.data.settings.dirFilter;
       if(!C.btBusy&&(C.btDownloading||C.btUpdating||C.btRunning||C.btOptimizing||C.btOptimizingSym||C.btOptimizingRespect||C.btOptimizingTuned||C.btOptimizingMgmt)){
         C.btDownloading=false;C.btUpdating=false;C.btRunning=false;C.btOptimizing=false;C.btOptimizingSym=false;C.btOptimizingRespect=false;C.btOptimizingTuned=false;C.btOptimizingMgmt=false;C.btProgress=null;
@@ -344,7 +347,7 @@ function handleServerMsg(msg){
       break;
     case 'state':
       Object.assign(C,msg.data);
-      if(msg.data.settings)C.settings={...C.settings,...msg.data.settings};
+      if(msg.data.settings&&!settingsDirty)C.settings={...C.settings,...msg.data.settings};
       // لا render - فقط تحديث البيانات
       break;
     case 'alert':
@@ -362,7 +365,7 @@ function handleServerMsg(msg){
       updateGridOnly();
       return;
     case 'progress':C.progress=msg.data;break;
-    case 'settings':C.settings={...C.settings,...msg.data};break;
+    case 'settings':if(!settingsDirty)C.settings={...C.settings,...msg.data};break;
     case 'symbolSettings':C.symbolSettings=msg.data||{};if(symSetSym)selectSymForSettings(symSetSym);needRender=true;break;
     case 'alerts':C.alerts=msg.data;needRender=true;break;
     case 'trades':C.openTrades=msg.data;needRender=true;break;
@@ -669,10 +672,10 @@ function rNav(){const nav=el('div',{className:'navbar'});nav.appendChild(el('but
 function rSettingsPage(){const page=el('div',{className:'set-page'});page.appendChild(el('div',{className:'set-title'},'⚙️ الإعدادات'));const tabs=el('div',{className:'set-tabs'});[['cornix','⚙️ Cornix'],['telegram','📤 تلغرام'],['trailing','🟣 Trailing RSI'],['liquidity','💧 السيولة'],['scanner','🔍 السكانر'],['symbols','🪙 لكل عملة']].forEach(([k,lb])=>{tabs.appendChild(el('button',{className:'set-tab '+(settingsTab===k?'active':''),onClick:()=>{settingsTab=k;render();}},lb));});page.appendChild(tabs);
 const S=(t)=>{const s=el('div',{className:'set-section'});s.appendChild(el('div',{className:'set-sec-title'},t));return s;};
 const G=()=>el('div',{className:'set-grid'});
-const F=(label,type,key,ex={})=>{const f=el('div',{className:'set-field'});f.appendChild(el('label',{},label));const i=el('input',{type,value:String(C.settings[key]||''),...ex});i.onchange=()=>{C.settings[key]=type==='number'?parseFloat(i.value)||0:i.value;};f.appendChild(i);return f;};
-const FS=(label,key,opts)=>{const f=el('div',{className:'set-field'});f.appendChild(el('label',{},label));const s=el('select',{});opts.forEach(([v,t])=>{const o=el('option',{value:v},t);if(String(C.settings[key])===v)o.setAttribute('selected','');s.appendChild(o);});s.onchange=()=>{C.settings[key]=s.value;render();};f.appendChild(s);return f;};
-const T=(title,subs,key)=>{const on=C.settings[key]||false;const row=el('div',{className:'set-toggle '+(on?'on':''),onClick:()=>{C.settings[key]=!C.settings[key];render();}});const knob=el('div',{className:'stog-knob '+(on?'on':'')});knob.appendChild(el('div',{className:'stog-ball'}));row.appendChild(knob);const lbl=el('div',{className:'stog-label'});lbl.appendChild(el('div',{className:'stog-title'},title));if(subs)lbl.appendChild(el('div',{className:'stog-sub'},on?subs[0]:subs[1]));row.appendChild(lbl);return row;};
-const SaveBtn=()=>el('button',{className:'set-save-btn',onClick:()=>{sendSettings(C.settings);showNotif('✅ تم حفظ الإعدادات بنجاح!');}},'\uD83D\uDCBE حفظ الإعدادات');
+const F=(label,type,key,ex={})=>{const f=el('div',{className:'set-field'});f.appendChild(el('label',{},label));const i=el('input',{type,value:String(C.settings[key]||''),...ex});i.onchange=()=>{C.settings[key]=type==='number'?parseFloat(i.value)||0:i.value;settingsDirty=true;};f.appendChild(i);return f;};
+const FS=(label,key,opts)=>{const f=el('div',{className:'set-field'});f.appendChild(el('label',{},label));const s=el('select',{});opts.forEach(([v,t])=>{const o=el('option',{value:v},t);if(String(C.settings[key])===v)o.setAttribute('selected','');s.appendChild(o);});s.onchange=()=>{C.settings[key]=s.value;settingsDirty=true;render();};f.appendChild(s);return f;};
+const T=(title,subs,key)=>{const on=C.settings[key]||false;const row=el('div',{className:'set-toggle '+(on?'on':''),onClick:()=>{C.settings[key]=!C.settings[key];settingsDirty=true;render();}});const knob=el('div',{className:'stog-knob '+(on?'on':'')});knob.appendChild(el('div',{className:'stog-ball'}));row.appendChild(knob);const lbl=el('div',{className:'stog-label'});lbl.appendChild(el('div',{className:'stog-title'},title));if(subs)lbl.appendChild(el('div',{className:'stog-sub'},on?subs[0]:subs[1]));row.appendChild(lbl);return row;};
+const SaveBtn=()=>el('button',{className:'set-save-btn',onClick:()=>{sendSettings(C.settings);settingsDirty=false;showNotif('✅ تم حفظ الإعدادات بنجاح!');}},'\uD83D\uDCBE حفظ الإعدادات');
 if(settingsTab==='cornix'){
   const s0=S('🧬 نظام إعدادات العملات المخصصة');
   s0.appendChild(T('استخدام إعدادات كل عملة',['مفعّل ✅ — كل عملة تستخدم إعداداتها الخاصة (المحفوظة/المرفوعة) إن وُجدت لها','معطّل ❌ — جميع العملات تستخدم الإعدادات العامة فقط، حتى لو كانت محفوظة لها إعدادات خاصة'],'useSymbolSettings'));
@@ -965,9 +968,9 @@ if(settingsTab==='symbols'){
 
   if(!C.settings.lockFields)C.settings.lockFields={amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false};
   const lf=C.settings.lockFields;
-  const TL=(title,subs,key)=>{const on=!!lf[key];const row=el('div',{className:'set-toggle '+(on?'on':''),onClick:()=>{lf[key]=!on;render();}});const knob=el('div',{className:'stog-knob '+(on?'on':'')});knob.appendChild(el('div',{className:'stog-ball'}));row.appendChild(knob);const lbl=el('div',{className:'stog-label'});lbl.appendChild(el('div',{className:'stog-title'},title));if(subs)lbl.appendChild(el('div',{className:'stog-sub'},on?subs[0]:subs[1]));row.appendChild(lbl);return row;};
-  const GF=(label,key,ex={})=>{const f=el('div',{className:'set-field'});f.appendChild(el('label',{},label));const i=el('input',{type:'number',value:String(C.settings[key]||''),...ex});i.onchange=()=>{C.settings[key]=parseFloat(i.value)||0;};f.appendChild(i);return f;};
-  const GFT=(label,key,ex={})=>{const f=el('div',{className:'set-field'});f.appendChild(el('label',{},label));const i=el('input',{type:'text',value:String(C.settings[key]||''),...ex});i.onchange=()=>{C.settings[key]=i.value;};f.appendChild(i);return f;};
+  const TL=(title,subs,key)=>{const on=!!lf[key];const row=el('div',{className:'set-toggle '+(on?'on':''),onClick:()=>{lf[key]=!on;settingsDirty=true;render();}});const knob=el('div',{className:'stog-knob '+(on?'on':'')});knob.appendChild(el('div',{className:'stog-ball'}));row.appendChild(knob);const lbl=el('div',{className:'stog-label'});lbl.appendChild(el('div',{className:'stog-title'},title));if(subs)lbl.appendChild(el('div',{className:'stog-sub'},on?subs[0]:subs[1]));row.appendChild(lbl);return row;};
+  const GF=(label,key,ex={})=>{const f=el('div',{className:'set-field'});f.appendChild(el('label',{},label));const i=el('input',{type:'number',value:String(C.settings[key]||''),...ex});i.onchange=()=>{C.settings[key]=parseFloat(i.value)||0;settingsDirty=true;};f.appendChild(i);return f;};
+  const GFT=(label,key,ex={})=>{const f=el('div',{className:'set-field'});f.appendChild(el('label',{},label));const i=el('input',{type:'text',value:String(C.settings[key]||''),...ex});i.onchange=()=>{C.settings[key]=i.value;settingsDirty=true;};f.appendChild(i);return f;};
   const sLock=S('🔒 إعدادات ثابتة عامة — تُطبَّق على كل العملات');
   sLock.appendChild(el('div',{className:'set-info'},'عند تفعيل أي بند هنا، قيمته تُؤخذ دائمًا من الإعدادات العامة لكل العملات — حتى لو كانت للعملة إعدادات خاصة مختلفة. وحقول "الحد الأقصى" تُطبَّق كسقف إجباري على القيمة النهائية لكل العملات بلا استثناء، حتى لو تجاوزته الإعدادات العامة أو الخاصة.'));
   sLock.appendChild(TL('مبلغ الصفقة',['ثابت — من الإعدادات العامة','يتغيّر حسب إعداد كل عملة'],'amt'));
@@ -992,7 +995,7 @@ if(settingsTab==='symbols'){
   gMax.appendChild(GF('الحد الأقصى لحجم الدخول % (لكل العملات)','cxAmtMax',{step:'0.1',min:'0',placeholder:'٠ = بدون حد'}));
   gMax.appendChild(GF('الحد الأقصى لـ SL % (لكل العملات)','cxSLMax',{step:'0.1',min:'0',placeholder:'٠ = بدون حد'}));
   sLock.appendChild(gMax);
-  const lockSaveBtn=el('button',{className:'set-save-btn',style:{marginTop:'14px'},onClick:()=>{sendSettings(C.settings);showNotif('✅ تم حفظ الإعدادات الثابتة العامة');}});
+  const lockSaveBtn=el('button',{className:'set-save-btn',style:{marginTop:'14px'},onClick:()=>{sendSettings(C.settings);settingsDirty=false;showNotif('✅ تم حفظ الإعدادات الثابتة العامة');}});
   lockSaveBtn.textContent='💾 حفظ الإعدادات الثابتة العامة';
   sLock.appendChild(lockSaveBtn);
   page.appendChild(sLock);
@@ -4011,6 +4014,7 @@ function rBacktestPage(){
 // حاجز أخطاء: استثناء أثناء الرسم كان يترك الصفحة بيضاء بلا أي أثر —
 // الآن يظهر الخطأ ويبقى زر للعودة بدل التعليق الصامت
 function render(){
+  if(C.page!=='settings'&&settingsDirty)settingsDirty=false;
   try{ renderInner(); }
   catch(e){
     console.error('render error:',e);
