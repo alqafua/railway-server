@@ -1308,13 +1308,13 @@ function rLockPage(){
       });
       row.appendChild(kr);
       // نعرض ما سيحدث فعلاً: التقليم يتطلّب تشغيل النظام إضافةً إلى الحد اليومي
-      if(d.manual&&!d.baseline&&L.cap>0&&d.margin>L.cap*1.02){
-        const extra=(d.margin-L.cap).toFixed(2);
+      if(d.manual&&!d.baseline&&L.perTradeCap>0&&d.margin>L.perTradeCap*1.02){
+        const extra=(d.margin-L.perTradeCap).toFixed(2);
         let txt,col;
         if(!C.settings.lockOn){txt='⚠️ زيادة $'+extra+' فوق الحد — لن تُقلَّم لأن نظام القفل متوقف';col='var(--red)';}
         else if(!C.settings.lockDailyOn){txt='⚠️ زيادة $'+extra+' — لن تُقلَّم لأن «الحد اليومي» معطّل';col='var(--red)';}
         else if(L.locked){txt='⏸ زيادة $'+extra+' — التقليم متوقف أثناء فترة القفل';col='var(--orange)';}
-        else{txt='✂️ ستُقلَّم إلى $'+L.cap+' (زيادة $'+extra+') خلال ١٥ ثانية';col='var(--orange)';}
+        else{txt='✂️ ستُقلَّم إلى $'+L.perTradeCap+' (زيادة $'+extra+') خلال ١٥ ثانية';col='var(--orange)';}
         row.appendChild(el('div',{style:{fontSize:'10px',color:col,marginTop:'4px',fontWeight:'700'}},txt));
       }
       sD.appendChild(row);
@@ -1338,11 +1338,12 @@ function rLockPage(){
 
   // ── (2)+(3) الحد اليومي ──
   const s2=S('💰 ٢+٣ — الحد اليومي للتداول اليدوي','var(--orange)');
-  s2.appendChild(el('div',{style:{fontSize:'11px',color:'var(--text2)',lineHeight:'1.7',marginBottom:'6px'}},'الرقم يعمل بوظيفتين: (أ) أقصى هامش لكل صفقة يدوية — الزيادة تُقلَّم تلقائياً. (ب) سقف الخسارة اليومية — عند بلوغه يُقفل التداول اليدوي وتُغلق أي صفقة جديدة فوراً. تقدر تفتح صفقات كما تشاء ما دمت لم تبلغ الحد.'));
+  s2.appendChild(el('div',{style:{fontSize:'11px',color:'var(--text2)',lineHeight:'1.7',marginBottom:'6px'}},'خانتان مستقلّتان: (٢) أقصى هامش لكل صفقة يدوية — الزيادة تُقلَّم تلقائياً. (٣) سقف إجمالي الخسائر اليومية — عند بلوغه (خسارة محقّقة + عائمة) يُقفل كل الصفقات اليدوية المفتوحة ويمنع فتح صفقات جديدة فوراً. تقدر تفتح صفقات كما تشاء ما دمت لم تبلغ الحد.'));
   s2.appendChild(TOG('تفعيل الحد اليومي','lockDailyOn','',mLocked));
   if(C.settings.lockDailyOn){
     const g=G();
-    g.appendChild(NUM('الحد بالدولار $','lockDailyAmt',{step:'0.5',min:'1'},mLocked,'هامش الصفقة + سقف الخسارة'));
+    g.appendChild(NUM('الحد الأقصى لهامش الصفقة الواحدة $','lockPerTradeAmt',{step:'0.5',min:'1'},mLocked,'يُقلَّم أي صفقة يدوية هامشها أكبر تلقائياً — ٠ = بدون حد'));
+    g.appendChild(NUM('الحد اليومي لإجمالي الخسائر $','lockDailyAmt',{step:'0.5',min:'1'},mLocked,'يقفل كل الصفقات اليدوية ويمنع فتح جديدة عند بلوغه — ٠ = بدون حد'));
     g.appendChild(NUM('كل كم ساعة يُفتح','lockDailyHours',{step:'1',min:'1',max:'168'},mLocked,'مدة النافذة وفترة الانتظار'));
     s2.appendChild(g);
   }

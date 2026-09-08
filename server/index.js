@@ -92,7 +92,8 @@ const DEFAULT_SETTINGS = {
   lockAutoSLon: false,      // (1) ستوب تلقائي للصفقات اليدوية
   lockAutoSLpct: 2,         // نسبة الستوب من السعر %
   lockDailyOn: false,       // (2)+(3) الحد اليومي
-  lockDailyAmt: 10,         // الحد بالدولار (هامش الصفقة + سقف الخسارة اليومية)
+  lockPerTradeAmt: 10,      // (2) أقصى هامش للصفقة اليدوية الواحدة — الزيادة تُقلَّم تلقائياً
+  lockDailyAmt: 10,         // (3) سقف إجمالي الخسائر اليومية — عند بلوغه يُقفل التداول اليدوي وتُغلق كل صفقاته
   lockDailyHours: 24,       // مدة النافذة / الانتظار بالساعات
   lockAutoBEon: false,      // (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه
   // فريم ومؤشّر مستقلّان لهذا القسم — لا يمسّان فريم الماسح ولا السوبر العام.
@@ -1680,11 +1681,12 @@ async function checkDailyLossLimit() {
 function lockPublic() {
   const L = STATE.lockState;
   const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+  const perTradeCap = parseFloat(STATE.settings.lockPerTradeAmt) || 0;
   const hrs = Math.max(1, parseFloat(STATE.settings.lockDailyHours) || 24);
   return {
     windowStart: L.windowStart, realizedLoss: L.realizedLoss || 0,
     lockedUntil: L.lockedUntil || 0, remaining: Math.max(0, cap - (L.realizedLoss || 0)),
-    cap, hours: hrs, locked: lockIsLocked(),
+    cap, perTradeCap, hours: hrs, locked: lockIsLocked(),
     windowEnds: L.lockedUntil || (L.windowStart + hrs * HOUR_MS),
     trades: (L.trades || []).slice(0, 20),
     floating: manualFloatingLoss(),
@@ -2632,9 +2634,9 @@ async function monitorLock() {
       );
     }
 
-    // ── (2) تقليم الزيادة فوق الحد اليومي للصفقات اليدوية ──
+    // ── (2) تقليم الزيادة فوق الحد الأقصى لهامش الصفقة اليدوية الواحدة ──
     if (STATE.settings.lockDailyOn && !lockIsLocked()) {
-      const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+      const cap = parseFloat(STATE.settings.lockPerTradeAmt) || 0;
       if (cap > 0) {
         for (const pos of positions) {
           const sym = pos.symbol;
@@ -3623,7 +3625,7 @@ async function handleClientMsg(msg, ws) {
             break;   // لا نطبّق أي تغيير
           }
         } else {
-          const PROTECTED = ['lockDailyOn', 'lockDailyAmt', 'lockDailyHours', 'lockMaster', 'lockOn', 'lockAllSettings'];
+          const PROTECTED = ['lockDailyOn', 'lockPerTradeAmt', 'lockDailyAmt', 'lockDailyHours', 'lockMaster', 'lockOn', 'lockAllSettings'];
           const blocked = PROTECTED.filter(k => msg.data[k] !== undefined && msg.data[k] !== STATE.settings[k]);
           for (const k of blocked) delete msg.data[k];
           if (blocked.length) {
@@ -4638,10 +4640,10 @@ async function handleClientMsg(msg, ws) {
         const amtPct = parseFloat(pct || 5) / 100;
         // الهامش المطلوب بالدولار
         let margin = useAmt ? parseFloat(amt || 0) : bal * amtPct;
-        // ── نظام القفل: اسقف الهامش عند الحد اليومي (تقليم قبل الفتح = بدون عمولة زائدة) ──
+        // ── نظام القفل: اسقف الهامش عند الحد الأقصى للصفقة الواحدة (تقليم قبل الفتح = بدون عمولة زائدة) ──
         let trimmed = 0;
         if (STATE.settings.lockOn && STATE.settings.lockDailyOn) {
-          const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+          const cap = parseFloat(STATE.settings.lockPerTradeAmt) || 0;
           if (cap > 0 && margin > cap) { trimmed = margin - cap; margin = cap; }
         }
         const rawQty = (margin * leverage) / price;
@@ -4702,13 +4704,14 @@ async function handleClientMsg(msg, ws) {
               }
             }
           }
-          const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
+          const perTradeCap = parseFloat(STATE.settings.lockPerTradeAmt) || 0;
+          const dailyCap = parseFloat(STATE.settings.lockDailyAmt) || 0;
           lockNotify(
             `📈 صفقة يدوية — #${sym.replace('USDT', '/USDT')}\n` +
             `${side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'} · ${leverage}x · هامش $${margin.toFixed(2)}` +
-            (trimmed > 0 ? `\n✂️ قُلّمت الزيادة: $${trimmed.toFixed(2)} (الحد $${cap})` : '') +
+            (trimmed > 0 ? `\n✂️ قُلّمت الزيادة: $${trimmed.toFixed(2)} (الحد $${perTradeCap})` : '') +
             slLine +
-            (STATE.settings.lockDailyOn ? `\n💰 المتبقي من الحد اليومي: $${lockRemaining().toFixed(2)} من $${cap}` : '')
+            (STATE.settings.lockDailyOn ? `\n💰 المتبقي من الحد اليومي: $${lockRemaining().toFixed(2)} من $${dailyCap}` : '')
           );
           broadcast({ type: 'lockState', data: lockPublic() });
         }
