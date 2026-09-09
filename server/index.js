@@ -5250,21 +5250,24 @@ async function init() {
   // تغييرها بنفسه من الواجهة. بطلب صريح منه نصحّحها هنا بتجاوز القفل (مسار الكود
   // عند الإقلاع، لا مسار الواجهة المحمي). العلم يمنع تكرارها لو غيّرها المستخدم
   // بنفسه لاحقاً إلى "all" عمداً بعد انتهاء القفل
-  if (!STATE.settings.lockAutoScopeMigrated) {
+  // v2: الإصدار الأول من هذا التصحيح صحّح STATE.settings فقط، فأرجعتها لقطة
+  // القفل الشامل (snapshot) للقيمة الخاطئة القديمة خلال ثوانٍ — راجع تصحيح اللقطة
+  // بعد تحميل lockState أدناه. لهذا فلاغ جديد لا القديم المستهلك
+  if (!STATE.settings.lockAutoScopeMigratedV2) {
     if (STATE.settings.lockAutoScope === 'all') {
       STATE.settings.lockAutoScope = 'bot';
       console.log('🔧 تصحيح: lockAutoScope كانت "all" — رُجّعت لـ"bot" (طلب المستخدم أثناء القفل الشامل)');
     }
-    STATE.settings.lockAutoScopeMigrated = true;
+    STATE.settings.lockAutoScopeMigratedV2 = true;
   }
   // تصحيح مرّة واحدة فقط بطلب صريح من المستخدم: كتب Entry Trailing غلطاً 0.2%
   // وقصده 2.5%، والقفل الشامل يمنعه من تعديلها بنفسه من الواجهة
-  if (!STATE.settings.cxEntryTrailMigrated) {
+  if (!STATE.settings.cxEntryTrailMigratedV2) {
     if (STATE.settings.cxEntryTrail === '0.2%') {
       STATE.settings.cxEntryTrail = '2.5%';
       console.log('🔧 تصحيح: cxEntryTrail كانت "0.2%" — رُجّعت لـ"2.5%" (طلب المستخدم أثناء القفل الشامل)');
     }
-    STATE.settings.cxEntryTrailMigrated = true;
+    STATE.settings.cxEntryTrailMigratedV2 = true;
   }
   STATE.symbolSettings = db.loadSymbolSettings();
   // تحديث إعدادات التلغرام من env vars عند كل تشغيل
@@ -5308,6 +5311,16 @@ async function init() {
   STATE.sentMsgIds = db.loadSentMsgIds();
   const savedLock = db.loadLockState();
   if (savedLock) STATE.lockState = { ...STATE.lockState, ...savedLock, manualSyms: savedLock.manualSyms || {}, beDone: savedLock.beDone || {} };
+  // القفل الشامل يحتفظ بلقطة (snapshot) من الإعدادات وقت تفعيله، ويُرجع أي انحراف
+  // عنها كل دورة — بما فيها تصحيحات الكود اللي فوق، فترجع القيمة القديمة الخاطئة
+  // خلال ثوانٍ لو ما صحّحنا اللقطة نفسها هنا أيضاً
+  if (STATE.lockState.snapshot) {
+    if (STATE.lockState.snapshot.lockAutoScope !== STATE.settings.lockAutoScope)
+      STATE.lockState.snapshot.lockAutoScope = STATE.settings.lockAutoScope;
+    if (STATE.lockState.snapshot.cxEntryTrail !== STATE.settings.cxEntryTrail)
+      STATE.lockState.snapshot.cxEntryTrail = STATE.settings.cxEntryTrail;
+    lockSave();
+  }
   alertId = STATE.alerts.reduce((m, a) => Math.max(m, a.id || 0), 0);
   console.log(`📦 DB loaded: ${STATE.copyAccounts.length} accounts, ${STATE.openTrades.length} trades, ${STATE.dcaOrders.length} DCA orders`);
 
