@@ -1808,11 +1808,14 @@ function manualCheck(sym, pos) {
       ? { manual: false, why: `فُتحت مع الإشارة (فارق ${fmtGap(gap)})` }
       : { manual: true, why: `يدوية — الإشارة قبل ${fmtGap(gap)} من فتح المركز` };
   }
-  // بلا وقت للمقارنة: نرجع للاستنتاج القديم
-  if (rec) return { manual: false, why: 'أُرسلت إشارة تلغرام لهذا الرمز' };
-  if (STATE.sentSigs[sym]) return { manual: false, why: 'إشارة بوت نشطة لهذا الرمز' };
+  // صفقة يتابعها البوت فعلياً بسجل داخلي (لا مجرد إشارة أُرسلت يوماً) — دليل قوي يكفي وحده
   const t = STATE.openTrades.find(x => x.symbol === sym);
   if (t && !AUTO_TRADE_LABELS.includes(t.label)) return { manual: false, why: `صفقة بوت (${t.label})` };
+  // بلا توقيت دقيق للمقارنة: مجرد وجود إشارة (قديمة أو غير مؤكدة الصلة) لا يثبت أن هذا المركز
+  // بالذات فُتح منها — ممكن يكون المستخدم دخل يدوياً على رمز له إشارة قديمة بلا علاقة.
+  // نحسبها يدوية احتياطاً، ونذكر وجود الإشارة للمعلومية فقط
+  if (rec) return { manual: true, why: 'يدوية — رغم وجود إشارة تلغرام سابقة لم تُطابق توقيت الفتح' };
+  if (STATE.sentSigs[sym]) return { manual: true, why: 'يدوية — رغم وجود إشارة بوت مسجلة لهذا الرمز' };
   return { manual: true, why: 'يدوية' };
 }
 function isManualPosition(sym, pos) { return manualCheck(sym, pos).manual; }
