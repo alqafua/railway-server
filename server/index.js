@@ -2553,6 +2553,15 @@ async function monitorLock() {
     if (!master?.apiKey) return;
     let positions = (master.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
 
+    // شبكة أمان: يفحص الأوقاف الافتراضية على سعر REST (positionRisk) كل ١٥ ثانية،
+    // مستقلة تماماً عن بث الـ WebSocket. لو توقّف البث اللحظي لعملة بعينها بصمت
+    // (انقطاع لا يظهر بأي سجل)، هذا الفحص المتكرر يبقى يلتقط بلوغ المستوى
+    // ولا تبقى الصفقة بلا حماية إلى أن يُلاحَظ الخلل يدوياً
+    for (const p of positions) {
+      const mk = parseFloat(p.markPrice);
+      if (mk) checkVStops(p.symbol, mk);
+    }
+
     // ── حماية بعد الإقلاع: أي صفقة قائمة في أول دورة تُسجَّل كخط أساس ──
     // (تحمي من التقليم/الإغلاق الخاطئ لو ضاع ملف الحالة أو أُعيد تشغيل السيرفر)
     if (!bootBaselineDone) {
@@ -4337,6 +4346,28 @@ async function handleClientMsg(msg, ws) {
       break;
     }
 
+    // اختبار حقيقي: يرد على آخر رسالة إشارة محفوظة بأمر الإغلاق فعلياً — للتأكد
+    // إن آلية "الرد على تلغرام" شغّالة فعلاً بدون انتظار وصول سعر لمستوى ما.
+    // تحذير: يغلق الصفقة فعلاً عند كل من يتابعها عبر كورنكس — ليس فحصاً بلا أثر.
+    case 'lockTestReply': {
+      const entries = Object.entries(STATE.sentMsgIds).filter(([, r]) => r?.id && r?.ts);
+      if (!entries.length) {
+        broadcast({ type: 'lockResult', data: { ok: false, action: 'testReply', error: 'لا توجد أي رسالة إشارة محفوظة للاختبار' } });
+        break;
+      }
+      entries.sort((a, b) => b[1].ts - a[1].ts);
+      const [sym] = entries[0];
+      try {
+        const cr = await cornixClose(sym);
+        lockNotify(`🧪 اختبار الرد — #${sym.replace('USDT', '/USDT')}\n` +
+          (cr.ok ? `📨 أُرسل «${cr.cmd}» رداً على ${cr.ids.map(i => '#' + i).join(' و ')}` : `⚠️ فشل: ${cr.why}`));
+        broadcast({ type: 'lockResult', data: { ok: cr.ok, action: 'testReply', sym, error: cr.ok ? undefined : cr.why } });
+      } catch (e) {
+        broadcast({ type: 'lockResult', data: { ok: false, action: 'testReply', error: e.message } });
+      }
+      break;
+    }
+
     case 'lockBreakEven': {
       const { syms, pct } = msg.data || {};
       const master = STATE.copyAccounts.find(a => a.isMaster);
@@ -5221,6 +5252,15 @@ async function init() {
       console.log('🔧 تصحيح: lockAutoScope كانت "all" — رُجّعت لـ"bot" (طلب المستخدم أثناء القفل الشامل)');
     }
     STATE.settings.lockAutoScopeMigrated = true;
+  }
+  // تصحيح مرّة واحدة فقط بطلب صريح من المستخدم: كتب Entry Trailing غلطاً 0.2%
+  // وقصده 2.5%، والقفل الشامل يمنعه من تعديلها بنفسه من الواجهة
+  if (!STATE.settings.cxEntryTrailMigrated) {
+    if (STATE.settings.cxEntryTrail === '0.2%') {
+      STATE.settings.cxEntryTrail = '2.5%';
+      console.log('🔧 تصحيح: cxEntryTrail كانت "0.2%" — رُجّعت لـ"2.5%" (طلب المستخدم أثناء القفل الشامل)');
+    }
+    STATE.settings.cxEntryTrailMigrated = true;
   }
   STATE.symbolSettings = db.loadSymbolSettings();
   // تحديث إعدادات التلغرام من env vars عند كل تشغيل
