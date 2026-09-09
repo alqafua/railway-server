@@ -96,7 +96,7 @@ const DEFAULT_SETTINGS = {
   lockDailyAmt: 10,         // (3) سقف إجمالي الخسائر اليومية — عند بلوغه يُقفل التداول اليدوي وتُغلق كل صفقاته
   lockDailyHours: 24,       // مدة النافذة / الانتظار بالساعات
   lockAutoBEon: false,      // (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه
-  lockAutoScope: 'all',     // نطاق البريك إيفن/التريلنج/وقف الخسارة التلقائيين: all | manual | bot
+  lockAutoScope: 'bot',     // نطاق البريك إيفن/التريلنج/وقف الخسارة التلقائيين: all | manual | bot
   // فريم ومؤشّر مستقلّان لهذا القسم — لا يمسّان فريم الماسح ولا السوبر العام.
   // لكل مؤشّر فريمه: السوبر يُقرأ عادةً على أربع ساعات و EMA200 على ساعة،
   // فلا يصحّ حشرهما في فريم واحد (lockTrendTF القديم يُهاجَر إليهما)
@@ -2321,11 +2321,7 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
   }
   if (results.armed.length) {
     lockSave();
-    lockNotify(
-      `🟡 بريك إيفن (${reason})\nنسبة فوق الدخول: ${offset}%\n` +
-      `👁 يتابعها البوت: ${results.armed.join(' · ')}` +
-      (results.skipped.length ? `\n⏭ تُخطّيت: ${results.skipped.length}` : '')
-    );
+    lockNotify(`🟡 بريك إيفن\n${results.armed.join('\n')}`);
   }
   return results;
 }
