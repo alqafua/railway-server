@@ -5210,6 +5210,18 @@ async function init() {
     if (old && s.lockTrendTFst === undefined) STATE.settings.lockTrendTFst = old;
     if (old && s.lockTrendTFema === undefined) STATE.settings.lockTrendTFema = old;
   }
+  // تصحيح مرّة واحدة فقط: نطاق التنفيذ التلقائي كان افتُرِض "الكل" قبل ما يُضاف خيار
+  // "بوت فقط"، فحُفظت "all" صراحةً بالإعدادات — والقفل الشامل يمنع المستخدم من
+  // تغييرها بنفسه من الواجهة. بطلب صريح منه نصحّحها هنا بتجاوز القفل (مسار الكود
+  // عند الإقلاع، لا مسار الواجهة المحمي). العلم يمنع تكرارها لو غيّرها المستخدم
+  // بنفسه لاحقاً إلى "all" عمداً بعد انتهاء القفل
+  if (!STATE.settings.lockAutoScopeMigrated) {
+    if (STATE.settings.lockAutoScope === 'all') {
+      STATE.settings.lockAutoScope = 'bot';
+      console.log('🔧 تصحيح: lockAutoScope كانت "all" — رُجّعت لـ"bot" (طلب المستخدم أثناء القفل الشامل)');
+    }
+    STATE.settings.lockAutoScopeMigrated = true;
+  }
   STATE.symbolSettings = db.loadSymbolSettings();
   // تحديث إعدادات التلغرام من env vars عند كل تشغيل
   if (process.env.TG_TOKEN) STATE.settings.cxToken = process.env.TG_TOKEN;
