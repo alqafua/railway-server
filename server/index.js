@@ -2306,30 +2306,24 @@ async function applyBreakEven(acc, syms, offsetPct, reason) {
       results.skipped.push(`${sym}: ربح ${roi.toFixed(0)}% (المطلوب ${needPnl}%)`);
       continue;
     }
-    try {
-      const px = await placeStop(acc, sym, pos, bePrice, 'بريك إيفن');
-      STATE.lockState.beDone[sym] = Date.now();
-      results.done.push(`${sym} @ ${px}`);
-      // وقف افتراضي موازٍ: يردّ على الإشارة بأمر إغلاق ليتبعه كورنكس والمشتركون
-      const av = armVStop(sym, { kind: 'be', side: isLong ? 'LONG' : 'SHORT', pct: offset,
-                      price: mark || entry, entry, reason: `بريك إيفن (${reason})` });
-      if (av?.rejected) results.skipped.push(`${sym}: ${av.why}`);
-      else results.armed.push(`${sym} @ ${fmtSignalPrice(bePrice)}`);
-      const s = await cornixSync(sym, { cmd: STATE.settings.lockCxBEtpl || 'SL to entry', stop: px });
-      if (s) results.synced.push(`${sym}: ${s}`);
-    } catch (e) {
-      results.failed.push(`${sym}: ${e.message}`);
-    }
-    await new Promise(r => setTimeout(r, 250));
+    // بريك إيفن يعتمد كلياً على الوقف الافتراضي: البوت يتابع المستوى على السعر اللحظي،
+    // وعند بلوغه يغلق مركز الماستر الحقيقي على بايننس + يردّ على إشارة كورنكس بأمر إغلاق
+    // فيتبعه المشتركون تلقائياً. لا حاجة لأمر وقف معلّق على بايننس أصلاً — بعض العملات
+    // ترفضه (Algo Order API) بينما الإغلاق مضمون بدونه، وكانت المحاولة الفاشلة تتكرر
+    // كل دورة بلا أي حد فتُغرق قناة الإشعارات بنفس الخطأ
+    if (STATE.lockState.beDone[sym]) { results.skipped.push(`${sym}: مسجّلة مسبقاً`); continue; }
+    const av = armVStop(sym, { kind: 'be', side: isLong ? 'LONG' : 'SHORT', pct: offset,
+                    price: mark || entry, entry, reason: `بريك إيفن (${reason})` });
+    if (av?.rejected) { results.skipped.push(`${sym}: ${av.why}`); continue; }
+    STATE.lockState.beDone[sym] = Date.now();
+    results.armed.push(`${sym} @ ${fmtSignalPrice(bePrice)}`);
   }
-  if (results.done.length || results.failed.length) {
+  if (results.armed.length) {
     lockSave();
     lockNotify(
       `🟡 بريك إيفن (${reason})\nنسبة فوق الدخول: ${offset}%\n` +
-      (results.done.length ? `✅ طُبّق: ${results.done.join(' · ')}\n` : '') +
-      (results.failed.length ? `❌ فشل: ${results.failed.join(' · ')}\n` : '') +
-      (results.armed?.length ? `👁 يتابعها البوت: ${results.armed.join(' · ')}\n` : '') +
-      (results.skipped.length ? `⏭ تُخطّيت: ${results.skipped.length}` : '')
+      `👁 يتابعها البوت: ${results.armed.join(' · ')}` +
+      (results.skipped.length ? `\n⏭ تُخطّيت: ${results.skipped.length}` : '')
     );
   }
   return results;
@@ -4325,6 +4319,23 @@ async function handleClientMsg(msg, ws) {
     }
 
     // ── نظام القفل: أوامر يدوية ─────────────────────────
+    case 'lockCancelVStop': {
+      const { sym } = msg.data || {};
+      const store = vStopsStore();
+      if (sym && store[sym]) {
+        const kind = VSTOP_KINDS[store[sym].kind] || store[sym].kind;
+        delete store[sym];
+        lockSave();
+        if (STATE.lockState.beDone[sym]) delete STATE.lockState.beDone[sym];
+        lockNotify(`✕ أُلغيت متابعة ${kind} — #${sym.replace('USDT', '/USDT')}\nالصفقة تكمل بلا هذا الوقف.`);
+        broadcast({ type: 'lockState', data: lockPublic() });
+        broadcast({ type: 'lockResult', data: { ok: true, action: 'cancelVStop', sym } });
+      } else {
+        broadcast({ type: 'lockResult', data: { ok: false, action: 'cancelVStop', error: 'لا يوجد وقف افتراضي مسجّل لهذا الرمز' } });
+      }
+      break;
+    }
+
     case 'lockBreakEven': {
       const { syms, pct } = msg.data || {};
       const master = STATE.copyAccounts.find(a => a.isMaster);
