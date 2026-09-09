@@ -609,10 +609,13 @@ async function probeAccount(acc, sym) {
   addCopyLog('info', `🔎 فحص الحساب — ${facts.join(' | ')}`);
 }
 
+// نجلب من /fapi/v2/account بدل /fapi/v2/balance: يرجع في نفس الطلب الرصيد المتاح
+// وأيضاً إجمالي رصيد المحفظة شاملاً هامش الصفقات المفتوحة وربحها/خسارتها العائمة —
+// نخزّنه على الحساب مباشرة كي لا تحتاج كل نقطة نداء لـ getBalance طلباً إضافياً
 async function getBalance(acc) {
-  const d = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v2/balance');
-  const u = Array.isArray(d) ? d.find(b => b.asset === 'USDT') : null;
-  return u ? parseFloat(u.availableBalance) : 0;
+  const d = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v2/account');
+  acc.liveTotalBalance = parseFloat(d?.totalMarginBalance) || 0;
+  return parseFloat(d?.availableBalance) || 0;
 }
 
 async function getPositions(acc) {
@@ -3533,6 +3536,7 @@ function getSafeAccounts() {
     isEnabled: a.isEnabled, sizeRatio: a.sizeRatio,
     apiKeyPreview: a.apiKey ? a.apiKey.slice(0, 8) + '••••' + a.apiKey.slice(-4) : '',
     balance: a.liveBalance ?? a.balance ?? null,
+    totalBalance: a.liveTotalBalance ?? null,
     balanceAt: a.balanceAt,
     livePositions: a.livePositions || [],
     apiOk: a.apiOk,
@@ -4877,7 +4881,7 @@ async function handleClientMsg(msg, ws) {
     case 'exportData': {
       const payload = {
         settings: STATE.settings,
-        accounts: STATE.copyAccounts.map(a => ({ ...a, livePositions: undefined, liveBalance: undefined, apiOk: undefined, closedTrades: undefined })),
+        accounts: STATE.copyAccounts.map(a => ({ ...a, livePositions: undefined, liveBalance: undefined, liveTotalBalance: undefined, apiOk: undefined, closedTrades: undefined })),
         openTrades: STATE.openTrades,
         closedTrades: STATE.closedTrades,
         exportedAt: new Date().toISOString(),
@@ -5118,7 +5122,7 @@ app.get('/api/accounts', authMiddleware, (req, res) => res.json(getSafeAccounts(
 app.get('/api/export', authMiddleware, (req, res) => {
   const payload = {
     settings: STATE.settings,
-    accounts: STATE.copyAccounts.map(a => ({ ...a, livePositions: undefined, liveBalance: undefined, apiOk: undefined, closedTrades: undefined })),
+    accounts: STATE.copyAccounts.map(a => ({ ...a, livePositions: undefined, liveBalance: undefined, liveTotalBalance: undefined, apiOk: undefined, closedTrades: undefined })),
     openTrades: STATE.openTrades,
     closedTrades: STATE.closedTrades,
     exportedAt: new Date().toISOString(),
