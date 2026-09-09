@@ -447,8 +447,24 @@ const livePrices = {};
 const candleCache = {};
 let alertId = 0;
 
+// تُذكَر لحظة انتهاء حظر بايننس لهذا الـ IP (٤١٨/٤٢٩ يحملان الطابع الزمني في رسالة الخطأ)
+// كي لا يستمر الفحص الدوري بضرب بايننس أثناء الحظر — ما كان يمدّد مدته فقط، بل يزيد عقوبته
+let binanceBanUntil = 0;
 async function fetchBinance(p) {
+  if (Date.now() < binanceBanUntil) {
+    throw new Error(`Binance محظور مؤقتاً حتى ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh' })}`);
+  }
   const res = await fetch(`${BASE}${p}`);
+  if (res.status === 418 || res.status === 429) {
+    let msg = '';
+    try { msg = (await res.json())?.msg || ''; } catch (e) {}
+    const m = /banned until (\d+)/.exec(msg);
+    if (m) {
+      binanceBanUntil = parseInt(m[1]);
+      reportError('بايننس', `⛔ محظور مؤقتاً بسبب كثرة الطلبات — يرجع طبيعياً الساعة ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh' })}`);
+    }
+    throw new Error(`Binance ${res.status}${binanceBanUntil ? ` — محظور حتى ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh' })}` : ''}`);
+  }
   if (!res.ok) throw new Error(`Binance ${res.status}`);
   return res.json();
 }
@@ -2942,6 +2958,10 @@ async function fetchCandles(sym) {
 
 async function scanAll() {
   if (scanRunning || !STATE.symbols.length) return;
+  if (Date.now() < binanceBanUntil) {   // بايننس محظور — الفحص الآن يزيد العقوبة فقط
+    reportError('بايننس', `⛔ محظور مؤقتاً بسبب كثرة الطلبات — يرجع طبيعياً الساعة ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh' })}`);
+    return;
+  }
   scanRunning = true;
   broadcast({ type: 'scanning', data: true });
   let done = 0;
@@ -5227,7 +5247,11 @@ async function init() {
     } catch (e) {
       console.error(`⚠️ تحميل العملات فشل (${attempt}/5): ${e.message}`);
       reportError('تحميل العملات', `${e.message} — إعادة المحاولة (${attempt}/5)`);
-      if (attempt < 5) await new Promise(r => setTimeout(r, 30000 * attempt));
+      // لو الفشل حظر معروف الانتهاء، ننتظر حتى ينقضي فعلاً بدل إهدار المحاولات على تباعد ثابت أقصر منه
+      if (attempt < 5) {
+        const banWait = binanceBanUntil > Date.now() ? binanceBanUntil - Date.now() + 5000 : 0;
+        await new Promise(r => setTimeout(r, Math.min(Math.max(banWait, 30000 * attempt), 600000)));
+      }
     }
   }
   if (!exInfo) throw new Error('تعذّر تحميل العملات من بايننس بعد ٥ محاولات');
