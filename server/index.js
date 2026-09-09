@@ -453,7 +453,7 @@ let alertId = 0;
 let binanceBanUntil = 0;
 async function fetchBinance(p) {
   if (Date.now() < binanceBanUntil) {
-    throw new Error(`Binance محظور مؤقتاً حتى ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh' })}`);
+    throw new Error(`Binance محظور مؤقتاً حتى ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh', calendar: 'gregory' })}`);
   }
   const res = await fetch(`${BASE}${p}`);
   if (res.status === 418 || res.status === 429) {
@@ -462,9 +462,9 @@ async function fetchBinance(p) {
     const m = /banned until (\d+)/.exec(msg);
     if (m) {
       binanceBanUntil = parseInt(m[1]);
-      reportError('بايننس', `⛔ محظور مؤقتاً بسبب كثرة الطلبات — يرجع طبيعياً الساعة ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh' })}`);
+      reportError('بايننس', `⛔ محظور مؤقتاً بسبب كثرة الطلبات — يرجع طبيعياً الساعة ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh', calendar: 'gregory' })}`);
     }
-    throw new Error(`Binance ${res.status}${binanceBanUntil ? ` — محظور حتى ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh' })}` : ''}`);
+    throw new Error(`Binance ${res.status}${binanceBanUntil ? ` — محظور حتى ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh', calendar: 'gregory' })}` : ''}`);
   }
   if (!res.ok) throw new Error(`Binance ${res.status}`);
   return res.json();
@@ -690,6 +690,10 @@ async function drainTgQueue() {
               // لا نعدّل رسالة الإشارة تلقائياً بعد إرسالها:
               // editMessageText يمسح الأزرار المضافة (أزرار كورنكس) ما لم تُعَد معه،
               // فكان الفحص الدوري يجرّد الإشارات من أزرار المتابعة.
+              // كورنكس أحياناً يحذف رسالتنا وينشر بديلة (لوحة الأدمن عنده تعدّل الصفقة)،
+              // فرقم رسالتنا يصير غير صالح للرد لاحقاً (بريك إيفن/تريلنج/وقف). نتحقق
+              // بعد مهلة تكفي كورنكس لينشر بديله، ونحفظ رقمها إن وُجد
+              setTimeout(() => verifySignalMsg(trackSym).catch(() => {}), 45000);
             }
           } catch (e) {}
         }
@@ -2969,7 +2973,7 @@ async function fetchCandles(sym) {
 async function scanAll() {
   if (scanRunning || !STATE.symbols.length) return;
   if (Date.now() < binanceBanUntil) {   // بايننس محظور — الفحص الآن يزيد العقوبة فقط
-    reportError('بايننس', `⛔ محظور مؤقتاً بسبب كثرة الطلبات — يرجع طبيعياً الساعة ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh' })}`);
+    reportError('بايننس', `⛔ محظور مؤقتاً بسبب كثرة الطلبات — يرجع طبيعياً الساعة ${new Date(binanceBanUntil).toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh', calendar: 'gregory' })}`);
     return;
   }
   scanRunning = true;
