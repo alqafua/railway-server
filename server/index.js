@@ -96,6 +96,7 @@ const DEFAULT_SETTINGS = {
   lockDailyAmt: 10,         // (3) سقف إجمالي الخسائر اليومية — عند بلوغه يُقفل التداول اليدوي وتُغلق كل صفقاته
   lockDailyHours: 24,       // مدة النافذة / الانتظار بالساعات
   lockAutoBEon: false,      // (4) بريك إيفن تلقائي عند اقتراب/انعكاس الاتجاه
+  lockAutoScope: 'all',     // نطاق البريك إيفن/التريلنج/وقف الخسارة التلقائيين: all | manual | bot
   // فريم ومؤشّر مستقلّان لهذا القسم — لا يمسّان فريم الماسح ولا السوبر العام.
   // لكل مؤشّر فريمه: السوبر يُقرأ عادةً على أربع ساعات و EMA200 على ساعة،
   // فلا يصحّ حشرهما في فريم واحد (lockTrendTF القديم يُهاجَر إليهما)
@@ -2796,9 +2797,13 @@ async function monitorLock() {
             if (!mg) return false;
             return ((parseFloat(p.unRealizedProfit) || 0) / mg) * 100 >= minPnl;
           };
+          // نطاق التطبيق: كل الصفقات، أو يدوية فقط، أو بوت فقط
+          const scope = S.lockAutoScope || 'all';
+          const scopeOk = (p) => scope === 'all' ? true
+            : scope === 'manual' ? isManualPosition(p.symbol, p) : !isManualPosition(p.symbol, p);
           // لا تدخل الصفقة إلا إذا تحقّق الشرط لجهتها هي
           const pick = (trig, extra) => positions
-            .filter(p => trigMatches(trig, stat[sideOf(p)]) && extra(p))
+            .filter(p => trigMatches(trig, stat[sideOf(p)]) && scopeOk(p) && extra(p))
             .map(p => p.symbol);
           const isWin = (p) => (parseFloat(p.unRealizedProfit) || 0) > 0;
           const isLoss = (p) => (parseFloat(p.unRealizedProfit) || 0) < 0;
