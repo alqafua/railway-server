@@ -2061,6 +2061,11 @@ function armVStop(sym, { kind, side, pct, price, entry, reason }) {
 async function cornixClose(sym) {
   const rec = STATE.sentMsgIds[sym];
   if (!rec?.id) return { ok: false, why: 'لا توجد رسالة إشارة محفوظة لهذا الرمز' };
+  // كورنكس لا يتفاعل مع رد على رسالتنا الأصلية بعد ما يستبدلها — فقط رسالته
+  // البديلة. الفحص المؤجَّل بعد الإرسال قد لا يلحق التبديل (لو صار بعد ٤٥ ثانية،
+  // أو الإغلاق نفسه صار قبلها)، فنتحقق هنا مباشرةً قبل الرد — لحظة الحاجة الفعلية
+  // لا توقيت مُخمَّن مسبقاً
+  await verifySignalMsg(sym).catch(() => {});
   const chat = rec.chat || STATE.settings.cxChat;
   const cmd = STATE.settings.lockCloseCmd || '/close';
   await tgSend(cmd, chat, { replyTo: rec.id });
