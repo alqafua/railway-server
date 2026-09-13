@@ -263,7 +263,14 @@ function settingsFor(sym) {
 // ══════════════════════════════════════════════
 const ADMIN_USER = process.env.ADMIN_USER || 'Alqafua';
 const ADMIN_PASS_HASH = bcrypt.hashSync(process.env.ADMIN_PASS || '7007', 10);
-const USERS = [{ id: 1, username: ADMIN_USER, passwordHash: ADMIN_PASS_HASH }];
+// حساب للقراءة فقط — يشوف كل شي لحظياً لكن أي رسالة تعديل منه تُرفض من الخادم
+// نفسه (لا تعتمد على إخفاء الأزرار بالواجهة فقط)، ودرع إضافي: الواجهة أصلاً
+// لا ترسل شيئاً من هذا الحساب (راجع دالة send بالعميل)
+const READONLY_PASS_HASH = bcrypt.hashSync('774209005', 10);
+const USERS = [
+  { id: 1, username: ADMIN_USER, passwordHash: ADMIN_PASS_HASH, role: 'admin' },
+  { id: 2, username: 'H', passwordHash: READONLY_PASS_HASH, role: 'readonly' },
+];
 
 const loginAttempts = new Map(); // IP -> { count, lockUntil }
 
@@ -3614,15 +3621,17 @@ function getPublicState() {
 
 wss.on('connection', (ws, req) => {
   // إصلاح أمني — التحقق من التوكن قبل قبول الاتصال
+  let payload;
   try {
     const url = new URL(req.url, `http://localhost`);
     const token = url.searchParams.get('token');
     if (!token) { ws.close(4001, 'Unauthorized'); return; }
-    jwt.verify(token, JWT_SECRET);
+    payload = jwt.verify(token, JWT_SECRET);
   } catch (e) { ws.close(4001, 'Invalid token'); return; }
+  ws.role = payload.role || 'admin';
 
   clients.add(ws);
-  ws.send(JSON.stringify({ type: 'init', data: getPublicState() }));
+  ws.send(JSON.stringify({ type: 'init', data: { ...getPublicState(), readOnly: ws.role === 'readonly' } }));
   ws.on('message', async (raw) => {
     try { await handleClientMsg(JSON.parse(raw), ws); } catch (e) { reportError('handleClientMsg', e.message); }
   });
@@ -3631,6 +3640,10 @@ wss.on('connection', (ws, req) => {
 });
 
 async function handleClientMsg(msg, ws) {
+  // درع أمني: حساب القراءة فقط لا ينفّذ أي رسالة تعديل مهما كانت — حتى لو
+  // تلاعب أحد بالواجهة نفسها. الواجهة أصلاً لا ترسل شيئاً بهذا الوضع (دالة send)،
+  // فهذا درع إضافي على مستوى الخادم لا يعتمد عليها
+  if (ws.role === 'readonly') return;
   switch (msg.type) {
     case 'updateSettings': {
       const oldInterval = STATE.settings.interval;
@@ -5167,8 +5180,8 @@ app.post('/api/login', async (req, res) => {
   }
 
   att.count = 0; att.lockUntil = 0;
-  const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
-  res.json({ token, username: user.username });
+  const token = jwt.sign({ id: user.id, username: user.username, role: user.role || 'admin' }, JWT_SECRET, { expiresIn: '30d' });
+  res.json({ token, username: user.username, role: user.role || 'admin' });
 });
 
 app.get('/api/state', authMiddleware, (req, res) => res.json(getPublicState()));
