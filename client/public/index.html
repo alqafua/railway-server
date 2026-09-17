@@ -141,7 +141,7 @@ const RES_PRESETS={
 };
 // نسخة الواجهة — تظهر في شريط التبويبات. غيّرها مع كل تعديل يُرسَل للرفع،
 // كي يُعرف فوراً إن كان المتصفح/Vercel يعرض ملفاً قديماً.
-const UI_VERSION='v59-readonly';
+const UI_VERSION='v60-acctlock';
 const C={token:null,loggedIn:false,page:'dashboard',wsConn:false,symbols:[],symbolData:{},symbolSettings:{},dcaOrders:[],pendingOrders:[],waitQueue:[],respectData:{},perSymST:{},perSymSTProgress:null,lockState:null,lockSel:[],lockBusy:'',wqOpen:false,sysStatus:{ok:true,lastError:null,errorLoc:null,errorTs:null},symbolMeta:{},alerts:[],openTrades:[],closedTrades:[],ema200:null,superTrend:null,settings:{mode:'SMA',maPeriod:14,interval:'1h',autoSend:false,enableDiv:true,blockOpen:true,soundEnabled:true,sigFilters:{ob:true,os:true,conf:true,trail:true},cxMargin:'Cross',cxLev:'20',cxAmt:'5%',cxAmtMax:'0',cxSLon:true,cxSL:'2',cxSLMax:'0',cxTP1:'3',cxTP1Amt:'50',cxTP2on:false,cxTP2:'6',cxTP2Amt:'50',cxTrailTp:'off',cxTrailPct:'0.5',cxEntryTrail:'0.5%',cxToken:'',cxChat:'',cxChatClose:'',cxChatBT:'',cxChatSettings:'',cxEntry2on:false,cxEntry2Dist:'2',cxEntry2Amt:'50',cxBEon:false,trSon:false,trSstart:75,trSgap:3,trLon:false,trLstart:25,trLgap:3,liqVon:false,liqVmin:50000000,liqOon:false,liqOmin:10000000,revMode:'candles',revCount:1,rsiGap:1,dataMode:'ws',maxOpenTrades:0,queueRevAutoOn:false,queueRevAutoPct:10,sigQueueFilters:{ob:true,os:true,conf:true,trail:true},ema200TF:'4h',ema200FilterOn:false,stTF:'4h',stPeriod:10,stMult:3,stFilterOn:false,respectFilterOn:false,respectMin:50,perSymSTon:false,perSymSTtf:'4h',perSymSigTF:'5m',perSymSigMode:'RSI',deadZoneOn:false,deadZoneMode:'wait',deadZonePct:1,stSLon:false,stSLmode:'flip',stSLpct:0.5,cxChatSTSim:'',lockOn:false,lockMaster:false,lockMasterHours:24,lockAllSettings:false,lockAutoSLon:false,lockAutoSLpct:2,lockDailyOn:false,lockDailyAmt:10,lockDailyHours:24,lockAutoBEon:false,lockTrendTF:'1h',lockTrendTFst:'4h',lockTrendTFema:'1h',lockTrendInd:'both',lockBEtrig:'near',lockBEnearPct:1,lockBEoffsetPct:0.1,lockBEminPnl:50,lockAutoTrailOn:false,lockAutoTrailPct:10,lockAutoTrailTrig:'near',lockAutoLossOn:false,lockAutoLossPct:2,lockAutoLossTrig:'flip',lockTgChat:'',lockCloseCmd:'/close',lockCornixSync:false,extraIntervals:[],dirFilter:'all',useSymbolSettings:true,tgStarFilter:'all',lockFields:{amt:false,lev:false,sl:false,targets:false,entries:false,trailing:false,be:false}},copyOn:false,copyLog:[],accounts:[],drawerOpen:false,activeTab:'alerts',progress:0,scanning:false,lastUpdate:'',toast:null,filter:'all',sortBy:'rsi',search:'',statsPeriod:'today',sentSigs:{},btInfo:null,btProgress:null,btResult:null,btOptResult:null,btDownloading:false,btUpdating:false,btImporting:false,btImportPct:0,btRunning:false,btOptimizing:false,btOptimizingSym:false,btDays:90,btBudget:24,btMinTrades:30,btBaseSettings:null,btBaseMsg:'',btSettingsNote:'',btSymBudget:3,btSymMinTrades:10,btOptSymResult:null,btChartReq:null,btChartData:null,btChartLoading:false,btSettings:{interval:'1h',mode:'SMA',maPeriod:14,cxLev:20,cxTP1:3,cxTP1Amt:50,cxSL:3,cxEntry2Dist:2,cxSLon:true,cxTP2on:false,cxEntry2on:false,enableDiv:true,ema200FilterOn:false,stFilterOn:false},resFiles:[],resAnalysis:null,resSending:false,resFilters:{preset:'loose',minTrades:10,maxDD:15,minPF:1.2,minRespectShort:0,minRespectLong:0,minAvgReversal:0},btOptimizingRespect:false,btRespectResult:null,btOptimizingTuned:false,btTunedResult:null,btMgmtSource:'respect',btOptimizingMgmt:false,btMgmtResult:null,sumPreset:'loose',sumOverrides:{},sumSending:false,btSumDrillSym:null};
 const BT_TFS=['1h','4h'];
 const REV_LOOKBACK=5, REV_THRESHOLD=3;
@@ -165,6 +165,7 @@ let settingsTab='cornix',showForm=false,formAccId=null,showLog=false,showDCA=fal
 // يمنع بثّ الإعدادات القادم من الخادم (من جهاز آخر أو تغيير غير متعلّق) من محو التعديل قبل حفظه
 let settingsDirty=false;
 let diagFilter='all'; // فلتر تبويبات لوحة تشخيص الصفقات: all|manual|bot
+let lockAcctDetail=null; // id الحساب المفتوح تفصيله بقسم "قفل الحسابات" بصفحة القفل
 let showManualOrder=false,manualOrderAccId=null,reportAccId=null;
 let fd={name:'',apiKey:'',apiSecret:'',sizeRatio:'1',tag:'personal',isMaster:false,copyExisting:false};
 let audioCtx=null,toastRef=null,rPend=false,ws=null,wsReconn=null;
@@ -1263,7 +1264,8 @@ function rLockPage(){
     ov.appendChild(mkOV('الخسارة','$'+tot.toFixed(2),'c-red'));
     if(flo>0)ov.appendChild(mkOV('منها عائمة','$'+flo.toFixed(2),'c-red'));
     ov.appendChild(mkOV('الحد','$'+(L.cap||0)));
-    ov.appendChild(mkOV(L.locked?'يفتح بعد':'تجديد بعد',lkFmtLeft((L.windowEnds||0)-Date.now()),'c-confirmed'));
+    ov.appendChild(mkOV('ربح اليدوي','$'+(L.manualProfit||0).toFixed(2),'c-green'));
+    ov.appendChild(mkOV('يفتح بعد',L.locked?lkFmtLeft((L.windowEnds||0)-Date.now()):'—','c-confirmed'));
     page.appendChild(ov);
     if(L.cap>0){
       const track=el('div',{style:{height:'8px',background:'var(--bg3)',borderRadius:'4px',overflow:'hidden',marginBottom:'14px'}});
@@ -1302,6 +1304,72 @@ function rLockPage(){
       sV.appendChild(row);
     });
     page.appendChild(sV);
+  }
+
+  // ── قفل الحد اليومي لكل حساب (غير الماستر) — مستقل عن نظام الماستر أعلاه ──
+  {
+    const lockAccs=(C.accounts||[]).filter(a=>!a.isMaster&&a.lockOn);
+    if(lockAccs.length){
+      const sA=S('🔐 قفل الحسابات — الحد اليومي للتداول اليدوي','var(--red)');
+      lockAccs.forEach(a=>{
+        const lp=a.lockPublic||{};
+        const cap=lp.cap||0;
+        const used=lp.realizedLoss||0;
+        const pct=cap>0?Math.min(100,(used/cap)*100):0;
+        const open=lockAcctDetail===a.id;
+        const row=el('div',{style:{marginBottom:'8px',borderRadius:'10px',border:'1px solid '+(lp.locked?'var(--red)':'var(--border)'),overflow:'hidden'}});
+        const head=el('div',{style:{padding:'9px 12px',background:'var(--bg3)',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px',flexWrap:'wrap'},onClick:()=>{lockAcctDetail=open?null:a.id;render();}});
+        const nm=el('div',{style:{display:'flex',alignItems:'center',gap:'6px'}});
+        nm.appendChild(el('span',{style:{fontWeight:'800',fontSize:'12px'}},a.name));
+        if(lp.locked)nm.appendChild(el('span',{style:{fontSize:'10px',color:'var(--red)',fontWeight:'700'}},'⛔ مقفول'));
+        head.appendChild(nm);
+        head.appendChild(el('span',{style:{fontSize:'11px',color:'var(--text2)'}},'$'+used.toFixed(2)+' / $'+cap.toFixed(2)));
+        row.appendChild(head);
+        const track=el('div',{style:{height:'6px',background:'var(--bg2)'}});
+        track.appendChild(el('div',{style:{width:pct+'%',height:'100%',background:pct>=100?'var(--red)':pct>60?'var(--orange)':'var(--green)',transition:'width .3s'}}));
+        row.appendChild(track);
+        if(open){
+          const body=el('div',{style:{padding:'12px'}});
+          const ov2=el('div',{className:'ov-grid'});
+          const mkOV2=(lb,v,c='')=>{const cc=el('div',{className:'ov-card'});cc.appendChild(el('div',{className:'ov-label'},lb));cc.appendChild(el('div',{className:'ov-val '+c},v));return cc;};
+          ov2.appendChild(mkOV2('الحالة',lp.locked?'⛔ مقفول':'✅ مفتوح',lp.locked?'c-red':'c-green'));
+          ov2.appendChild(mkOV2('المتبقي','$'+(lp.remaining||0).toFixed(2),'c-green'));
+          ov2.appendChild(mkOV2('الخسارة','$'+used.toFixed(2),'c-red'));
+          ov2.appendChild(mkOV2('ربح اليدوي','$'+(lp.manualProfit||0).toFixed(2),'c-green'));
+          if(lp.locked)ov2.appendChild(mkOV2('يفتح بعد',lkFmtLeft((lp.lockedUntil||0)-Date.now()),'c-confirmed'));
+          body.appendChild(ov2);
+          if(lp.locked)body.appendChild(el('button',{className:'btn',style:{width:'100%',marginTop:'8px',background:'rgba(255,71,87,.1)',borderColor:'var(--red)',color:'var(--red)',fontWeight:'800',justifyContent:'center'},onClick:()=>{if(confirm('إعادة فتح التداول اليدوي لـ '+a.name+' الآن؟'))send('resetAcctLock',{id:a.id});}},'🔓 إعادة ضبط يدوياً'));
+          const g=el('div',{className:'set-grid',style:{marginTop:'10px'}});
+          const numField=(lbl,key,step)=>{
+            const f=el('div',{className:'set-field'});
+            f.appendChild(el('label',{},lbl));
+            const i=el('input',{type:'number',value:String(a[key]??''),step});
+            i.onchange=()=>send('setAcctLockSettings',{id:a.id,[key]:parseFloat(i.value)||0});
+            f.appendChild(i);return f;
+          };
+          g.appendChild(numField('الحد الأقصى لهامش الصفقة $','lockPerTradeAmt','0.5'));
+          g.appendChild(numField('الحد اليومي لإجمالي الخسائر $','lockDailyAmt','0.5'));
+          g.appendChild(numField('كل كم ساعة يُفتح','lockDailyHours','1'));
+          body.appendChild(g);
+          const pos=a.livePositions||[];
+          if(pos.length){
+            body.appendChild(el('div',{style:{fontSize:'11px',fontWeight:'700',marginTop:'10px',marginBottom:'6px',color:'var(--text2)'}},'📊 صفقاته المفتوحة ('+pos.length+')'));
+            pos.forEach(p=>{
+              const amt=parseFloat(p.positionAmt),pnl=parseFloat(p.unRealizedProfit)||0,isL=amt>0;
+              const pr=el('div',{style:{display:'flex',justifyContent:'space-between',padding:'6px 9px',background:'var(--bg3)',borderRadius:'8px',marginBottom:'4px',fontSize:'11px'}});
+              pr.appendChild(el('span',{},(isL?'🟢':'🔴')+' '+p.symbol.replace('USDT','/USDT')));
+              pr.appendChild(el('span',{style:{color:pnl>=0?'var(--green)':'var(--red)',fontWeight:'700'}},(pnl>=0?'+':'')+'$'+pnl.toFixed(2)));
+              body.appendChild(pr);
+            });
+          }else{
+            body.appendChild(el('div',{style:{fontSize:'11px',color:'var(--text2)',marginTop:'10px'}},'📭 لا توجد صفقات مفتوحة حالياً'));
+          }
+          row.appendChild(body);
+        }
+        sA.appendChild(row);
+      });
+      page.appendChild(sA);
+    }
   }
 
   // ── لوحة التشخيص: ماذا يرى النظام في كل صفقة ──
@@ -1851,6 +1919,8 @@ if(C.accounts.length)page.appendChild(rDCAPanel());
 const pOrds=rPendingOrders();if(pOrds)page.appendChild(pOrds);
 const ls=el('div',{style:{marginTop:'20px'}});const lh=el('div',{className:'log-hdr',onClick:()=>{showLog=!showLog;render();}});lh.appendChild(el('span',{style:{fontWeight:'700',fontSize:'13px'}},'📋 سجل العمليات'));lh.appendChild(el('span',{style:{color:'var(--text2)'}},showLog?'▲':'▼'));ls.appendChild(lh);if(showLog){const lb2=el('div',{className:'log-body'});if(!C.copyLog.length)lb2.appendChild(el('div',{style:{padding:'20px',textAlign:'center',color:'var(--text2)',fontSize:'12px'}},'لا يوجد سجل'));else C.copyLog.slice(0,100).forEach(log=>{const r=el('div',{className:'log-row '+log.type});r.appendChild(el('span',{className:'log-icon'},log.type==='success'?'✅':log.type==='fail'?'❌':'ℹ️'));const m=el('span',{className:'log-msg'});m.textContent=log.text;r.appendChild(m);r.appendChild(el('span',{className:'log-time'},log.time));lb2.appendChild(r);});ls.appendChild(lb2);}page.appendChild(ls);return page;}
 function rAccCard(acc){const isMaster=acc.isMaster,pos=acc.livePositions||[],bal=acc.balance;const st=acc.apiOk===true?'ok':acc.apiOk===false?'fail':'unknown';const totPnl=pos.reduce((s,p)=>s+parseFloat(p.unRealizedProfit||0),0);const stats=acc.stats||{opens:0,closes:0,wins:0,losses:0,tot:0};const card=el('div',{className:'acc-card '+(isMaster?'master':'')});const head=el('div',{className:'acc-head '+(isMaster?'m':'f')});const nr=el('div',{className:'acc-name-row'});if(isMaster)nr.appendChild(el('span',{className:'acc-mbdg'},'⭐ MASTER'));nr.appendChild(el('span',{className:'acc-name'},acc.name));const tg=acc.tag||'personal';nr.appendChild(el('span',{className:'acc-tag '+tg},tg==='personal'?'👤 شخصي':tg==='family'?'👨‍👩‍👧 عائلة':'👥 آخر'));head.appendChild(nr);const apibtn=el('div',{className:'api-ind '+st,onClick:()=>send('refreshAccount',{id:acc.id})});apibtn.appendChild(el('span',{className:'apidot '+st}));apibtn.appendChild(document.createTextNode(st==='ok'?'🟢 متصل':st==='fail'?'🔴 فشل':'⚪ غير محقق'));head.appendChild(apibtn);const btns=el('div',{className:'acc-btns'});if(!isMaster)btns.appendChild(el('button',{className:'abtn '+(acc.isEnabled!==false?'toff':'ton'),onClick:()=>send('toggleAccount',{id:acc.id})},acc.isEnabled!==false?'⏸ إيقاف':'▶️ تشغيل'));btns.appendChild(el('button',{className:'abtn ref',onClick:()=>{send('refreshAllAccounts',{});showNotif('🔄 جاري التحديث...',1500);}},'🔄 الكل'));
+  if(isMaster){btns.appendChild(el('button',{className:'abtn',style:{background:'rgba(255,71,87,.1)',borderColor:'var(--red)',color:'var(--red)',padding:'4px 10px',fontSize:'10px'},onClick:()=>{C.page='lock';render();}},'🔒 القفل'));}
+  else{const lOn=!!acc.lockOn;btns.appendChild(el('button',{className:'abtn',style:{background:lOn?'rgba(255,71,87,.1)':'var(--bg3)',borderColor:lOn?'var(--red)':'var(--border)',color:lOn?'var(--red)':'var(--text2)',padding:'4px 10px',fontSize:'10px'},onClick:()=>send('toggleAcctLock',{id:acc.id})},lOn?(acc.lockPublic?.locked?'⛔ مقفول':'🔒 قفل: ON'):'🔓 قفل: OFF'));}
   btns.appendChild(el('button',{className:'abtn',style:{background:'rgba(0,229,255,.1)',borderColor:'var(--accent)',color:'var(--accent)',padding:'4px 10px',fontSize:'10px'},onClick:()=>{showManualOrder=true;manualOrderAccId=acc.id;render();}},'⚡ يدوي'));btns.appendChild(el('button',{className:'abtn',style:{background:'rgba(46,213,115,.1)',borderColor:'var(--green)',color:'var(--green)',padding:'4px 10px',fontSize:'10px'},onClick:()=>{reportAccId=acc.id;render();}},'💰 ربح'));btns.appendChild(el('button',{className:'abtn edit',onClick:()=>{showForm=true;formAccId=acc.id;fd={...acc,apiKey:'',apiSecret:''};render();}},'✏️'));btns.appendChild(el('button',{className:'abtn del',onClick:()=>{if(confirm('حذف '+acc.name+'؟'))send('deleteAccount',{id:acc.id});}},'🗑'));head.appendChild(btns);
   card.appendChild(head);
   // لوحة الأمر اليدوي تظهر تحت رأس الحساب مباشرةً

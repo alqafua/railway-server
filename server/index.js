@@ -1581,17 +1581,14 @@ function lockNotify(text) {
 // يدوّر النافذة اليومية إذا انتهت مدّتها، ويُرجع الحالة الحالية
 function lockWindow() {
   const L = STATE.lockState;
-  const hrs = Math.max(1, parseFloat(STATE.settings.lockDailyHours) || 24);
   const now = Date.now();
   if (!L.windowStart) { L.windowStart = now; lockSave(); }
-  // انتهت فترة القفل → نافذة جديدة نظيفة
+  // لا تجديد دوري إطلاقاً — التصفير الوحيد يصير بعد قفل فعلي وانتهاء مدته.
+  // ما دام ما بلغ الحد، الخسارة/الربح يتراكمان بلا حد زمني
   if (L.lockedUntil && now >= L.lockedUntil) {
-    L.lockedUntil = 0; L.realizedLoss = 0; L.windowStart = now; L.trades = [];
+    L.lockedUntil = 0; L.realizedLoss = 0; L.manualProfit = 0; L.windowStart = now; L.trades = [];
     lockSave();
     lockNotify(`✅ انتهت فترة الانتظار — التداول اليدوي مفتوح من جديد\nالحد اليومي: $${STATE.settings.lockDailyAmt}`);
-  } else if (!L.lockedUntil && now - L.windowStart >= hrs * HOUR_MS) {
-    L.realizedLoss = 0; L.windowStart = now; L.trades = [];
-    lockSave();
   }
   return L;
 }
@@ -1618,6 +1615,7 @@ function lockRecordClose(sym, pnlUsd) {
   if (rec) rec.recorded = true;
   L.trades = [{ sym, pnl: pnlUsd, ts: Date.now() }, ...(L.trades || [])].slice(0, 100);
   if (pnlUsd < 0) L.realizedLoss = parseFloat(((L.realizedLoss || 0) + Math.abs(pnlUsd)).toFixed(4));
+  else if (pnlUsd > 0) L.manualProfit = parseFloat(((L.manualProfit || 0) + pnlUsd).toFixed(4));
   const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
   const hrs = Math.max(1, parseFloat(STATE.settings.lockDailyHours) || 24);
   if (cap > 0 && L.realizedLoss >= cap && !L.lockedUntil) {
@@ -1709,6 +1707,176 @@ async function checkDailyLossLimit() {
   }
 }
 
+// ══════════════════════════════════════════════
+//  قفل الحد اليومي لكل حساب على حدة (غير الماستر)
+// ══════════════════════════════════════════════
+// نسخة مصغّرة من نظام قفل الماستر — بس قسم الحد اليومي للتداول اليدوي (حد الصفقة
+// + حد الخسارة اليومي)، بلا ستوب تلقائي ولا بريك إيفن/تريلنج تلقائي (تلك تبقى
+// للماستر حصراً). كل حساب له حالته الخاصة (acc.lockState) وإعداداته الخاصة
+// (acc.lockOn/lockDailyAmt/lockPerTradeAmt/lockDailyHours) — تعمل بغض النظر
+// عن تفعيل النسخ (Copy) من عدمه، لأنها تحمي من التدخل اليدوي على الحساب نفسه.
+function acctLockWindow(acc) {
+  const L = acc.lockState || (acc.lockState = { windowStart: 0, realizedLoss: 0, manualProfit: 0, lockedUntil: 0, manualSyms: {}, trades: [] });
+  const now = Date.now();
+  if (!L.windowStart) L.windowStart = now;
+  // لا تجديد دوري — فقط بعد قفل فعلي وانتهاء مدته
+  if (L.lockedUntil && now >= L.lockedUntil) {
+    L.lockedUntil = 0; L.realizedLoss = 0; L.manualProfit = 0; L.windowStart = now; L.trades = [];
+    lockNotify(`✅ ${acc.name} — انتهت فترة الانتظار، التداول اليدوي مفتوح من جديد`);
+  }
+  return L;
+}
+
+function acctLockIsLocked(acc) {
+  if (!acc.lockOn) return false;
+  const L = acctLockWindow(acc);
+  return !!(L.lockedUntil && Date.now() < L.lockedUntil);
+}
+
+function acctLockRemaining(acc) {
+  const L = acctLockWindow(acc);
+  const cap = parseFloat(acc.lockDailyAmt) || 0;
+  return Math.max(0, cap - (L.realizedLoss || 0));
+}
+
+// تسجيل نتيجة صفقة يدوية مُغلقة على حساب معيّن — دفتر فقط، لا يقرّر القفل
+// (القفل يُقرَّر بفحص العائم+المحقّق دورياً بـ monitorAccountLocks كي لا ينتظر
+// إغلاقاً فعلياً قبل التصرّف)
+function acctLockRecordClose(acc, sym, pnlUsd) {
+  if (!acc.lockOn) return;
+  const L = acctLockWindow(acc);
+  const rec = L.manualSyms[sym];
+  if (rec?.recorded) return;
+  if (rec) rec.recorded = true;
+  L.trades = [{ sym, pnl: pnlUsd, ts: Date.now() }, ...(L.trades || [])].slice(0, 100);
+  if (pnlUsd < 0) L.realizedLoss = parseFloat(((L.realizedLoss || 0) + Math.abs(pnlUsd)).toFixed(4));
+  else if (pnlUsd > 0) L.manualProfit = parseFloat(((L.manualProfit || 0) + pnlUsd).toFixed(4));
+}
+
+// يمرّ على كل حساب مفعّل عليه القفل (غير الماستر): يكتشف صفقات جديدة/مُغلقة،
+// يقلّم الزيادة فوق حد الصفقة الواحدة، ويقفل عند بلوغ الحد اليومي (محقّق+عائم)
+let acctLockBusy = false;
+// يتذكّر أي حساب مرّ عليه أول فحص بعد إقلاع هذا التشغيل — بذاكرة العملية لا القرص،
+// فيعاد اعتبار كل الصفقات المفتوحة "خط أساس" مع كل إعادة تشغيل فعلية للسيرفر
+const acctLockBooted = new Set();
+async function monitorAccountLocks() {
+  if (acctLockBusy) return;
+  acctLockBusy = true;
+  try {
+    for (const acc of STATE.copyAccounts) {
+      if (acc.isMaster || !acc.lockOn || !acc.apiKey) continue;
+      const prevPositions = acc.livePositions || [];
+      let positions;
+      try { positions = await getPositions(acc); } catch (e) { continue; }
+      acc.livePositions = positions;
+      const prevMap = {}; prevPositions.forEach(p => { if (Math.abs(parseFloat(p.positionAmt || 0)) > 0) prevMap[p.symbol] = p; });
+      const currMap = {}; positions.forEach(p => { if (Math.abs(parseFloat(p.positionAmt || 0)) > 0) currMap[p.symbol] = p; });
+
+      const L = acctLockWindow(acc);
+
+      // صفقات جديدة — تُسجَّل للمتابعة (أول ظهور بعد الإقلاع يُعتبر خط أساس فلا يُحسب)
+      const isFirstPass = !acctLockBooted.has(acc.id);
+      for (const sym of Object.keys(currMap)) {
+        if (!L.manualSyms[sym]) L.manualSyms[sym] = { ts: Date.now(), baseline: isFirstPass };
+      }
+      acctLockBooted.add(acc.id);
+
+      // اكتشاف الإغلاق وتسجيل ربحه/خسارته
+      for (const sym of Object.keys(prevMap)) {
+        if (currMap[sym]) continue;
+        const prevPos = prevMap[sym];
+        const isLong = parseFloat(prevPos.positionAmt) > 0;
+        const entry = parseFloat(prevPos.entryPrice) || 0;
+        const exit = livePrices[sym] || entry;
+        const amt = Math.abs(parseFloat(prevPos.positionAmt));
+        const pnlUsd = parseFloat((amt * (exit - entry) * (isLong ? 1 : -1)).toFixed(4));
+        if (L.manualSyms[sym] && !L.manualSyms[sym].baseline) {
+          acctLockRecordClose(acc, sym, pnlUsd);
+          lockNotify(`${pnlUsd >= 0 ? '✅' : '❌'} ${acc.name} — أُغلقت ${sym.replace('USDT', '/USDT')} ${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toFixed(2)}\nالمتبقي من الحد اليومي: $${acctLockRemaining(acc).toFixed(2)}`);
+        }
+        delete L.manualSyms[sym];
+      }
+      lockSave();
+      broadcast({ type: 'accounts', data: getSafeAccounts() });
+
+      const capDaily = parseFloat(acc.lockDailyAmt) || 0;
+      const wasLocked = !!(L.lockedUntil && Date.now() < L.lockedUntil);
+
+      if (capDaily > 0 && !wasLocked) {
+        // خسارة عائمة على الصفقات اليدوية المفتوحة الآن (بلا خط أساس)
+        let floating = 0;
+        for (const p of positions) {
+          if (L.manualSyms[p.symbol]?.baseline) continue;
+          const entry = parseFloat(p.entryPrice) || 0;
+          const px = livePrices[p.symbol] || parseFloat(p.markPrice) || 0;
+          const amt = parseFloat(p.positionAmt);
+          if (!entry || !px || !amt) continue;
+          const pnl = (px - entry) * amt;
+          if (pnl < 0) floating += Math.abs(pnl);
+        }
+        if ((L.realizedLoss || 0) + floating >= capDaily) {
+          const hrs = Math.max(1, parseFloat(acc.lockDailyHours) || 24);
+          L.lockedUntil = Date.now() + hrs * HOUR_MS;
+          L.realizedLoss = capDaily;
+          lockSave();
+          const closed = [], failed = [];
+          for (const p of positions) {
+            if (L.manualSyms[p.symbol]?.baseline) continue;
+            try { await closeFollower(acc, p.symbol, parseFloat(p.positionAmt)); closed.push(p.symbol.replace('USDT', '')); }
+            catch (e) { failed.push(`${p.symbol}: ${e.message}`); }
+            await new Promise(r => setTimeout(r, 250));
+          }
+          lockNotify(
+            `⛔ ${acc.name} بلغ الحد اليومي — أُغلقت الصفقات اليدوية\n` +
+            `الخسارة (محقّقة+عائمة): $${((L.realizedLoss || 0) + floating).toFixed(2)} من $${capDaily}\n` +
+            (closed.length ? `✅ أُغلقت: ${closed.join(' · ')}\n` : 'ℹ️ لا توجد صفقات يدوية مفتوحة\n') +
+            (failed.length ? `❌ فشل: ${failed.join(' · ')}\n` : '') +
+            `⏳ يفتح بعد ${hrs} ساعة`
+          );
+          broadcast({ type: 'accounts', data: getSafeAccounts() });
+        }
+      }
+
+      // تقليم الزيادة فوق حد الصفقة الواحدة — فقط لو غير مقفل (لا داعي أثناء القفل، تُغلق كاملة)
+      const capTrade = parseFloat(acc.lockPerTradeAmt) || 0;
+      if (capTrade > 0 && !acctLockIsLocked(acc)) {
+        for (const pos of positions) {
+          if (L.manualSyms[pos.symbol]?.baseline) continue;
+          const amt = Math.abs(parseFloat(pos.positionAmt));
+          const mark = parseFloat(pos.markPrice) || livePrices[pos.symbol] || 0;
+          const lev = parseFloat(pos.leverage) || 1;
+          if (!mark || !amt) continue;
+          const margin = (amt * mark) / lev;
+          if (margin <= capTrade * 1.02) continue;
+          const excess = margin - capTrade;
+          const closeQty = roundQty((excess * lev) / mark, pos.symbol);
+          if (closeQty <= 0) continue;
+          try {
+            await reducePosition(acc, pos.symbol, parseFloat(pos.positionAmt), closeQty);
+            lockNotify(`✂️ ${acc.name} — تقليم الزيادة #${pos.symbol.replace('USDT', '/USDT')}\nالهامش كان $${margin.toFixed(2)} → أصبح $${capTrade.toFixed(2)}`);
+          } catch (e) { addCopyLog('fail', `❌ تقليم ${acc.name} ${pos.symbol}: ${e.message}`); }
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+
+      // مقفل: أي صفقة يدوية مفتوحة الآن (غير خط أساس) تُغلق فوراً
+      if (acctLockIsLocked(acc)) {
+        for (const pos of positions) {
+          if (L.manualSyms[pos.symbol]?.baseline) continue;
+          try { await closeFollower(acc, pos.symbol, parseFloat(pos.positionAmt)); }
+          catch (e) { addCopyLog('fail', `❌ إغلاق ${acc.name} ${pos.symbol} أثناء القفل: ${e.message}`); }
+          await new Promise(r => setTimeout(r, 250));
+        }
+      }
+    }
+    // بثّ واحد يغطي كل الحسابات بعد الدورة كاملة — يبقي المراكز والأرقام
+    // المعروضة بالواجهة محدّثة حتى بالدورات الهادئة (بلا إغلاق ولا قفل)
+    broadcast({ type: 'accounts', data: getSafeAccounts() });
+  } finally {
+    acctLockBusy = false;
+  }
+}
+
 function lockPublic() {
   const L = STATE.lockState;
   const cap = parseFloat(STATE.settings.lockDailyAmt) || 0;
@@ -1716,9 +1884,10 @@ function lockPublic() {
   const hrs = Math.max(1, parseFloat(STATE.settings.lockDailyHours) || 24);
   return {
     windowStart: L.windowStart, realizedLoss: L.realizedLoss || 0,
+    manualProfit: L.manualProfit || 0,
     lockedUntil: L.lockedUntil || 0, remaining: Math.max(0, cap - (L.realizedLoss || 0)),
     cap, perTradeCap, hours: hrs, locked: lockIsLocked(),
-    windowEnds: L.lockedUntil || (L.windowStart + hrs * HOUR_MS),
+    windowEnds: L.lockedUntil || 0,   // لا تجديد دوري — ٠ يعني بلا موعد لأنه يعتمد على بلوغ الحد
     trades: (L.trades || []).slice(0, 20),
     floating: manualFloatingLoss(),
     diag: L.diag || {},
@@ -3564,7 +3733,20 @@ function getSafeAccounts() {
     livePositions: a.livePositions || [],
     apiOk: a.apiOk,
     stats: a.stats || { opens: 0, closes: 0, wins: 0, losses: 0, tot: 0 },
-    closedTrades: (a.closedTrades || []).slice(0, 50)
+    closedTrades: (a.closedTrades || []).slice(0, 50),
+    // قفل الحد اليومي الخاص بالحساب (غير الماستر — لذاك نظامه العام المنفصل)
+    lockOn: !!a.lockOn,
+    lockDailyAmt: a.lockDailyAmt ?? 0,
+    lockPerTradeAmt: a.lockPerTradeAmt ?? 0,
+    lockDailyHours: a.lockDailyHours ?? 24,
+    lockPublic: a.lockOn ? {
+      locked: acctLockIsLocked(a),
+      lockedUntil: a.lockState?.lockedUntil || 0,
+      realizedLoss: a.lockState?.realizedLoss || 0,
+      manualProfit: a.lockState?.manualProfit || 0,
+      remaining: acctLockRemaining(a),
+      cap: a.lockDailyAmt ?? 0,
+    } : null,
   }));
 }
 
@@ -4256,6 +4438,46 @@ async function handleClientMsg(msg, ws) {
     case 'toggleAccount': {
       const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
       if (acc) { acc.isEnabled = !acc.isEnabled; db.saveAccounts(STATE.copyAccounts); broadcast({ type: 'accounts', data: getSafeAccounts() }); }
+      break;
+    }
+
+    // قفل الحد اليومي الخاص بحساب واحد (غير الماستر) — تفعيل/تعطيل
+    case 'toggleAcctLock': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (acc && !acc.isMaster) {
+        acc.lockOn = !acc.lockOn;
+        if (acc.lockOn && !acc.lockState) acc.lockState = { windowStart: 0, realizedLoss: 0, manualProfit: 0, lockedUntil: 0, manualSyms: {}, trades: [] };
+        db.saveAccounts(STATE.copyAccounts);
+        lockNotify(`${acc.lockOn ? '🔒 فُعّل' : '🔓 عُطّل'} قفل الحد اليومي — ${acc.name}`);
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
+      break;
+    }
+
+    // تعديل إعدادات قفل حساب واحد (الحد اليومي/حد الصفقة/عدد الساعات)
+    case 'setAcctLockSettings': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (acc && !acc.isMaster) {
+        const { lockDailyAmt, lockPerTradeAmt, lockDailyHours } = msg.data;
+        if (lockDailyAmt !== undefined) acc.lockDailyAmt = parseFloat(lockDailyAmt) || 0;
+        if (lockPerTradeAmt !== undefined) acc.lockPerTradeAmt = parseFloat(lockPerTradeAmt) || 0;
+        if (lockDailyHours !== undefined) acc.lockDailyHours = parseFloat(lockDailyHours) || 24;
+        db.saveAccounts(STATE.copyAccounts);
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
+      break;
+    }
+
+    // إعادة ضبط قفل حساب واحد يدوياً — يفتح التداول فوراً ويصفّر السجل
+    case 'resetAcctLock': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (acc && !acc.isMaster && acc.lockState) {
+        acc.lockState.lockedUntil = 0; acc.lockState.realizedLoss = 0; acc.lockState.manualProfit = 0;
+        acc.lockState.windowStart = Date.now(); acc.lockState.trades = [];
+        db.saveAccounts(STATE.copyAccounts);
+        lockNotify(`🔓 أُعيد ضبط قفل ${acc.name} يدوياً`);
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
       break;
     }
 
@@ -5538,6 +5760,10 @@ async function init() {
     }
     await monitorLock();
   }, 15000);
+
+  // مراقب قفل الحد اليومي لكل حساب (غير الماستر) — مستقل تماماً عن نظام
+  // الماستر وعن حالة النسخ، يعمل لأي حساب فعّلت عليه القفل بنفسه
+  setInterval(() => { monitorAccountLocks().catch(() => {}); }, 15000);
 
   // self-ping كل 25 ثانية لمنع النوم
   const selfHost = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL?.replace('https://', '');
