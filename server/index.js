@@ -38,6 +38,7 @@ app.options('*', cors());
 const DEFAULT_SETTINGS = {
   mode: 'SMA', maPeriod: 14, interval: '1h', extraIntervals: [],
   autoSend: false, enableDiv: true, blockOpen: true,
+  simCaptureMode: false,   // وضع اختبار: الإشارات التلقائية تروح لقائمة الانتظار بدل تلغرام
   sigFilters: { ob: true, os: true, conf: true, trail: true },
   cxMargin: 'Cross', cxLev: '20', cxAmt: '1%', cxAmtMax: '0',
   cxSLon: false, cxSL: '2', cxSLMax: '0',
@@ -1121,6 +1122,24 @@ async function triggerAlert(sym, sig, val, st = STATE.settings, tfOverride) {
         }
       }
     } catch (e) {}
+  }
+
+  // وضع المحاكاة/الاختبار: كل إشارة كانت ستُرسل تلقائياً تروح لقائمة الانتظار
+  // بدل تلغرام — لمراقبة كيف تتحرك الإشارات (معها أو عكسها) بدون حساب مربوط
+  // ولا رسائل فعلية. القائمة اليدوية (زر 📤) غير متأثرة، هذا يخص المسار التلقائي فقط
+  if (STATE.settings.simCaptureMode) {
+    if (!STATE.waitQueue.some(q => q.symbol === sym)) {
+      STATE.waitQueue.push({
+        id: Date.now() + Math.random(), symbol: sym, side: sig.side,
+        signalType: typeKey || 'trail', signalPrice: livePrices[sym] || 0,
+        addedTs: Date.now(), addedTime: nowStr(),
+        tf: tf || settingsFor(sym).interval || null,
+        label: sig.label || '', emoji: sig.emoji || '', color: sig.color || ''
+      });
+      db.saveWaitQueue(STATE.waitQueue);
+      broadcast({ type: 'waitQueue', data: queueWithReversals() });
+    }
+    return;
   }
 
   sendSignal(sym, sig.side, null, false, '', st, tf);
