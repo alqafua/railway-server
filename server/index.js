@@ -1801,6 +1801,13 @@ function checkProfitLocks(sym, price) {
     }
 
     if (!st.armed) {
+      // الباقي بعد إغلاق جزئي سابق: محميّ بالتعادل فقط — يرجع للدخول يُغلق
+      if (st.beActive && roi <= 0) {
+        st.firing = true;
+        plCloseRest(acc, sym, roi).catch(e => addCopyLog('fail', `❌ قفل الربح ${acc.name} ${sym}: ${e.message}`))
+          .finally(() => { delete store[sym]; });
+        continue;
+      }
       // الشرط: رابحة الآن + قفزت أكثر من الحد خلال النافذة (نقارن بأدنى نقطة فيها)
       if (roi <= 0) continue;
       let low = roi;
@@ -1808,24 +1815,24 @@ function checkProfitLocks(sym, price) {
       const jump = roi - low;
       if (jump < (parseFloat(cfg.jumpPct) || 400)) continue;
       st.armed = true; st.peak = roi; st.armedAt = now; st.startRoi = low;
-      const floor = plFloor(st, cfg);
-      plNotifySurge(acc, sym, low, roi, floor, cfg);
-      // إغلاق جزئي فوري عند القمة — يحوّل جزءاً من الربح الورقي إلى محقّق
-      const part = parseFloat(cfg.partialPct) || 0;
-      if (part > 0 && !st.partialDone) {
-        st.partialDone = true;
-        plPartialClose(acc, sym, pos, part).catch(() => {});
-      }
+      plNotifySurge(acc, sym, low, roi, plFloor(st, cfg), cfg);
       continue;
     }
 
-    // مسلّحة: القمة ترتفع ولا تنزل، والأرضية تتبعها
+    // مسلّحة: القمة ترتفع ولا تنزل، والأرضية تتبعها. لا يُغلق شيء إلا عند كسرها
     if (roi > st.peak) st.peak = roi;
     const floor = plFloor(st, cfg);
     if (roi <= floor) {
       st.firing = true;
-      plFire(acc, sym, roi, floor, cfg).catch(e => addCopyLog('fail', `❌ قفل الربح ${acc.name} ${sym}: ${e.message}`))
-        .finally(() => { delete store[sym]; });
+      plFire(acc, sym, roi, floor, cfg)
+        .then(rest => {
+          if (rest) {
+            // بقي جزء مفتوح: يُنزع التريلنج ويبقى محميّاً بالتعادل، ويقدر
+            // يتسلّح من جديد لو صارت طفرة ثانية
+            st.armed = false; st.beActive = true; st.peak = roi; st.samples = []; st.firing = false;
+          } else { delete store[sym]; }
+        })
+        .catch(e => { addCopyLog('fail', `❌ قفل الربح ${acc.name} ${sym}: ${e.message}`); delete store[sym]; });
     }
   }
 }
@@ -1840,41 +1847,58 @@ function plFloor(st, cfg) {
 }
 
 function plNotifySurge(acc, sym, from, to, floor, cfg) {
+  const pct = parseFloat(cfg.partialPct);
+  const partial = isFinite(pct) && pct > 0 && pct < 100;
   lockNotify(
     `🚀 طفرة — ${acc.name} · #${sym.replace('USDT', '/USDT')}\n` +
     `الربح: ${from.toFixed(0)}% ← ${to.toFixed(0)}%\n` +
-    `🛡️ الأرضية عند ${floor.toFixed(0)}%` +
-    (parseFloat(cfg.partialPct) > 0 ? `\n✂️ يُغلق ${cfg.partialPct}% الآن` : '')
+    `🛡️ الأرضية عند ${floor.toFixed(0)}% — ترتفع مع القمة\n` +
+    (partial ? `عند كسرها: يُغلق ${pct}% والباقي يكمل` : 'عند كسرها: تُغلق كاملة')
   );
 }
 
-async function plPartialClose(acc, sym, pos, pct) {
-  await ensureLotSize(sym);   // بدونها قد تُقرَّب الكمية بخطوة افتراضية خاطئة
+// عند كسر الأرضية: يُغلق الجزء المحدّد ويُترك الباقي مفتوحاً.
+// يُرجع true إن بقي جزء مفتوح، false إن أُغلقت الصفقة كاملة.
+async function plFire(acc, sym, roi, floor, cfg) {
+  const pos = (acc.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  if (!pos) return false;
+  const st = plStore(acc.id)[sym] || {};
   const amt = parseFloat(pos.positionAmt);
-  const qty = roundQty(Math.abs(amt) * (pct / 100), sym);
-  if (qty <= 0) return;
+  const pct = parseFloat(cfg.partialPct);
+  const head =
+    `🔐 قفل الربح — ${acc.name} · #${sym.replace('USDT', '/USDT')}\n` +
+    `📈 القمة: ${(st.peak || roi).toFixed(0)}% · الأرضية: ${floor.toFixed(0)}%\n`;
+  // نسبة غير منطقية (٠ أو ١٠٠ فأكثر) تعني إغلاقاً كاملاً
+  const partial = isFinite(pct) && pct > 0 && pct < 100;
   try {
-    await reducePosition(acc, sym, amt, qty);
-    addCopyLog('success', `✂️ قفل الربح: ${acc.name} أغلق ${pct}% من ${sym}`);
+    if (partial) {
+      await ensureLotSize(sym);   // بدونها قد تُقرَّب الكمية بخطوة افتراضية خاطئة
+      const qty = roundQty(Math.abs(amt) * (pct / 100), sym);
+      if (qty > 0) {
+        await reducePosition(acc, sym, amt, qty);
+        lockNotify(head + `✂️ أُغلق ${pct}% عند ${roi.toFixed(0)}%\n🛡️ الباقي مفتوح — يُغلق لو رجع لنقطة الدخول`);
+        return true;
+      }
+      // الكمية أصغر من خطوة العملة — نغلقها كاملة بدل تركها بلا حماية
+    }
+    await closeFollower(acc, sym, amt);
+    lockNotify(head + `✅ أُغلقت كاملة عند ${roi.toFixed(0)}%`);
+    return false;
   } catch (e) {
-    lockNotify(`⚠️ ${acc.name} — تعذّر الإغلاق الجزئي لـ#${sym.replace('USDT', '/USDT')}: ${e.message}`);
+    lockNotify(`❌ ${acc.name} — فشل الإغلاق عند الأرضية #${sym.replace('USDT', '/USDT')}: ${e.message}`);
     throw e;
   }
 }
 
-async function plFire(acc, sym, roi, floor, cfg) {
+// الجزء المتبقّي رجع لنقطة الدخول — يُغلق كاملاً
+async function plCloseRest(acc, sym, roi) {
   const pos = (acc.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   if (!pos) return;
-  const st = plStore(acc.id)[sym] || {};
   try {
     await closeFollower(acc, sym, parseFloat(pos.positionAmt));
-    lockNotify(
-      `🔐 قفل الربح — ${acc.name} · #${sym.replace('USDT', '/USDT')}\n` +
-      `📈 القمة: ${(st.peak || roi).toFixed(0)}% · الأرضية: ${floor.toFixed(0)}%\n` +
-      `✅ أُغلقت عند ${roi.toFixed(0)}%`
-    );
+    lockNotify(`🔐 قفل الربح — ${acc.name} · #${sym.replace('USDT', '/USDT')}\n↩️ رجع لنقطة الدخول (${roi.toFixed(0)}%) — أُغلق الباقي`);
   } catch (e) {
-    lockNotify(`❌ ${acc.name} — فشل إغلاق #${sym.replace('USDT', '/USDT')} عند الأرضية: ${e.message}`);
+    lockNotify(`❌ ${acc.name} — فشل إغلاق الباقي #${sym.replace('USDT', '/USDT')}: ${e.message}`);
     throw e;
   }
 }
