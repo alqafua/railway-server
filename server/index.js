@@ -6066,6 +6066,17 @@ async function init() {
   // الماستر وعن حالة النسخ، يعمل لأي حساب فعّلت عليه القفل بنفسه
   setInterval(() => { monitorAccountLocks().catch(() => {}); }, 15000);
 
+  // مراكز حسابات قفل الربح كل ٥ ثوانٍ: صائد الطفرات يحسب الربح على السعر
+  // اللحظي لكن لا يعرف بوجود المركز أصلاً إلا حين تصله المراكز. بدورة ١٥ ثانية
+  // تمرّ أول ثوانٍ من الصفقة دون مراقبة — وهي بالضبط حيث تقع طفرة الدخول
+  setInterval(async () => {
+    for (const acc of STATE.copyAccounts) {
+      if (!acc.apiKey || !profitLockCfg(acc).on) continue;
+      if (acc.isMaster && STATE.copyOn) continue;   // syncCopy يحدّثها كل ٥ ثوانٍ
+      try { acc.livePositions = await getPositions(acc); } catch (e) {}
+    }
+  }, 5000);
+
   // self-ping كل 25 ثانية لمنع النوم
   const selfHost = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL?.replace('https://', '');
   if (selfHost) {
