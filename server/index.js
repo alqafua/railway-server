@@ -1789,7 +1789,8 @@ const PROFIT_LOCK_DEFAULTS = {
   jumpPct: 400,      // قفزة PnL التي تُعدّ طفرة
   windowMin: 10,     // نافذة الكشف بالدقائق (أقصى مدى للذاكرة)
   keepPct: 70,       // نسبة الاحتفاظ من قمة الربح (الأرضية)
-  partialPct: 50,    // ما يُغلق فوراً عند الكشف
+  partialPct: 50,    // ما يُغلق عند كسر الأرضية
+  armAbove: 0,       // تسليح فوري لأي ربح يتجاوز هذا الحد (٠ = مطفأ)
   beGuard: true,     // بعد الطفرة لا تعود الصفقة للسالب أبداً
   scope: 'manual',   // all | manual | bot
 };
@@ -1851,12 +1852,18 @@ function checkProfitLocks(sym, price) {
         continue;
       }
       // الشرط: رابحة الآن + قفزت أكثر من الحد خلال النافذة (نقارن بأدنى نقطة فيها)
-      if (roi <= 0) continue;
+      if (roi <= 0) { st.jump = 0; continue; }
       let low = roi;
       for (const s of st.samples) if (s.roi < low) low = s.roi;
       const jump = roi - low;
-      if (jump < (parseFloat(cfg.jumpPct) || 400)) continue;
-      st.armed = true; st.peak = roi; st.armedAt = now; st.startRoi = low;
+      st.jump = jump;   // للعرض: كم رصد البوت فعلياً مقابل الحد
+      // مسار ثانٍ: ربح كبير قائم أصلاً. الطفرة تُرصد فقط إن رآها البوت تحدث،
+      // فمركز كان رابحاً قبل أن يبدأ المراقبة (أو قبل إعادة تشغيل) يبقى بلا حماية
+      // إلى الأبد. هذا الحد يسلّحه فوراً بمستواه الحالي مهما كان تاريخه
+      const armAbove = parseFloat(cfg.armAbove) || 0;
+      const levelHit = armAbove > 0 && roi >= armAbove;
+      if (!levelHit && jump < (parseFloat(cfg.jumpPct) || 400)) continue;
+      st.armed = true; st.peak = roi; st.armedAt = now; st.startRoi = levelHit ? roi : low;
       plNotifySurge(acc, sym, low, roi, plFloor(st, cfg), cfg);
       continue;
     }
@@ -3976,8 +3983,11 @@ function getSafeAccounts() {
     profitLock: profitLockCfg(a),
     // ما هو مسلَّح الآن على هذا الحساب (قمة/أرضية كل مركز) — للعرض اللحظي
     profitArmed: Object.entries(plRuntime[a.id] || {})
-      .filter(([, s]) => s.armed)
-      .map(([sym, s]) => ({ sym, peak: s.peak, floor: plFloor(s, profitLockCfg(a)) })),
+      .map(([sym, s]) => ({
+        sym, armed: !!s.armed, beActive: !!s.beActive,
+        peak: s.peak, jump: s.jump || 0,
+        floor: s.armed ? plFloor(s, profitLockCfg(a)) : null,
+      })),
     lockPublic: a.lockOn ? {
       locked: acctLockIsLocked(a),
       lockedUntil: a.lockState?.lockedUntil || 0,
@@ -4716,6 +4726,7 @@ async function handleClientMsg(msg, ws) {
         acc.profitLock = {
           ...cfg,
           jumpPct: num(d.jumpPct, cfg.jumpPct),
+          armAbove: num(d.armAbove, cfg.armAbove),
           windowMin: num(d.windowMin, cfg.windowMin),
           keepPct: num(d.keepPct, cfg.keepPct),
           partialPct: num(d.partialPct, cfg.partialPct),
