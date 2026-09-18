@@ -5130,6 +5130,13 @@ async function handleClientMsg(msg, ws) {
       else store[sym] = kind === 'manual' ? 'manual' : 'bot';
       // التصنيف الجديد يعني إعادة تقييم الوقف
       if (STATE.lockState.manualSyms[sym]) delete STATE.lockState.manualSyms[sym].slPlaced;
+      // تصنيف صريح من المستخدم يرفع صفة "خط الأساس" — هي حماية لمراكز كانت
+      // مفتوحة قبل أن يبدأ النظام مراقبتها (كل إعادة تشغيل تضعها)، ومتى ما قال
+      // المستخدم صراحةً كيف يصنّفها فهو يقصد أن تُعامَل معاملة كاملة
+      if (kind !== 'auto' && STATE.lockState.manualSyms[sym]?.baseline) {
+        delete STATE.lockState.manualSyms[sym].baseline;
+        lockNotify(`▶️ ${sym.replace('USDT', '/USDT')} — رُفعت صفة خط الأساس، صارت تخضع للتقليم والحد اليومي`);
+      }
       lockSave();
       const master = STATE.copyAccounts.find(a => a.isMaster);
       if (master?.apiKey) {
