@@ -1734,6 +1734,151 @@ async function checkDailyLossLimit() {
 // للماستر حصراً). كل حساب له حالته الخاصة (acc.lockState) وإعداداته الخاصة
 // (acc.lockOn/lockDailyAmt/lockPerTradeAmt/lockDailyHours) — تعمل بغض النظر
 // عن تفعيل النسخ (Copy) من عدمه، لأنها تحمي من التدخل اليدوي على الحساب نفسه.
+// ══════════════════════════════════════════════
+//  قفل الربح — صائد الطفرات (لكل حساب على حدة)
+// ══════════════════════════════════════════════
+// نفس فكرة قفل الخسارة لكن بالعكس: يحمي ربحاً قائماً من أن يتبخّر.
+// يكتشف "الطفرة" = قفزة PnL أكبر من حدٍّ معيّن خلال نافذة زمنية، ثم يثبّت
+// أرضية متحركة تلاحق القمة. السرعة شرط أساسي هنا: الكشف والتنفيذ يجريان
+// على بث السعر اللحظي (كل تحديث من بايننس) لا على دورة كل ١٥ ثانية،
+// لأن الذيل قد يصعد ويعود خلال ثوانٍ.
+const PROFIT_LOCK_DEFAULTS = {
+  on: false,
+  jumpPct: 400,      // قفزة PnL التي تُعدّ طفرة
+  windowMin: 10,     // نافذة الكشف بالدقائق (أقصى مدى للذاكرة)
+  keepPct: 70,       // نسبة الاحتفاظ من قمة الربح (الأرضية)
+  partialPct: 50,    // ما يُغلق فوراً عند الكشف
+  beGuard: true,     // بعد الطفرة لا تعود الصفقة للسالب أبداً
+  scope: 'manual',   // all | manual | bot
+};
+
+function profitLockCfg(acc) {
+  return { ...PROFIT_LOCK_DEFAULTS, ...(acc.profitLock || {}) };
+}
+
+// حالة لحظية لكل مركز — بالذاكرة فقط، تُبنى من جديد بعد أي إعادة تشغيل
+const plRuntime = {};   // accId -> { [sym]: { samples:[{t,roi}], armed, peak, partialDone, firing } }
+function plStore(accId) { return plRuntime[accId] || (plRuntime[accId] = {}); }
+
+// PnL% كما يعرضه بايننس: حركة السعر × الرافعة
+function posRoi(pos, price) {
+  const entry = parseFloat(pos.entryPrice) || 0;
+  const amt = parseFloat(pos.positionAmt) || 0;
+  const lev = parseFloat(pos.leverage) || 1;
+  if (!entry || !amt || !price) return null;
+  const move = ((price - entry) / entry) * 100 * (amt > 0 ? 1 : -1);
+  return move * lev;
+}
+
+// يُستدعى مع كل تحديث سعر — خفيف: حساب رقمي على بيانات محفوظة بلا أي طلب شبكة
+function checkProfitLocks(sym, price) {
+  if (!price) return;
+  const now = Date.now();
+  for (const acc of STATE.copyAccounts) {
+    const cfg = profitLockCfg(acc);
+    if (!cfg.on || !acc.apiKey) continue;
+    const pos = (acc.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+    const store = plStore(acc.id);
+    if (!pos) { delete store[sym]; continue; }
+    // النطاق: يدوي/بوت/الكل — للماستر فقط يُعرف التصنيف، غيره كله يدوي بطبيعته
+    if (cfg.scope !== 'all') {
+      const manual = acc.isMaster ? isManualPosition(sym, pos) : true;
+      if (cfg.scope === 'manual' && !manual) continue;
+      if (cfg.scope === 'bot' && manual) continue;
+    }
+    const roi = posRoi(pos, price);
+    if (roi === null) continue;
+
+    const st = store[sym] || (store[sym] = { samples: [], armed: false, peak: roi, partialDone: false, firing: false });
+    if (st.firing) continue;
+
+    // عيّنة كل ثانيتين تكفي للكشف وتبقي الذاكرة صغيرة — أما الفحص فمع كل تحديث
+    const last = st.samples[st.samples.length - 1];
+    if (!last || now - last.t >= 2000) {
+      st.samples.push({ t: now, roi });
+      const cutoff = now - Math.max(1, parseFloat(cfg.windowMin) || 10) * 60000;
+      while (st.samples.length && st.samples[0].t < cutoff) st.samples.shift();
+    }
+
+    if (!st.armed) {
+      // الشرط: رابحة الآن + قفزت أكثر من الحد خلال النافذة (نقارن بأدنى نقطة فيها)
+      if (roi <= 0) continue;
+      let low = roi;
+      for (const s of st.samples) if (s.roi < low) low = s.roi;
+      const jump = roi - low;
+      if (jump < (parseFloat(cfg.jumpPct) || 400)) continue;
+      st.armed = true; st.peak = roi; st.armedAt = now; st.startRoi = low;
+      const floor = plFloor(st, cfg);
+      plNotifySurge(acc, sym, low, roi, floor, cfg);
+      // إغلاق جزئي فوري عند القمة — يحوّل جزءاً من الربح الورقي إلى محقّق
+      const part = parseFloat(cfg.partialPct) || 0;
+      if (part > 0 && !st.partialDone) {
+        st.partialDone = true;
+        plPartialClose(acc, sym, pos, part).catch(() => {});
+      }
+      continue;
+    }
+
+    // مسلّحة: القمة ترتفع ولا تنزل، والأرضية تتبعها
+    if (roi > st.peak) st.peak = roi;
+    const floor = plFloor(st, cfg);
+    if (roi <= floor) {
+      st.firing = true;
+      plFire(acc, sym, roi, floor, cfg).catch(e => addCopyLog('fail', `❌ قفل الربح ${acc.name} ${sym}: ${e.message}`))
+        .finally(() => { delete store[sym]; });
+    }
+  }
+}
+
+// الأرضية = نسبة من القمة، ومع حارس التعادل لا تنزل تحت الصفر أبداً
+function plFloor(st, cfg) {
+  const keep = parseFloat(cfg.keepPct);
+  const k = isFinite(keep) ? keep : 70;
+  let floor = st.peak * (k / 100);
+  if (cfg.beGuard && floor < 0) floor = 0;
+  return floor;
+}
+
+function plNotifySurge(acc, sym, from, to, floor, cfg) {
+  lockNotify(
+    `🚀 طفرة — ${acc.name} · #${sym.replace('USDT', '/USDT')}\n` +
+    `الربح: ${from.toFixed(0)}% ← ${to.toFixed(0)}%\n` +
+    `🛡️ الأرضية عند ${floor.toFixed(0)}%` +
+    (parseFloat(cfg.partialPct) > 0 ? `\n✂️ يُغلق ${cfg.partialPct}% الآن` : '')
+  );
+}
+
+async function plPartialClose(acc, sym, pos, pct) {
+  await ensureLotSize(sym);   // بدونها قد تُقرَّب الكمية بخطوة افتراضية خاطئة
+  const amt = parseFloat(pos.positionAmt);
+  const qty = roundQty(Math.abs(amt) * (pct / 100), sym);
+  if (qty <= 0) return;
+  try {
+    await reducePosition(acc, sym, amt, qty);
+    addCopyLog('success', `✂️ قفل الربح: ${acc.name} أغلق ${pct}% من ${sym}`);
+  } catch (e) {
+    lockNotify(`⚠️ ${acc.name} — تعذّر الإغلاق الجزئي لـ#${sym.replace('USDT', '/USDT')}: ${e.message}`);
+    throw e;
+  }
+}
+
+async function plFire(acc, sym, roi, floor, cfg) {
+  const pos = (acc.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  if (!pos) return;
+  const st = plStore(acc.id)[sym] || {};
+  try {
+    await closeFollower(acc, sym, parseFloat(pos.positionAmt));
+    lockNotify(
+      `🔐 قفل الربح — ${acc.name} · #${sym.replace('USDT', '/USDT')}\n` +
+      `📈 القمة: ${(st.peak || roi).toFixed(0)}% · الأرضية: ${floor.toFixed(0)}%\n` +
+      `✅ أُغلقت عند ${roi.toFixed(0)}%`
+    );
+  } catch (e) {
+    lockNotify(`❌ ${acc.name} — فشل إغلاق #${sym.replace('USDT', '/USDT')} عند الأرضية: ${e.message}`);
+    throw e;
+  }
+}
+
 function acctLockWindow(acc) {
   const L = acc.lockState || (acc.lockState = { windowStart: 0, realizedLoss: 0, manualProfit: 0, lockedUntil: 0, manualSyms: {}, trades: [] });
   const now = Date.now();
@@ -1783,7 +1928,15 @@ async function monitorAccountLocks() {
   acctLockBusy = true;
   try {
     for (const acc of STATE.copyAccounts) {
-      if (acc.isMaster || !acc.lockOn || !acc.apiKey) continue;
+      if (acc.isMaster || !acc.apiKey) continue;
+      // قفل الربح يحتاج مراكز محدّثة كي يحسب PnL على السعر اللحظي، حتى لو كان
+      // قفل الخسارة اليومي مطفأً على هذا الحساب — فنحدّثها ثم نخرج
+      if (!acc.lockOn) {
+        if (profitLockCfg(acc).on) {
+          try { acc.livePositions = await getPositions(acc); } catch (e) {}
+        }
+        continue;
+      }
       const prevPositions = acc.livePositions || [];
       let positions;
       try { positions = await getPositions(acc); } catch (e) { continue; }
@@ -3278,6 +3431,8 @@ function startBinanceWSGroup(interval, syms) {
       livePrices[sym] = close;
       // الوقف الافتراضي يُفحص على السعر اللحظي لا على دورة كل ١٥ ثانية
       checkVStops(sym, close);
+      // قفل الربح — نفس المسار السريع: طفرة قد تصعد وتعود خلال ثوانٍ فلا تنتظر دورة
+      checkProfitLocks(sym, close);
       // الحدّ اليومي (محقّق + عائم) — مخنوق لثانيتين فالحساب يمرّ على كل المراكز
       if (Date.now() - lastDailyCheck > 2000) {
         lastDailyCheck = Date.now();
@@ -3758,6 +3913,11 @@ function getSafeAccounts() {
     lockDailyAmt: a.lockDailyAmt ?? 0,
     lockPerTradeAmt: a.lockPerTradeAmt ?? 0,
     lockDailyHours: a.lockDailyHours ?? 24,
+    profitLock: profitLockCfg(a),
+    // ما هو مسلَّح الآن على هذا الحساب (قمة/أرضية كل مركز) — للعرض اللحظي
+    profitArmed: Object.entries(plRuntime[a.id] || {})
+      .filter(([, s]) => s.armed)
+      .map(([sym, s]) => ({ sym, peak: s.peak, floor: plFloor(s, profitLockCfg(a)) })),
     lockPublic: a.lockOn ? {
       locked: acctLockIsLocked(a),
       lockedUntil: a.lockState?.lockedUntil || 0,
@@ -4468,6 +4628,41 @@ async function handleClientMsg(msg, ws) {
         if (acc.lockOn && !acc.lockState) acc.lockState = { windowStart: 0, realizedLoss: 0, manualProfit: 0, lockedUntil: 0, manualSyms: {}, trades: [] };
         db.saveAccounts(STATE.copyAccounts);
         lockNotify(`${acc.lockOn ? '🔒 فُعّل' : '🔓 عُطّل'} قفل الحد اليومي — ${acc.name}`);
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
+      break;
+    }
+
+    // قفل الربح (صائد الطفرات) — تفعيل/تعطيل لحساب واحد (الماستر مشمول)
+    case 'toggleProfitLock': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (acc) {
+        const cfg = profitLockCfg(acc);
+        acc.profitLock = { ...cfg, on: !cfg.on };
+        db.saveAccounts(STATE.copyAccounts);
+        lockNotify(`${acc.profitLock.on ? '🔐 فُعّل' : '🔓 عُطّل'} قفل الربح — ${acc.name}`);
+        broadcast({ type: 'accounts', data: getSafeAccounts() });
+      }
+      break;
+    }
+
+    // تعديل أرقام قفل الربح لحساب واحد
+    case 'setProfitLockSettings': {
+      const acc = STATE.copyAccounts.find(a => a.id === msg.data.id);
+      if (acc) {
+        const cfg = profitLockCfg(acc);
+        const d = msg.data;
+        const num = (v, cur) => (v === undefined ? cur : (parseFloat(v) || 0));
+        acc.profitLock = {
+          ...cfg,
+          jumpPct: num(d.jumpPct, cfg.jumpPct),
+          windowMin: num(d.windowMin, cfg.windowMin),
+          keepPct: num(d.keepPct, cfg.keepPct),
+          partialPct: num(d.partialPct, cfg.partialPct),
+          beGuard: d.beGuard === undefined ? cfg.beGuard : !!d.beGuard,
+          scope: d.scope === undefined ? cfg.scope : d.scope,
+        };
+        db.saveAccounts(STATE.copyAccounts);
         broadcast({ type: 'accounts', data: getSafeAccounts() });
       }
       break;
