@@ -1840,6 +1840,12 @@ function checkProfitLocks(sym, price) {
     st.skip = null;
     if (st.firing) continue;
 
+    // أول ما نرى المركز: نبني نافذة القياس من شموع بايننس نفسها بدل أن نبدأ
+    // من الصفر. الطفرة تُقاس بالفرق عن أدنى نقطة في النافذة، ومركز لم نره وهو
+    // يصعد ليس له أدنى نقطة — فيقرأ صفراً ويبقى بلا حماية مهما ارتفع. مرة واحدة
+    // لكل مركز، ولا تُحسب إلا الشموع بعد فتح الصفقة فعلاً
+    if (!st.seeded) { st.seeded = true; plSeedHistory(sym, pos, st, cfg).catch(() => {}); }
+
     // عيّنة كل ثانيتين تكفي للكشف وتبقي الذاكرة صغيرة — أما الفحص فمع كل تحديث
     const last = st.samples[st.samples.length - 1];
     if (!last || now - last.t >= 2000) {
@@ -1889,6 +1895,29 @@ function checkProfitLocks(sym, price) {
         .catch(e => { addCopyLog('fail', `❌ قفل الربح ${acc.name} ${sym}: ${e.message}`); delete store[sym]; });
     }
   }
+}
+
+// يملأ نافذة القياس بتاريخ حقيقي من شموع الدقيقة: لكل شمعة نأخذ أسوأ سعر
+// للمركز (القاع للونج، القمة للشورت) فيكون أدنى ربح مرّ به فعلاً داخل النافذة
+async function plSeedHistory(sym, pos, st, cfg) {
+  const win = Math.max(1, parseFloat(cfg.windowMin) || 10);
+  const limit = Math.min(500, Math.ceil(win) + 2);
+  const ks = await fetchBinance(`/fapi/v1/klines?symbol=${sym}&interval=1m&limit=${limit}`);
+  if (!Array.isArray(ks) || !ks.length) return;
+  const amt = parseFloat(pos.positionAmt) || 0;
+  const openedAt = parseFloat(pos.updateTime) || 0;
+  const cutoff = Date.now() - win * 60000;
+  const out = [];
+  for (const k of ks) {
+    const t = parseFloat(k[6]) || 0;               // وقت إغلاق الشمعة
+    if (t < cutoff) continue;
+    if (openedAt && t < openedAt) continue;        // قبل فتح المركز — طفرة لم تعشها الصفقة
+    const worst = amt > 0 ? parseFloat(k[3]) : parseFloat(k[2]);   // قاع للونج · قمة للشورت
+    const roi = posRoi(pos, worst);
+    if (roi !== null) out.push({ t, roi });
+  }
+  if (!out.length) return;
+  st.samples = out.concat(st.samples).slice(-500);
 }
 
 // الأرضية = نسبة من القمة، ومع حارس التعادل لا تنزل تحت الصفر أبداً
