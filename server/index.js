@@ -1823,16 +1823,21 @@ function checkProfitLocks(sym, price) {
     const pos = (acc.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
     const store = plStore(acc.id);
     if (!pos) { delete store[sym]; continue; }
-    // النطاق: يدوي/بوت/الكل — للماستر فقط يُعرف التصنيف، غيره كله يدوي بطبيعته
-    if (cfg.scope !== 'all') {
-      const manual = acc.isMaster ? isManualPosition(sym, pos) : true;
-      if (cfg.scope === 'manual' && !manual) continue;
-      if (cfg.scope === 'bot' && manual) continue;
-    }
     const roi = posRoi(pos, price);
     if (roi === null) continue;
 
+    // المدخل يُنشأ لكل مركز يمرّ من هنا — حتى المستبعد بالنطاق. بدون هذا
+    // يختفي المركز من لوحة التشخيص تماماً فلا يُعرف هل البوت يراه أصلاً
     const st = store[sym] || (store[sym] = { samples: [], armed: false, peak: roi, partialDone: false, firing: false });
+    st.roi = roi; st.seenAt = now;
+
+    // النطاق: يدوي/بوت/الكل — للماستر فقط يُعرف التصنيف، غيره كله يدوي بطبيعته
+    if (cfg.scope !== 'all') {
+      const mc = acc.isMaster ? manualCheck(sym, pos) : { manual: true, why: 'يدوية' };
+      const want = cfg.scope === 'manual' ? mc.manual : !mc.manual;
+      if (!want) { st.skip = mc.why; continue; }
+    }
+    st.skip = null;
     if (st.firing) continue;
 
     // عيّنة كل ثانيتين تكفي للكشف وتبقي الذاكرة صغيرة — أما الفحص فمع كل تحديث
@@ -3985,7 +3990,7 @@ function getSafeAccounts() {
     profitArmed: Object.entries(plRuntime[a.id] || {})
       .map(([sym, s]) => ({
         sym, armed: !!s.armed, beActive: !!s.beActive,
-        peak: s.peak, jump: s.jump || 0,
+        peak: s.peak, jump: s.jump || 0, roi: s.roi ?? null, skip: s.skip || null,
         floor: s.armed ? plFloor(s, profitLockCfg(a)) : null,
       })),
     lockPublic: a.lockOn ? {
@@ -6070,10 +6075,24 @@ async function init() {
   // اللحظي لكن لا يعرف بوجود المركز أصلاً إلا حين تصله المراكز. بدورة ١٥ ثانية
   // تمرّ أول ثوانٍ من الصفقة دون مراقبة — وهي بالضبط حيث تقع طفرة الدخول
   setInterval(async () => {
+    const syms = new Set();
     for (const acc of STATE.copyAccounts) {
       if (!acc.apiKey || !profitLockCfg(acc).on) continue;
-      if (acc.isMaster && STATE.copyOn) continue;   // syncCopy يحدّثها كل ٥ ثوانٍ
-      try { acc.livePositions = await getPositions(acc); } catch (e) {}
+      // الماستر أثناء النسخ يحدّثه syncCopy كل ٥ ثوانٍ — لا نكرّر الطلب
+      if (!(acc.isMaster && STATE.copyOn)) {
+        try { acc.livePositions = await getPositions(acc); } catch (e) {}
+      }
+      for (const p of acc.livePositions || []) {
+        if (Math.abs(parseFloat(p.positionAmt || 0)) > 0) syms.add(p.symbol);
+      }
+    }
+    // فحص من سعر المركز نفسه: مسار السعر اللحظي يبقى الأسرع، لكنه مشروط
+    // ببثّ WS للرمز. هذا يضمن أن كل مركز مفتوح يُفحص كل ٥ ثوانٍ مهما حصل
+    for (const sym of syms) {
+      const acc = STATE.copyAccounts.find(a => (a.livePositions || []).some(p => p.symbol === sym));
+      const p = acc && (acc.livePositions || []).find(x => x.symbol === sym);
+      const price = livePrices[sym] || parseFloat(p?.markPrice) || 0;
+      if (price) { try { checkProfitLocks(sym, price); } catch (e) {} }
     }
   }, 5000);
 
