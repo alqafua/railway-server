@@ -1651,7 +1651,7 @@ function lockRecordClose(sym, pnlUsd, opts = {}) {
     );
   } else {
     lockNotify(
-      `${pnlUsd >= 0 ? '✅' : '❌'} أُغلقت ${sym.replace('USDT', '/USDT')} — ${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toFixed(2)}\n` +
+      `${pnlUsd >= 0 ? '✅' : '❌'} أُغلقت ${symShort(sym)} — ${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toFixed(2)}\n` +
       `المتبقي من الحد اليومي: $${lockRemaining().toFixed(2)} من $${cap}`
     );
   }
@@ -1803,6 +1803,39 @@ function profitLockCfg(acc) {
 const plRuntime = {};   // accId -> { [sym]: { samples:[{t,roi}], armed, peak, partialDone, firing } }
 function plStore(accId) { return plRuntime[accId] || (plRuntime[accId] = {}); }
 
+// اسم العملة بلا لاحقة الزوج — الإشعارات تكتفي بالاسم
+function symShort(sym) { return String(sym || '').replace(/USDT$/, ''); }
+
+// السعر المقابل لنسبة ربح معيّنة على هذا المركز — عكس posRoi، لعرض
+// مستوى القفل بسعره لا بنسبته فقط
+function roiToPrice(pos, roi) {
+  const entry = parseFloat(pos.entryPrice) || 0;
+  const amt = parseFloat(pos.positionAmt) || 0;
+  const lev = parseFloat(pos.leverage) || 1;
+  if (!entry || !amt || !lev || !isFinite(roi)) return null;
+  return entry * (1 + (amt > 0 ? 1 : -1) * (roi / (100 * lev)));
+}
+
+// صيغة العدد بالعربية — مفرد ومثنّى وجمع قلّة وكثرة
+function arCount(n, one, two, few, many) {
+  if (n === 1) return one;
+  if (n === 2) return two;
+  return n >= 3 && n <= 10 ? `${n} ${few}` : `${n} ${many}`;
+}
+const AR_SEC = ['ثانية', 'ثانيتين', 'ثوانٍ', 'ثانية'];
+const AR_MIN = ['دقيقة', 'دقيقتين', 'دقائق', 'دقيقة'];
+const AR_HR  = ['ساعة', 'ساعتين', 'ساعات', 'ساعة'];
+
+// مدّة الطفرة — قد تقع في ثوانٍ فلا تكفي الدقائق وحدها
+function fmtDur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return arCount(s, ...AR_SEC);
+  const m = Math.round(s / 60);
+  if (m < 60) return arCount(m, ...AR_MIN);
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${arCount(h, ...AR_HR)} و${arCount(r, ...AR_MIN)}` : arCount(h, ...AR_HR);
+}
+
 // PnL% كما يعرضه بايننس: حركة السعر × الرافعة
 function posRoi(pos, price) {
   const entry = parseFloat(pos.entryPrice) || 0;
@@ -1858,14 +1891,14 @@ function checkProfitLocks(sym, price) {
       // الباقي بعد إغلاق جزئي سابق: محميّ بالتعادل فقط — يرجع للدخول يُغلق
       if (st.beActive && roi <= 0) {
         st.firing = true;
-        plCloseRest(acc, sym, roi).catch(e => addCopyLog('fail', `❌ قفل الربح ${acc.name} ${sym}: ${e.message}`))
+        plCloseRest(acc, sym, roi, price).catch(e => addCopyLog('fail', `❌ قفل الربح ${acc.name} ${sym}: ${e.message}`))
           .finally(() => { delete store[sym]; });
         continue;
       }
       // الشرط: رابحة الآن + قفزت أكثر من الحد خلال النافذة (نقارن بأدنى نقطة فيها)
       if (roi <= 0) { st.jump = 0; continue; }
-      let low = roi;
-      for (const s of st.samples) if (s.roi < low) low = s.roi;
+      let low = roi, lowT = now;
+      for (const s of st.samples) if (s.roi < low) { low = s.roi; lowT = s.t; }
       const jump = roi - low;
       st.jump = jump;   // للعرض: كم رصد البوت فعلياً مقابل الحد
       // مسار ثانٍ: ربح كبير قائم أصلاً. الطفرة تُرصد فقط إن رآها البوت تحدث،
@@ -1874,17 +1907,18 @@ function checkProfitLocks(sym, price) {
       const armAbove = parseFloat(cfg.armAbove) || 0;
       const levelHit = armAbove > 0 && roi >= armAbove;
       if (!levelHit && jump < (parseFloat(cfg.jumpPct) || 400)) continue;
-      st.armed = true; st.peak = roi; st.armedAt = now; st.startRoi = levelHit ? roi : low;
-      plNotifySurge(acc, sym, low, roi, plFloor(st, cfg), cfg);
+      st.armed = true; st.peak = roi; st.peakPrice = price; st.armedAt = now;
+      st.startRoi = levelHit ? roi : low;
+      plNotifySurge(acc, sym, pos, low, roi, levelHit ? 0 : now - lowT, plFloor(st, cfg), cfg);
       continue;
     }
 
     // مسلّحة: القمة ترتفع ولا تنزل، والأرضية تتبعها. لا يُغلق شيء إلا عند كسرها
-    if (roi > st.peak) st.peak = roi;
+    if (roi > st.peak) { st.peak = roi; st.peakPrice = price; }
     const floor = plFloor(st, cfg);
     if (roi <= floor) {
       st.firing = true;
-      plFire(acc, sym, roi, floor, cfg)
+      plFire(acc, sym, roi, floor, cfg, price)
         .then(rest => {
           if (rest) {
             // بقي جزء مفتوح: يُنزع التريلنج ويبقى محميّاً بالتعادل، ويقدر
@@ -1929,28 +1963,35 @@ function plFloor(st, cfg) {
   return floor;
 }
 
-function plNotifySurge(acc, sym, from, to, floor, cfg) {
+function plNotifySurge(acc, sym, pos, from, to, durMs, floor, cfg) {
   const pct = parseFloat(cfg.partialPct);
   const partial = isFinite(pct) && pct > 0 && pct < 100;
+  const keep = parseFloat(cfg.keepPct);
+  const give = 100 - (isFinite(keep) ? keep : 70);   // ما يُتنازل عنه من القمة
+  const fp = roiToPrice(pos, floor);
   lockNotify(
-    `🚀 طفرة — ${acc.name} · #${sym.replace('USDT', '/USDT')}\n` +
-    `الربح: ${from.toFixed(0)}% ← ${to.toFixed(0)}%\n` +
-    `🛡️ الأرضية عند ${floor.toFixed(0)}% — ترتفع مع القمة\n` +
-    (partial ? `عند كسرها: يُغلق ${pct}% والباقي يكمل` : 'عند كسرها: تُغلق كاملة')
+    `🚀 طفرة — ${acc.name} · #${symShort(sym)}\n` +
+    `الربح: ${from.toFixed(0)}% ← ${to.toFixed(0)}%` + (durMs > 0 ? ` خلال ${fmtDur(durMs)}` : '') + `\n` +
+    `🛡️ قفل الصفقة عند ${floor.toFixed(0)}%` + (fp ? ` · السعر ${fmtSignalPrice(fp)}` : '') + `\n` +
+    `📉 مقدار المتابعة: ${give}% من أعلى ربح\n` +
+    (partial ? `✂️ يُغلق ${pct}% فقط` : `✂️ تُغلق كاملة`)
   );
 }
 
 // عند كسر الأرضية: يُغلق الجزء المحدّد ويُترك الباقي مفتوحاً.
 // يُرجع true إن بقي جزء مفتوح، false إن أُغلقت الصفقة كاملة.
-async function plFire(acc, sym, roi, floor, cfg) {
+async function plFire(acc, sym, roi, floor, cfg, price) {
   const pos = (acc.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   if (!pos) return false;
   const st = plStore(acc.id)[sym] || {};
   const amt = parseFloat(pos.positionAmt);
   const pct = parseFloat(cfg.partialPct);
+  const entry = parseFloat(pos.entryPrice) || 0;
+  const peakRoi = st.peak || roi;
+  const peakPx = st.peakPrice || roiToPrice(pos, peakRoi);
   const head =
-    `🔐 قفل الربح — ${acc.name} · #${sym.replace('USDT', '/USDT')}\n` +
-    `📈 القمة: ${(st.peak || roi).toFixed(0)}% · الأرضية: ${floor.toFixed(0)}%\n`;
+    `💸 قفل الربح — ${acc.name} · #${symShort(sym)}\n` +
+    `📈 أعلى سعر: ${peakPx ? fmtSignalPrice(peakPx) : '—'} · ${peakRoi.toFixed(0)}%\n`;
   // نسبة غير منطقية (٠ أو ١٠٠ فأكثر) تعني إغلاقاً كاملاً
   const partial = isFinite(pct) && pct > 0 && pct < 100;
   try {
@@ -1959,29 +2000,32 @@ async function plFire(acc, sym, roi, floor, cfg) {
       const qty = roundQty(Math.abs(amt) * (pct / 100), sym);
       if (qty > 0) {
         await reducePosition(acc, sym, amt, qty);
-        lockNotify(head + `✂️ أُغلق ${pct}% عند ${roi.toFixed(0)}%\n🛡️ الباقي مفتوح — يُغلق لو رجع لنقطة الدخول`);
+        lockNotify(head +
+          `✂️ أُغلق ${pct}% عند ${fmtSignalPrice(price)} · ${roi.toFixed(0)}%\n` +
+          `🛡️ تم تفعيل البريك إيفن عند ${fmtSignalPrice(entry)}`);
         return true;
       }
       // الكمية أصغر من خطوة العملة — نغلقها كاملة بدل تركها بلا حماية
     }
     await closeFollower(acc, sym, amt);
-    lockNotify(head + `✅ أُغلقت كاملة عند ${roi.toFixed(0)}%`);
+    lockNotify(head + `✅ أُغلقت كاملة عند ${fmtSignalPrice(price)} · ${roi.toFixed(0)}%`);
     return false;
   } catch (e) {
-    lockNotify(`❌ ${acc.name} — فشل الإغلاق عند الأرضية #${sym.replace('USDT', '/USDT')}: ${e.message}`);
+    lockNotify(`❌ ${acc.name} — فشل الإغلاق عند الأرضية #${symShort(sym)}: ${e.message}`);
     throw e;
   }
 }
 
 // الجزء المتبقّي رجع لنقطة الدخول — يُغلق كاملاً
-async function plCloseRest(acc, sym, roi) {
+async function plCloseRest(acc, sym, roi, price) {
   const pos = (acc.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
   if (!pos) return;
   try {
     await closeFollower(acc, sym, parseFloat(pos.positionAmt));
-    lockNotify(`🔐 قفل الربح — ${acc.name} · #${sym.replace('USDT', '/USDT')}\n↩️ رجع لنقطة الدخول (${roi.toFixed(0)}%) — أُغلق الباقي`);
+    lockNotify(`💸 قفل الربح — ${acc.name} · #${symShort(sym)}\n` +
+      `↩️ رجع لنقطة الدخول ${fmtSignalPrice(parseFloat(pos.entryPrice) || price)} (${roi.toFixed(0)}%) — أُغلق الباقي`);
   } catch (e) {
-    lockNotify(`❌ ${acc.name} — فشل إغلاق الباقي #${sym.replace('USDT', '/USDT')}: ${e.message}`);
+    lockNotify(`❌ ${acc.name} — فشل إغلاق الباقي #${symShort(sym)}: ${e.message}`);
     throw e;
   }
 }
@@ -2067,7 +2111,7 @@ async function monitorAccountLocks() {
       // الدفتر من سجل بايننس: يمسك حتى الصفقات التي تُفتح وتُغلق بين دورتين
       await pollRealizedPnl(acc, (sym, pnl) => {
         acctLockRecordClose(acc, sym, pnl);
-        lockNotify(`${pnl >= 0 ? '✅' : '❌'} ${acc.name} — ${sym.replace('USDT', '/USDT')} ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\nالمتبقي من الحد اليومي: $${acctLockRemaining(acc).toFixed(2)}`);
+        lockNotify(`${pnl >= 0 ? '✅' : '❌'} ${acc.name} — ${symShort(sym)} ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\nالمتبقي من الحد اليومي: $${acctLockRemaining(acc).toFixed(2)}`);
       });
       lockSave();
       broadcast({ type: 'accounts', data: getSafeAccounts() });
@@ -2126,7 +2170,7 @@ async function monitorAccountLocks() {
           if (closeQty <= 0) continue;
           try {
             await reducePosition(acc, pos.symbol, parseFloat(pos.positionAmt), closeQty);
-            lockNotify(`✂️ ${acc.name} — تقليم الزيادة #${pos.symbol.replace('USDT', '/USDT')}\nالهامش كان $${margin.toFixed(2)} → أصبح $${capTrade.toFixed(2)}`);
+            lockNotify(`✂️ ${acc.name} — تقليم الزيادة #${symShort(pos.symbol)}\nالهامش كان $${margin.toFixed(2)} → أصبح $${capTrade.toFixed(2)}`);
           } catch (e) { addCopyLog('fail', `❌ تقليم ${acc.name} ${pos.symbol}: ${e.message}`); }
           await new Promise(r => setTimeout(r, 300));
         }
@@ -2528,7 +2572,7 @@ async function cornixClose(sym) {
 async function fireVStop(sym, v, price) {
   v.triggered = true;
   lockSave();
-  const pair = sym.replace('USDT', '/USDT');
+  const pair = symShort(sym);
   const lines = [];
   const isLong = v.side === 'LONG';
   const movePct = v.entry ? ((price - v.entry) / v.entry) * 100 * (isLong ? 1 : -1) : 0;
@@ -3055,7 +3099,7 @@ async function monitorLock() {
         if (!known) { L.manualSyms[sym] = { ts: Date.now(), margin: 0 }; lockSave(); }
         try {
           await closeFollower(master, sym, parseFloat(pos.positionAmt));
-          lockNotify(`⛔ صفقة يدوية أُغلقت فوراً — القفل نشط\n#${sym.replace('USDT', '/USDT')}\n⏳ يفتح بعد ${Math.ceil((L.lockedUntil - Date.now()) / 60000)} دقيقة`);
+          lockNotify(`⛔ صفقة يدوية أُغلقت فوراً — القفل نشط\n#${symShort(sym)}\n⏳ يفتح بعد ${Math.ceil((L.lockedUntil - Date.now()) / 60000)} دقيقة`);
         } catch (e) {
           addCopyLog('fail', `❌ قفل ${sym}: ${e.message}`);
         }
@@ -3083,7 +3127,7 @@ async function monitorLock() {
           if (!px) { delete L.ourStops[sym]; lockSave(); continue; }
           const re = await placeStop(master, sym, pos, px, 'إعادة وقف');
           lockNotify(
-            `♻️ أُعيد وضع الوقف — #${sym.replace('USDT', '/USDT')}\n` +
+            `♻️ أُعيد وضع الوقف — #${symShort(sym)}\n` +
             `اختفى أمر الوقف الذي وضعه النظام (غالباً ألغاه كورنكس) فأُعيد عند ${re}`
           );
         } catch (e) {
@@ -3108,7 +3152,7 @@ async function monitorLock() {
       L.manualSyms[sym] = { ...(rec || { ts: Date.now() }), opened: true };
       lockSave();
       lockNotify(
-        `🆕 صفقة يدوية — #${sym.replace('USDT', '/USDT')}\n` +
+        `🆕 صفقة يدوية — #${symShort(sym)}\n` +
         `${isLong ? '🟢 LONG' : '🔴 SHORT'} · دخول ${fmtSignalPrice(parseFloat(pos.entryPrice) || mark)}\n` +
         `هامش $${((amt * mark) / lev).toFixed(2)} · رافعة ${lev}x`
       );
@@ -3141,7 +3185,7 @@ async function monitorLock() {
           try {
             await reducePosition(master, sym, parseFloat(pos.positionAmt), closeQty);
             lockNotify(
-              `✂️ تقليم الزيادة — #${sym.replace('USDT', '/USDT')}\n` +
+              `✂️ تقليم الزيادة — #${symShort(sym)}\n` +
               `الهامش كان $${margin.toFixed(2)} → أصبح $${cap.toFixed(2)}\n` +
               `أُخرج: $${excessMargin.toFixed(2)}`
             );
@@ -3180,7 +3224,7 @@ async function monitorLock() {
           lockSave();
           const lev = parseFloat(pos.leverage) || 1;
           lockNotify(
-            `🛡️ ستوب تلقائي — #${sym.replace('USDT', '/USDT')}\n` +
+            `🛡️ ستوب تلقائي — #${symShort(sym)}\n` +
             `${isLong ? '🟢 LONG' : '🔴 SHORT'} · دخول ${entry}\n` +
             `وقف @ ${px} (${slPct}% من السعر ≈ ${(slPct * lev).toFixed(0)}% من الهامش)`
           );
@@ -3207,7 +3251,7 @@ async function monitorLock() {
               const r = armVStop(sym, { kind: 'sl', side: isLong ? 'LONG' : 'SHORT', pct: slPct, price: px, entry, reason: 'تعذّر الأمر الحدّي' });
               if (!r?.rejected) {
                 lockNotify(
-                  `⚠️ ستوب افتراضي — #${sym.replace('USDT', '/USDT')}\n` +
+                  `⚠️ ستوب افتراضي — #${symShort(sym)}\n` +
                   `رفضت بايننس الأمر الحدّي: ${e.message}\n` +
                   `يتابعه البوت عند ${slPct}% ويغلق بأمر سوق — يعمل ما دام البوت شغّالاً`
                 );
@@ -4900,7 +4944,7 @@ async function handleClientMsg(msg, ws) {
         delete store[sym];
         lockSave();
         if (STATE.lockState.beDone[sym]) delete STATE.lockState.beDone[sym];
-        lockNotify(`✕ أُلغيت متابعة ${kind} — #${sym.replace('USDT', '/USDT')}\nالصفقة تكمل بلا هذا الوقف.`);
+        lockNotify(`✕ أُلغيت متابعة ${kind} — #${symShort(sym)}\nالصفقة تكمل بلا هذا الوقف.`);
         broadcast({ type: 'lockState', data: lockPublic() });
         broadcast({ type: 'lockResult', data: { ok: true, action: 'cancelVStop', sym } });
       } else {
@@ -4922,7 +4966,7 @@ async function handleClientMsg(msg, ws) {
       const [sym] = entries[0];
       try {
         const cr = await cornixClose(sym);
-        lockNotify(`🧪 اختبار الرد — #${sym.replace('USDT', '/USDT')}\n` +
+        lockNotify(`🧪 اختبار الرد — #${symShort(sym)}\n` +
           (cr.ok ? `📨 أُرسل «${cr.cmd}» رداً على ${cr.ids.map(i => '#' + i).join(' و ')}` : `⚠️ فشل: ${cr.why}`));
         broadcast({ type: 'lockResult', data: { ok: cr.ok, action: 'testReply', sym, error: cr.ok ? undefined : cr.why } });
       } catch (e) {
@@ -5216,7 +5260,7 @@ async function handleClientMsg(msg, ws) {
       // المستخدم صراحةً كيف يصنّفها فهو يقصد أن تُعامَل معاملة كاملة
       if (kind !== 'auto' && STATE.lockState.manualSyms[sym]?.baseline) {
         delete STATE.lockState.manualSyms[sym].baseline;
-        lockNotify(`▶️ ${sym.replace('USDT', '/USDT')} — رُفعت صفة خط الأساس، صارت تخضع للتقليم والحد اليومي`);
+        lockNotify(`▶️ ${symShort(sym)} — رُفعت صفة خط الأساس، صارت تخضع للتقليم والحد اليومي`);
       }
       lockSave();
       const master = STATE.copyAccounts.find(a => a.isMaster);
@@ -5347,7 +5391,7 @@ async function handleClientMsg(msg, ws) {
           const perTradeCap = parseFloat(STATE.settings.lockPerTradeAmt) || 0;
           const dailyCap = parseFloat(STATE.settings.lockDailyAmt) || 0;
           lockNotify(
-            `📈 صفقة يدوية — #${sym.replace('USDT', '/USDT')}\n` +
+            `📈 صفقة يدوية — #${symShort(sym)}\n` +
             `${side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'} · ${leverage}x · هامش $${margin.toFixed(2)}` +
             (trimmed > 0 ? `\n✂️ قُلّمت الزيادة: $${trimmed.toFixed(2)} (الحد $${perTradeCap})` : '') +
             slLine +
