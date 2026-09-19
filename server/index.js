@@ -1625,6 +1625,39 @@ function lockRemaining() {
 }
 
 // تسجيل نتيجة صفقة يدوية مُغلقة — يفعّل القفل عند بلوغ الحد
+// حقائق الإغلاق من تعبئات بايننس نفسها. كشف الإغلاق يتمّ بمقارنة لقطتين
+// كل ٣٠ ثانية، وكان السعر يُؤخذ من livePrices لحظة الاكتشاف — أي سعر السوق
+// بعد الإغلاق بثوانٍ، لا سعر التنفيذ. فرق صغير في السعر يتضخّم بالرافعة،
+// وبإشارة المركز ينقلب أحياناً فتظهر صفقة خاسرة رابحة.
+// نمشي من أحدث تعبئة للأقدم حتى تكتمل كمية المركز، فلا تدخل تعبئات تقليم سابق.
+async function closeFacts(acc, sym, prevPos) {
+  const want = Math.abs(parseFloat(prevPos.positionAmt)) || 0;
+  if (!want || !acc?.apiKey) return null;
+  let rows;
+  try {
+    rows = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v1/userTrades', { symbol: sym, limit: 200 });
+  } catch (e) { return null; }
+  if (!Array.isArray(rows) || !rows.length) return null;
+
+  let qty = 0, notional = 0, realized = 0, fees = 0, ts = 0;
+  for (const r of rows.slice().sort((a, b) => (parseFloat(b.time) || 0) - (parseFloat(a.time) || 0))) {
+    const rp = parseFloat(r.realizedPnl) || 0;
+    if (!rp) continue;                       // تعبئة فتح لا إغلاق
+    const q = Math.abs(parseFloat(r.qty) || 0);
+    if (!q) continue;
+    const take = Math.min(q, want - qty), share = take / q;
+    qty += take;
+    notional += take * (parseFloat(r.price) || 0);
+    realized += rp * share;
+    // العمولة قد تُدفع بعملة أخرى (BNB) فلا تُطرح من حساب الدولار
+    if (r.commissionAsset === 'USDT') fees += (parseFloat(r.commission) || 0) * share;
+    if (!ts) ts = parseFloat(r.time) || 0;
+    if (qty >= want - 1e-12) break;
+  }
+  if (!qty) return null;
+  return { exitPrice: notional / qty, net: realized - fees, qty, ts };
+}
+
 function lockRecordClose(sym, pnlUsd, opts = {}) {
   if (!STATE.settings.lockOn || !STATE.settings.lockDailyOn) return;
   const L = lockWindow();
@@ -1649,7 +1682,7 @@ function lockRecordClose(sym, pnlUsd, opts = {}) {
       `أي صفقة يدوية تُفتح الآن ستُغلق فوراً\n` +
       `⏳ يفتح بعد ${hrs} ساعة`
     );
-  } else {
+  } else if (!opts.silent) {
     lockNotify(
       `${pnlUsd >= 0 ? '✅' : '❌'} أُغلقت ${symShort(sym)} — ${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toFixed(2)}\n` +
       `المتبقي من الحد اليومي: $${lockRemaining().toFixed(2)} من $${cap}`
@@ -1672,28 +1705,34 @@ async function pollRealizedPnl(acc, record) {
   if (!since || now - since > INCOME_MAX_LOOKBACK_MS) since = now - 60000;
   let rows;
   try {
+    // بلا فلتر نوع: الربح المحقّق وحده إجمالي قبل الرسوم، والرسوم على صفقة
+    // صغيرة تفوق الربح نفسه أحياناً — فالحدّ اليومي كان يرى جزءاً من الخسارة
     rows = await bFetch(acc.apiKey, acc.apiSecret, 'GET', '/fapi/v1/income', {
-      incomeType: 'REALIZED_PNL', startTime: since + 1, limit: 1000,
+      startTime: since + 1, limit: 1000,
     });
   } catch (e) { return; }
   if (!Array.isArray(rows) || !rows.length) { acc.lastIncomeTs = now; return; }
 
   // نجمع قيود الرمز الواحد معاً: الإغلاق الجزئي يولّد عدة قيود لصفقة واحدة
+  const COUNTED = { REALIZED_PNL: 1, COMMISSION: 1, FUNDING_FEE: 1 };
   const bySym = {};
   let maxTs = since;
   for (const r of rows) {
     const t = parseFloat(r.time) || 0;
     if (t > maxTs) maxTs = t;
     const sym = r.symbol;
-    if (!sym) continue;
-    bySym[sym] = (bySym[sym] || 0) + (parseFloat(r.income) || 0);
+    if (!sym || !COUNTED[r.incomeType]) continue;
+    const e = bySym[sym] || (bySym[sym] = { net: 0, closed: false });
+    e.net += parseFloat(r.income) || 0;
+    // عمولة الفتح وحدها ليست إغلاقاً — تُحتسب كتكلفة بلا إشعار إغلاق
+    if (r.incomeType === 'REALIZED_PNL') e.closed = true;
   }
   acc.lastIncomeTs = Math.max(maxTs, now - 1000);
   // نحفظ العلامة فور تقدّمها فقط — كي لا يُعاد احتساب قيود قديمة بعد إعادة تشغيل
   db.saveAccounts(STATE.copyAccounts);
-  for (const [sym, pnl] of Object.entries(bySym)) {
-    if (!pnl) continue;
-    record(sym, parseFloat(pnl.toFixed(4)));
+  for (const [sym, e] of Object.entries(bySym)) {
+    if (!e.net) continue;
+    record(sym, parseFloat(e.net.toFixed(4)), { closed: e.closed });
   }
 }
 
@@ -2109,8 +2148,9 @@ async function monitorAccountLocks() {
         if (!currMap[sym]) delete L.manualSyms[sym];
       }
       // الدفتر من سجل بايننس: يمسك حتى الصفقات التي تُفتح وتُغلق بين دورتين
-      await pollRealizedPnl(acc, (sym, pnl) => {
+      await pollRealizedPnl(acc, (sym, pnl, meta) => {
         acctLockRecordClose(acc, sym, pnl);
+        if (!meta?.closed) return;   // عمولة فتح: تُحتسب بلا إشعار
         lockNotify(`${pnl >= 0 ? '✅' : '❌'} ${acc.name} — ${symShort(sym)} ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\nالمتبقي من الحد اليومي: $${acctLockRemaining(acc).toFixed(2)}`);
       });
       lockSave();
@@ -3994,14 +4034,21 @@ async function syncCopy() {
       const isLongPos = parseFloat(prevPos.positionAmt) > 0;
       const side = isLongPos ? 'LONG' : 'SHORT';
       const entryPrice = parseFloat(prevPos.entryPrice) || 0;
-      const exitPrice = livePrices[sym] || entryPrice;
       const lev = parseFloat(prevPos.leverage) || 1;
-      const rawPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
-      const pct = parseFloat(((isLongPos ? rawPct : -rawPct) * lev).toFixed(2));
-
-      // ابحث في openTrades أو أنشئ سجل جديد
       const posAmt = Math.abs(parseFloat(prevPos.positionAmt));
-      const pnlUsd = parseFloat((posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1)).toFixed(4));
+      // نفس قاعدة المسار الآخر: سجل بايننس أولاً، والتقدير احتياط
+      const facts = await closeFacts(master, sym, prevPos);
+      const exitPrice = facts ? facts.exitPrice : (livePrices[sym] || entryPrice);
+      let pnlUsd, pct;
+      if (facts) {
+        pnlUsd = parseFloat(facts.net.toFixed(4));
+        const margin = (posAmt * entryPrice) / lev;
+        pct = parseFloat((margin ? (pnlUsd / margin) * 100 : 0).toFixed(2));
+      } else {
+        const rawPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+        pct = parseFloat(((isLongPos ? rawPct : -rawPct) * lev).toFixed(2));
+        pnlUsd = parseFloat((posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1)).toFixed(4));
+      }
       const t = STATE.openTrades.find(x => x.symbol === sym);
       const closed = t
         ? { ...t, exitPrice, exitTime: nowStr(), closeTs: Date.now(), pct, pnl: pnlUsd, result: pct >= 0 ? 'win' : 'loss' }
@@ -6132,13 +6179,21 @@ async function init() {
           const isLongPos = parseFloat(prevPos.positionAmt) > 0;
           const side = isLongPos ? 'LONG' : 'SHORT';
           const entryPrice = parseFloat(prevPos.entryPrice) || 0;
-          const exitPrice = livePrices[sym] || entryPrice;
           const lev = parseFloat(prevPos.leverage) || 1;
-          const rawPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
-          const pct = parseFloat(((isLongPos ? rawPct : -rawPct) * lev).toFixed(2));
-
           const posAmt = Math.abs(parseFloat(prevPos.positionAmt));
-          const pnlUsd = parseFloat((posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1)).toFixed(4));
+          // المصدر الأول سجل بايننس؛ التقدير من السعر اللحظي احتياط أخير
+          const facts = await closeFacts(master, sym, prevPos);
+          const exitPrice = facts ? facts.exitPrice : (livePrices[sym] || entryPrice);
+          let pnlUsd, pct;
+          if (facts) {
+            pnlUsd = parseFloat(facts.net.toFixed(4));
+            const margin = (posAmt * entryPrice) / lev;
+            pct = parseFloat((margin ? (pnlUsd / margin) * 100 : 0).toFixed(2));
+          } else {
+            const rawPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
+            pct = parseFloat(((isLongPos ? rawPct : -rawPct) * lev).toFixed(2));
+            pnlUsd = parseFloat((posAmt * (exitPrice - entryPrice) * (isLongPos ? 1 : -1)).toFixed(4));
+          }
           const t = STATE.openTrades.find(x => x.symbol === sym);
           const closed = t
             ? { ...t, exitPrice, exitTime: nowStr(), closeTs: Date.now(), pct, pnl: pnlUsd, result: pct >= 0 ? 'win' : 'loss' }
@@ -6217,10 +6272,10 @@ async function init() {
     // دفتر الحد اليومي من سجل بايننس نفسه — يمسك الصفقات القصيرة التي تُفتح
     // وتُغلق بين دورتين، وبقيمتها الحقيقية لا بتقدير من السعر اللحظي
     if (STATE.settings.lockDailyOn) {
-      await pollRealizedPnl(master, (sym, pnl) => {
+      await pollRealizedPnl(master, (sym, pnl, meta) => {
         // صفقات البوت لها أهدافها بكورنكس — الحد اليومي يخصّ اليدوي
         if (!isManualPosition(sym)) return;
-        lockRecordClose(sym, pnl, { fromIncome: true });
+        lockRecordClose(sym, pnl, { fromIncome: true, silent: !meta?.closed });
       });
     }
     await monitorLock();
