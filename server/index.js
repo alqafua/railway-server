@@ -1786,9 +1786,9 @@ async function checkDailyLossLimit() {
 // لأن الذيل قد يصعد ويعود خلال ثوانٍ.
 const PROFIT_LOCK_DEFAULTS = {
   on: false,
-  jumpPct: 400,      // قفزة PnL التي تُعدّ طفرة
-  windowMin: 10,     // نافذة الكشف بالدقائق (أقصى مدى للذاكرة)
-  keepPct: 70,       // نسبة الاحتفاظ من قمة الربح (الأرضية)
+  jumpPct: 250,      // قفزة PnL التي تُعدّ طفرة
+  windowMin: 15,     // نافذة الكشف بالدقائق (أقصى مدى للذاكرة)
+  keepPct: 80,       // نسبة الاحتفاظ من قمة الربح (الأرضية)
   partialPct: 50,    // ما يُغلق عند كسر الأرضية
   armAbove: 0,       // تسليح فوري لأي ربح يتجاوز هذا الحد (٠ = مطفأ)
   beGuard: true,     // بعد الطفرة لا تعود الصفقة للسالب أبداً
@@ -3641,6 +3641,69 @@ function startBinanceWSGroup(interval, syms) {
   });
   binanceWs.on('close', () => { broadcast({ type: 'wsStatus', data: 'disconnected' }); scheduleReconn(interval); });
   binanceWs.on('error', () => {});
+}
+
+// ══════════════════════════════════════════════
+//  المسار السريع — العملات التي فيها مركز مفتوح
+// ══════════════════════════════════════════════
+// اتصال البثّ العام يحمل ٥٢٨ عملة، وكل نبضة سعر فيه تُشغّل حسابات الماسح.
+// آلاف الرسائل في الثانية تزدحم في طابور واحد، فيصل سعر العملة التي فيها
+// صفقتك متأخّراً — وهذا سبب تجاوز الأرضية وتفويت قمة الذيل.
+// هنا اتصال منفصل لا يحمل إلا العملات المفتوحة (واحدة أو اثنتان عادةً)،
+// على @aggTrade الذي يُرسل مع كل صفقة تنفَّذ فعلاً، ولا يفعل شيئاً سوى
+// فحص الأرضية والوقف. فلا ينتظر دوره خلف أحد.
+let fastWs = null, fastKey = '', fastReconn = null;
+
+function fastSymbols() {
+  const set = new Set();
+  for (const acc of STATE.copyAccounts) {
+    if (!acc.apiKey || !profitLockCfg(acc).on) continue;
+    for (const p of acc.livePositions || []) {
+      if (Math.abs(parseFloat(p.positionAmt || 0)) > 0) set.add(p.symbol);
+    }
+  }
+  // الأوقاف الافتراضية تستفيد من نفس السرعة — هي أيضاً تُنفَّذ على السعر اللحظي
+  for (const sym of Object.keys(STATE.lockState?.vStops || {})) {
+    const v = STATE.lockState.vStops[sym];
+    if (v && !v.triggered) set.add(sym);
+  }
+  return [...set].sort();
+}
+
+function syncFastStream() {
+  const syms = fastSymbols();
+  const key = syms.join(',');
+  // لا نعيد الاتصال إلا إذا تغيّرت القائمة فعلاً أو انقطع الاتصال
+  // CONNECTING محسوب كقائم — وإلا قطعنا اتصالاً قيد التأسيس كل خمس ثوانٍ
+  const live = fastWs && (fastWs.readyState === WebSocket.OPEN || fastWs.readyState === WebSocket.CONNECTING);
+  if (key === fastKey && live) return;
+  fastKey = key;
+  if (fastWs) { try { fastWs.removeAllListeners(); fastWs.terminate(); } catch (e) {} fastWs = null; }
+  if (fastReconn) { clearTimeout(fastReconn); fastReconn = null; }
+  if (!syms.length) return;
+
+  const streams = syms.map(x => `${x.toLowerCase()}@aggTrade`).join('/');
+  const ws = new WebSocket(`${WS_BASE}?streams=${streams}`);
+  fastWs = ws;
+  ws.on('open', () => console.log(`⚡ المسار السريع: ${syms.map(symShort).join(' · ')}`));
+  ws.on('message', (data) => {
+    try {
+      const t = JSON.parse(data)?.data;
+      if (!t || !t.s || !t.p) return;
+      const sym = t.s, price = parseFloat(t.p);
+      if (!price) return;
+      livePrices[sym] = price;
+      checkVStops(sym, price);
+      checkProfitLocks(sym, price);
+    } catch (e) {}
+  });
+  ws.on('error', () => { try { ws.terminate(); } catch (e) {} });
+  ws.on('close', () => {
+    if (fastWs !== ws) return;          // أُغلق عمداً لتبديل القائمة
+    fastWs = null; fastKey = '';
+    if (fastReconn) return;
+    fastReconn = setTimeout(() => { fastReconn = null; syncFastStream(); }, 3000);
+  });
 }
 
 function stopBinanceWS() {
@@ -5901,6 +5964,29 @@ async function init() {
     if (seed.length) { db.saveAccounts(seed); STATE.copyAccounts = db.loadAccounts(); console.log(`🌱 Seeded ${seed.length} accounts from env vars`); }
   }
 
+  // تصحيح مرّة واحدة بطلب المستخدم: أرقام قفل الربح كانت مخفّضة للاختبار
+  // (قفزة ٥٠ = ١٪ حركة سعر برافعة ٥٠، فانسلّح على كل ذبذبة عادية وتقصقصت
+  // الصفقة ست مرات في ٣ ساعات). نرفع القفزة لطفرة حقيقية ونضيّق التنازل عن
+  // القمة. لا نمسّ النافذة (الحركة قد تأخذ ١٥ دقيقة) ولا نسبة الإغلاق الجزئي
+  // (تصميم "نصفها يخرج والباقي محميّ بالتعادل" مقصود). ولا نلمس قيمة اختارها
+  // المستخدم فعلاً فوق الحدّ الموصى به
+  if (!STATE.settings.profitLockTuneV1) {
+    let tuned = 0;
+    for (const acc of STATE.copyAccounts) {
+      if (!acc.profitLock) continue;
+      const pl = acc.profitLock, before = JSON.stringify(pl);
+      if ((parseFloat(pl.jumpPct) || 0) < 150) pl.jumpPct = 250;
+      if ((parseFloat(pl.keepPct) || 0) < 80) pl.keepPct = 80;
+      if (JSON.stringify(pl) !== before) {
+        tuned++;
+        console.log(`🔧 قفل الربح ${acc.name}: قفزة ${pl.jumpPct}% · احتفاظ ${pl.keepPct}%`);
+      }
+    }
+    if (tuned) db.saveAccounts(STATE.copyAccounts);
+    STATE.settings.profitLockTuneV1 = true;
+    db.saveSettings(STATE.settings);
+  }
+
   STATE.openTrades = db.loadOpenTrades();
   STATE.closedTrades = db.loadClosedTrades();
   STATE.dcaOrders = db.loadDcaOrders();
@@ -6167,6 +6253,8 @@ async function init() {
       const price = livePrices[sym] || parseFloat(p?.markPrice) || 0;
       if (price) { try { checkProfitLocks(sym, price); } catch (e) {} }
     }
+    // وصّل المسار السريع بما هو مفتوح الآن — صفقة جديدة تدخل خلال ثوانٍ
+    try { syncFastStream(); } catch (e) {}
   }, 5000);
 
   // self-ping كل 25 ثانية لمنع النوم
