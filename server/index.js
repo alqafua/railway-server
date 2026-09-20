@@ -52,6 +52,9 @@ const DEFAULT_SETTINGS = {
   // فيفشل الإرسال بـ "chat not found" مع كل إشارة
   cxChatBT: process.env.TG_CHAT_BT || '',
   cxChatSettings: process.env.TG_CHAT_SETTINGS || '',
+  discordBotToken: process.env.DISCORD_BOT_TOKEN || '',
+  discordChannelId: process.env.DISCORD_CHANNEL_ID || '',
+  discordOn: false,
   cxEntry2on: true, cxEntry2Dist: '0.2', cxEntry2Amt: '50',
   cxBEon: false,
   trSon: false, trSstart: 75, trSgap: 3,
@@ -647,6 +650,49 @@ async function tgSend(text, chat, opts = {}) {
   if (!tgSending) drainTgQueue();
 }
 
+// ══════════════════════════════════════════════
+//  DISCORD — مرآة للإشارات، يعمل فقط إذا فُعِّل من الداشبورد
+// ══════════════════════════════════════════════
+const discordQueue = [];
+let discordSending = false;
+
+// نسخة موازية لـ tgSend. النص نفسه بلا تغيير — كورنكس يقرأ الصيغة ذاتها.
+function discordSend(text, channelId) {
+  const st = STATE.settings;
+  if (!st.discordOn || !st.discordBotToken || !channelId) return;
+  discordQueue.push({ text, channelId, token: st.discordBotToken });
+  if (!discordSending) drainDiscordQueue();
+}
+
+async function drainDiscordQueue() {
+  discordSending = true;
+  while (discordQueue.length) {
+    const item = discordQueue.shift();
+    const { text, channelId, token } = item;
+    try {
+      const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: text }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        if (res.status === 429) {
+          // ديسكورد يردّ بثوانٍ كسرية — نقرّبها لأعلى ونعيد الرسالة لرأس الطابور
+          const wait = Math.ceil(parseFloat(body.match(/"retry_after":\s*([\d.]+)/)?.[1] || '5') * 1000);
+          discordQueue.unshift(item);
+          await new Promise(r => setTimeout(r, wait));
+        } else {
+          reportError('ديسكورد', `تعذّر الإرسال للقناة ${channelId} — ${body || res.statusText}`);
+        }
+      }
+    } catch (e) {
+      reportError('ديسكورد', e.message);
+    }
+  }
+  discordSending = false;
+}
+
 // أي خانة إعدادات يخصّها هذا الـ chat id — ليظهر اسمها في رسالة الخطأ
 function chatLabel(chat) {
   const s = STATE.settings, c = String(chat);
@@ -866,6 +912,7 @@ async function sendSignal(sym, side, overridePrice, fromQueue = false, queueLabe
   st.cxLev = origLev;
   // trackSym: نحفظ message_id لنستطيع الرد عليها لاحقاً بأوامر تحديث كورنكس (بريك إيفن/وقف/تريلنج)
   await tgSend(text, st.cxChat, { trackSym: sym });
+  discordSend(text, STATE.settings.discordChannelId);
 
   // إرسال ملخص إعدادات الصفقة لقناة "إعدادات الصفقات" — لكل الصفقات
   if (STATE.settings.cxChatSettings) {
@@ -1589,12 +1636,14 @@ function masterLockActive() {
 function lockNotify(text) {
   const lock = STATE.settings.lockTgChat;
   const main = STATE.settings.cxChat;
-  if (lock && !isDeadChat(lock)) { tgSend('🔒 نظام القفل\n' + text, lock); return; }
+  const msg = '🔒 نظام القفل\n' + text;
+  discordSend(msg, STATE.settings.discordChannelId);
+  if (lock && !isDeadChat(lock)) { tgSend(msg, lock); return; }
   if (lock && main) {
-    tgSend(`🔒 نظام القفل\n${text}\n\n⚠️ تعذّر الوصول لقناة القفل (${lock}) — تأكّد أن البوت مشرف فيها وله صلاحية نشر الرسائل.`, main);
+    tgSend(`${msg}\n\n⚠️ تعذّر الوصول لقناة القفل (${lock}) — تأكّد أن البوت مشرف فيها وله صلاحية نشر الرسائل.`, main);
     return;
   }
-  if (main) tgSend('🔒 نظام القفل\n' + text, main);
+  if (main) tgSend(msg, main);
 }
 
 // يدوّر النافذة اليومية إذا انتهت مدّتها، ويُرجع الحالة الحالية
@@ -5319,6 +5368,29 @@ async function handleClientMsg(msg, ws) {
       break;
     }
 
+    // اختبار ديسكورد: يرسل مباشرةً متجاوزاً مفتاح التشغيل — الاختبار
+    // يجيب "هل الإعدادات صحيحة؟" لا "هل الإرسال مفعَّل؟"
+    case 'discordTest': {
+      const { discordBotToken: token, discordChannelId: ch } = STATE.settings;
+      if (!token || !ch) { broadcast({ type: 'discordResult', data: { ok: false, error: 'التوكن أو Channel ID غير مضبوط' } }); break; }
+      try {
+        const res = await fetch(`https://discord.com/api/v10/channels/${ch}/messages`, {
+          method: 'POST',
+          headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: '✅ اختبار الاتصال — البوت يستطيع النشر في هذه القناة' }),
+        });
+        if (res.ok) broadcast({ type: 'discordResult', data: { ok: true } });
+        else {
+          const body = await res.text().catch(() => '');
+          let d = body; try { d = JSON.parse(body).message || body; } catch (e) {}
+          broadcast({ type: 'discordResult', data: { ok: false, error: `${res.status} — ${d}` } });
+        }
+      } catch (e) {
+        broadcast({ type: 'discordResult', data: { ok: false, error: e.message } });
+      }
+      break;
+    }
+
     // اختبار الصلاحية: يرسل رسالة نصية بسيطة ثم يعدّلها فوراً —
     // يفصل "هل يقدر البوت يعدّل؟" عن "هل السجل المحفوظ صحيح؟"
     case 'lockTestPerm': {
@@ -5732,6 +5804,7 @@ async function handleClientMsg(msg, ws) {
       const text = buildMsg(sym, side, st) + note;
       st.cxLev = origLev;
       await tgSend(text, st.cxChat, { trackSym: sym });
+      discordSend(text, STATE.settings.discordChannelId);
       if (STATE.settings.cxChatSettings) {
         await tgSend(buildSettingsMsg(sym, side, st, lv), STATE.settings.cxChatSettings);
       }
@@ -5997,6 +6070,8 @@ async function init() {
   if (process.env.TG_CHAT_BT) STATE.settings.cxChatBT = process.env.TG_CHAT_BT;
   if (!STATE.settings.cxChatBT) STATE.settings.cxChatBT = DEFAULT_SETTINGS.cxChatBT;
   if (process.env.TG_CHAT_SETTINGS) STATE.settings.cxChatSettings = process.env.TG_CHAT_SETTINGS;
+  if (process.env.DISCORD_BOT_TOKEN) STATE.settings.discordBotToken = process.env.DISCORD_BOT_TOKEN;
+  if (process.env.DISCORD_CHANNEL_ID) STATE.settings.discordChannelId = process.env.DISCORD_CHANNEL_ID;
   if (!STATE.settings.cxChatSettings) STATE.settings.cxChatSettings = DEFAULT_SETTINGS.cxChatSettings;
   db.saveSettings(STATE.settings);
 
