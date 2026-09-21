@@ -55,6 +55,11 @@ const DEFAULT_SETTINGS = {
   discordBotToken: process.env.DISCORD_BOT_TOKEN || '',
   discordChannelId: process.env.DISCORD_CHANNEL_ID || '',
   discordOn: false,
+  // ── الصفقات الراكدة ───────────────────────────
+  stuckOn: false,        // رصد الصفقات التي لا تتحرك
+  stuckMode: 'watch',    // watch = رصد وتنبيه فقط · close = يغلقها تلقائياً
+  stuckRangePct: 11,     // أقصى مدى حركة خلال المدة ليُعتبر ركوداً
+  stuckDays: 3,          // مدة القياس بالأيام
   cxEntry2on: true, cxEntry2Dist: '0.2', cxEntry2Amt: '50',
   cxBEon: false,
   trSon: false, trSstart: 75, trSgap: 3,
@@ -160,6 +165,7 @@ const STATE = {
   superTrend: { value: null, direction: null, btcPrice: null, updatedAt: null },
   respectData: {},
   perSymST: {},
+  stuckTrades: {},     // sym -> وصف الصفقة الراكدة المرصودة
   simTrades: [],
   // نظام القفل — نافذة يومية + تتبّع الصفقات اليدوية
   lockState: {
@@ -2604,6 +2610,7 @@ const VSTOP_KINDS = {
   trail: 'تريلنج',
   be: 'بريك إيفن',
   sl: 'وقف خسارة',
+  price: 'سعر محدّد',
 };
 
 function vStopsStore() {
@@ -2611,7 +2618,7 @@ function vStopsStore() {
 }
 
 // يسجّل وقفاً افتراضياً لعملة. للتريلنج نبدأ التتبّع من السعر الحالي.
-function armVStop(sym, { kind, side, pct, price, entry, reason }) {
+function armVStop(sym, { kind, side, pct, price, entry, reason, level }) {
   const store = vStopsStore();
   const isLong = side === 'LONG';
   const v = {
@@ -2620,6 +2627,20 @@ function armVStop(sym, { kind, side, pct, price, entry, reason }) {
     armedAt: Date.now(), reason: reason || '',
     triggered: false,
   };
+  // سعر محدّد يدوياً: المستوى يأتي كما هو، والجهة تُشتقّ من موقعه الآن.
+  // فوق السعر ← ننتظر صعوداً إليه، وتحته ← نزولاً — بصرف النظر عن اتجاه الصفقة،
+  // كي يخدم جني الربح والخروج بخسارة بنفس الخانة.
+  if (kind === 'price') {
+    const lv = roundPrice(parseFloat(level), sym);
+    if (!isFinite(lv) || lv <= 0) return { rejected: true, why: 'سعر غير صالح' };
+    if (!price) return { rejected: true, why: 'لا يوجد سعر حالي لهذه العملة' };
+    if (lv === price) return { rejected: true, why: `السعر ${fmtSignalPrice(lv)} هو السعر الحالي — اختر مستوى أبعد` };
+    v.level = lv;
+    v.dir = lv > price ? 'up' : 'down';
+    store[sym] = v;
+    lockSave();
+    return v;
+  }
   // مستوى الإغلاق: ثابت للبريك إيفن والوقف، ومتحرّك للتريلنج.
   // يُقرَّب على خطوة سعر العملة نفسها، وإلا خرج برقم عائم طويل
   // (0.009589899999999998) لا يشبه ما تعرضه بايننس.
@@ -2690,7 +2711,9 @@ async function fireVStop(sym, v, price) {
     `${isLong ? '🟢 LONG' : '🔴 SHORT'} · دخول ${fmtSignalPrice(v.entry)}\n` +
     (v.kind === 'trail'
       ? `📈 أعلى نقطة: ${fmtSignalPrice(v.peak)} · ارتد ${v.pct}% → ${fmtSignalPrice(v.level)}\n`
-      : `🎯 المستوى: ${fmtSignalPrice(v.level)} (${v.pct}%)\n`) +
+      : v.kind === 'price'
+        ? `🎯 السعر المحدّد: ${fmtSignalPrice(v.level)}\n`
+        : `🎯 المستوى: ${fmtSignalPrice(v.level)} (${v.pct}%)\n`) +
     `💰 سعر الإغلاق: ${fmtSignalPrice(price)} · ${movePct >= 0 ? '+' : ''}${movePct.toFixed(2)}%\n` +
     (v.reason ? `📝 ${v.reason}\n` : '') +
     lines.join('\n')
@@ -2720,12 +2743,157 @@ function checkVStops(sym, price) {
     }
   }
 
-  const hit = isLong ? price <= v.level : price >= v.level;
+  const hit = v.kind === 'price'
+    ? (v.dir === 'up' ? price >= v.level : price <= v.level)
+    : (isLong ? price <= v.level : price >= v.level);
   if (!hit) return;
   if (vStopBusy) return;
   vStopBusy = true;
   fireVStop(sym, v, price).catch(e => addCopyLog('fail', `❌ وقف افتراضي ${sym}: ${e.message}`))
     .finally(() => { vStopBusy = false; });
+}
+
+// ══════════════════════════════════════════════
+//  الصفقات الراكدة — مفتوحة منذ مدة وتتأرجح في مدى ضيّق
+// ══════════════════════════════════════════════
+
+// مدى حركة العملة خلال المدة، نسبةً إلى أدنى سعر فيها.
+// شموع الساعة لا اليومية: يومان يعطيان ٤٨ نقطة قياس بدل شمعتين،
+// فلا يُحسب المدى من طرفين قد يكونان شاذّين.
+async function stuckRange(sym, days) {
+  const limit = Math.min(1000, Math.max(24, Math.round(days * 24)));
+  const kl = await fetchBinance(`/fapi/v1/klines?symbol=${sym}&interval=1h&limit=${limit}`);
+  if (!Array.isArray(kl) || kl.length < 12) return null;
+  let hi = -Infinity, lo = Infinity;
+  for (const k of kl) {
+    const h = parseFloat(k[2]), l = parseFloat(k[3]);
+    if (isFinite(h) && h > hi) hi = h;
+    if (isFinite(l) && l < lo) lo = l;
+  }
+  if (!isFinite(hi) || !isFinite(lo) || lo <= 0) return null;
+  return { pct: ((hi - lo) / lo) * 100, high: hi, low: lo, bars: kl.length };
+}
+
+// الإغلاق: بايننس أولاً ثم أمر كورنكس — نفس ترتيب الوقف الافتراضي،
+// فإغلاق الماستر لا ينتظر استجابة كورنكس
+async function closeStuckTrade(sym, info, manual) {
+  const pair = symShort(sym);
+  const lines = [];
+  const master = STATE.copyAccounts.find(a => a.isMaster);
+  const pos = (master?.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  if (master?.apiKey && pos) {
+    try {
+      await closeFollower(master, sym, parseFloat(pos.positionAmt));
+      lines.push('✅ أُغلقت على بايننس');
+    } catch (e) {
+      lines.push(`❌ إغلاق بايننس فشل: ${e.message}`);
+    }
+  } else {
+    lines.push('ℹ️ لا يوجد مركز مفتوح على الماستر');
+  }
+  const cr = await cornixClose(sym);
+  lines.push(cr.ok ? `📨 أُرسل «${cr.cmd}» رداً على ${cr.ids.map(i => '#' + i).join(' و ')}`
+                   : `⚠️ لم يُرسل لكورنكس: ${cr.why}`);
+
+  lockNotify(
+    `🧹 إغلاق صفقة راكدة — #${pair}\n` +
+    (manual ? '👤 بأمر يدوي\n' : '🤖 تلقائياً\n') +
+    (info ? `📉 تحرّكت ${info.pct.toFixed(1)}% خلال ${fmtDur(Date.now() - info.openedAt)}\n` +
+            `📊 المدى: ${fmtSignalPrice(info.low)} ← ${fmtSignalPrice(info.high)}\n` : '') +
+    lines.join('\n')
+  );
+  delete STATE.stuckTrades[sym];
+  broadcast({ type: 'stuckTrades', data: STATE.stuckTrades });
+}
+
+let stuckBusy = false;
+async function scanStuckTrades() {
+  if (stuckBusy) return;
+  const st = STATE.settings;
+  if (!st.stuckOn) {
+    if (Object.keys(STATE.stuckTrades).length) {
+      STATE.stuckTrades = {};
+      broadcast({ type: 'stuckTrades', data: STATE.stuckTrades });
+    }
+    return;
+  }
+  const master = STATE.copyAccounts.find(a => a.isMaster);
+  const positions = (master?.livePositions || []).filter(p => Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+  const openSyms = new Set(positions.map(p => p.symbol));
+
+  // صفقة أُغلقت تخرج من القائمة — وإلا بقيت معروضة بعد انتهائها
+  let changed = false;
+  for (const s of Object.keys(STATE.stuckTrades)) {
+    if (!openSyms.has(s)) { delete STATE.stuckTrades[s]; changed = true; }
+  }
+  // احتياطي لعمر الصفقة: بايننس قد يُرجع updateTime صفراً، وبدون بديل
+  // يسقط المركز من الرصد إلى الأبد. يُحفظ على القرص فيصمد عبر إعادة التشغيل.
+  const seen = STATE.lockState.posSeen || (STATE.lockState.posSeen = {});
+  let seenChanged = false;
+  for (const s of Object.keys(seen)) if (!openSyms.has(s)) { delete seen[s]; seenChanged = true; }
+
+  const days = Math.max(0.5, parseFloat(st.stuckDays) || 3);
+  const maxPct = parseFloat(st.stuckRangePct) || 11;
+  const minAgeMs = days * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  stuckBusy = true;
+  try {
+    for (const pos of positions) {
+      const sym = pos.symbol;
+      // updateTime من بايننس يصمد عبر إعادة تشغيل الخادم، بخلاف أي تتبّع محلي
+      if (!seen[sym]) { seen[sym] = now; seenChanged = true; }
+      const openedAt = parseFloat(pos.updateTime) || seen[sym];
+      // صفقة لم تمكث المدة كاملةً لا تُقاس — قد تكون فُتحت قبل دقائق على عملة راكدة أصلاً
+      if (!openedAt || now - openedAt < minAgeMs) {
+        if (STATE.stuckTrades[sym]) { delete STATE.stuckTrades[sym]; changed = true; }
+        continue;
+      }
+      let r;
+      try { r = await stuckRange(sym, days); } catch (e) { continue; }
+      if (!r) continue;
+
+      if (r.pct > maxPct) {
+        // تحرّكت بما يكفي — لم تعد راكدة
+        if (STATE.stuckTrades[sym]) { delete STATE.stuckTrades[sym]; changed = true; }
+        continue;
+      }
+
+      const prev = STATE.stuckTrades[sym];
+      const amt = parseFloat(pos.positionAmt) || 0;
+      const info = {
+        sym, pct: r.pct, high: r.high, low: r.low, bars: r.bars,
+        openedAt, side: amt > 0 ? 'LONG' : 'SHORT',
+        entry: parseFloat(pos.entryPrice) || 0,
+        pnl: parseFloat(pos.unRealizedProfit) || 0,
+        detectedAt: prev?.detectedAt || now,
+      };
+      STATE.stuckTrades[sym] = info;
+      changed = true;
+
+      // التنبيه مرة واحدة لكل صفقة — الفحص دوري ولا نريده يكرّر الإشعار كل مرة
+      if (!prev) {
+        lockNotify(
+          `😴 صفقة راكدة — #${symShort(sym)}\n` +
+          `${info.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT'} · مفتوحة منذ ${fmtDur(now - openedAt)}\n` +
+          `📉 تحرّكت ${r.pct.toFixed(1)}% فقط خلال ${days} يوم (الحد ${maxPct}%)\n` +
+          `📊 المدى: ${fmtSignalPrice(r.low)} ← ${fmtSignalPrice(r.high)}\n` +
+          `💵 العائم: ${info.pnl >= 0 ? '+' : ''}${info.pnl.toFixed(2)}$\n` +
+          (st.stuckMode === 'close' ? '🧹 سيُغلقها البوت الآن' : '👁 رصد فقط — الإغلاق بيدك')
+        );
+      }
+
+      if (st.stuckMode === 'close') {
+        await closeStuckTrade(sym, info, false).catch(e =>
+          addCopyLog('fail', `❌ إغلاق راكدة ${sym}: ${e.message}`));
+        changed = true;
+      }
+    }
+  } finally {
+    stuckBusy = false;
+  }
+  if (seenChanged) lockSave();
+  if (changed) broadcast({ type: 'stuckTrades', data: STATE.stuckTrades });
 }
 
 // قائمة الإشارات المحفوظة مع عمرها وقابليتها للتعديل
@@ -4281,6 +4449,7 @@ function getPublicState() {
     superTrend: STATE.superTrend,
     respectData: STATE.respectData,
     perSymST: STATE.perSymST,
+    stuckTrades: STATE.stuckTrades,
     lockState: lockPublic(),
     lastUpdate: nowStr(),
     btBusy: btState.busy,
@@ -4391,6 +4560,10 @@ async function handleClientMsg(msg, ws) {
       // فريم جديد يجعل القراءة السابقة بلا معنى — نعيد الحساب قبل أي قرار
       if (trendTFChanged) updateLockTrend();
       if (msg.data.ema200TF !== undefined) updateEMA200();
+      // معايير الركود تغيّرت — القائمة المعروضة صارت محسوبة بمعايير قديمة
+      if (['stuckOn', 'stuckMode', 'stuckRangePct', 'stuckDays'].some(k => msg.data[k] !== undefined)) {
+        scanStuckTrades().catch(() => {});
+      }
       if (msg.data.stTF !== undefined || msg.data.stPeriod !== undefined || msg.data.stMult !== undefined) updateSuperTrend();
       // إعادة تشغيل WS عند تغيير الفريم الزمني العام، أو تفعيل/تعطيل استخدام إعدادات العملات
       // (يؤثر على الفريم الفعّال لكل العملات ذات الإعدادات الخاصة)
@@ -5091,6 +5264,50 @@ async function handleClientMsg(msg, ws) {
       });
       db.saveWaitQueue(STATE.waitQueue);
       broadcast({ type: 'waitQueue', data: queueWithReversals() });
+      break;
+    }
+
+    // ── الصفقات الراكدة ─────────────────────────────────
+    case 'stuckScan': {
+      scanStuckTrades().catch(() => {});
+      break;
+    }
+
+    case 'stuckCloseNow': {
+      const { sym } = msg.data || {};
+      const info = sym ? STATE.stuckTrades[sym] : null;
+      if (!sym) { broadcast({ type: 'lockResult', data: { ok: false, error: 'لم يُحدَّد رمز' } }); break; }
+      try {
+        await closeStuckTrade(sym, info, true);
+        broadcast({ type: 'lockResult', data: { ok: true, action: 'stuckClose', sym } });
+      } catch (e) {
+        broadcast({ type: 'lockResult', data: { ok: false, error: e.message } });
+      }
+      break;
+    }
+
+    // سعر إغلاق يدوي لعملة — يُتابَع مع كل تحديث سعر كبقية الأوقاف الافتراضية
+    case 'armPriceStop': {
+      const { sym, price: target } = msg.data || {};
+      if (!sym || !target) { broadcast({ type: 'lockResult', data: { ok: false, error: 'اختر العملة واكتب السعر' } }); break; }
+      const master = STATE.copyAccounts.find(a => a.isMaster);
+      const pos = (master?.livePositions || []).find(p => p.symbol === sym && Math.abs(parseFloat(p.positionAmt || 0)) > 0);
+      if (!pos) { broadcast({ type: 'lockResult', data: { ok: false, error: `لا توجد صفقة مفتوحة على ${symShort(sym)}` } }); break; }
+      const cur = livePrices[sym] || parseFloat(pos.markPrice) || 0;
+      const amt = parseFloat(pos.positionAmt) || 0;
+      const v = armVStop(sym, {
+        kind: 'price', side: amt > 0 ? 'LONG' : 'SHORT',
+        price: cur, entry: parseFloat(pos.entryPrice) || 0,
+        level: parseFloat(target), reason: 'سعر إغلاق يدوي',
+      });
+      if (v?.rejected) { broadcast({ type: 'lockResult', data: { ok: false, error: v.why } }); break; }
+      lockNotify(
+        `🎯 سعر إغلاق — #${symShort(sym)}\n` +
+        `${amt > 0 ? '🟢 LONG' : '🔴 SHORT'} · السعر الآن ${fmtSignalPrice(cur)}\n` +
+        `تُغلق عند ${fmtSignalPrice(v.level)} (${v.dir === 'up' ? 'صعوداً ▲' : 'نزولاً ▼'})`
+      );
+      broadcast({ type: 'lockState', data: lockPublic() });
+      broadcast({ type: 'lockResult', data: { ok: true, action: 'armPrice', sym } });
       break;
     }
 
@@ -6359,6 +6576,7 @@ async function init() {
   // مراقب قفل الحد اليومي لكل حساب (غير الماستر) — مستقل تماماً عن نظام
   // الماستر وعن حالة النسخ، يعمل لأي حساب فعّلت عليه القفل بنفسه
   setInterval(() => { monitorAccountLocks().catch(() => {}); }, 15000);
+  setInterval(() => { scanStuckTrades().catch(() => {}); }, 5 * 60000);
 
   // مراكز حسابات قفل الربح كل ٥ ثوانٍ: صائد الطفرات يحسب الربح على السعر
   // اللحظي لكن لا يعرف بوجود المركز أصلاً إلا حين تصله المراكز. بدورة ١٥ ثانية
